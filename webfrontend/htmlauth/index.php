@@ -416,6 +416,54 @@ if ($oc_rahmen) {
     LBWeb::lbheader('Octopus Dynamic' . ($oc_ver !== '' ? ' ' . $oc_ver : ''),
         'https://wiki.loxberry.de/', 'help.html');
 }
+
+/* ---------------- Einstellungen sichern ----------------
+ *
+ * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken. Ohne ihn
+ * stuenden nach dem Zurueckspielen alle Felder richtig, und das Plugin
+ * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
+ * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das. */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['oc_sichern'])) {
+    $oc_js = json_encode(oc_config(),
+        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($oc_js !== false) {
+        header('Content-Type: application/json; charset=utf-8');
+        header('Content-Disposition: attachment; filename="spotpreis_einstellungen_'
+               . date('Ymd_His') . '.json"');
+        echo $oc_js;
+        exit;
+    }
+    $oc_fehler[] = oc_t('EINST.SICH_SCHREIBFEHLER');
+}
+
+/* ---------------- Einstellungen zurueckspielen ----------------
+ *
+ * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei des
+ * Servers unterschieben. Dann die Groessengrenze - eine Sicherung dieses
+ * Plugins ist wenige Kilobyte gross; alles darueber wird gar nicht gelesen. */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['oc_zurueck'])) {
+    if (!isset($_FILES['oc_sicherung']) || !is_array($_FILES['oc_sicherung'])
+        || !isset($_FILES['oc_sicherung']['tmp_name'])
+        || !@is_uploaded_file($_FILES['oc_sicherung']['tmp_name'])) {
+        $oc_fehler[] = oc_t('EINST.SICH_KEINE_DATEI');
+    } elseif ((int) $_FILES['oc_sicherung']['size'] > 262144) {
+        $oc_fehler[] = oc_t('EINST.SICH_ZU_GROSS');
+    } else {
+        list($oc_neu, $oc_mangel, $oc_n) = oc_sicherung_lesen(
+            (string) @file_get_contents($_FILES['oc_sicherung']['tmp_name']));
+        if ($oc_neu === null) {
+            /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
+             * nichts. */
+            $oc_fehler[] = oc_t('EINST.SICH_ABGELEHNT') . ' '
+                            . implode(' ', $oc_mangel);
+        } elseif (oc_config_write($oc_neu)) {
+            $oc_meldungen[] = sprintf(oc_t('EINST.SICH_UEBERNOMMEN'), $oc_n);
+        } else {
+            $oc_fehler[] = oc_t('EINST.SICH_SCHREIBFEHLER');
+        }
+    }
+}
+
 ?>
 <style>
 /* Hausstandard - wortgetreu aus VORLAGE_hausstandard.css.html */
@@ -638,6 +686,7 @@ $oc_reiter = array(
 </label>
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-aktion"></i><?php echo oc_t('LEGENDE.AKTION'); ?></span>
+<span><i class="sm-punkt sm-b-lesen"></i><?php echo oc_t('LEGENDE.LESEN'); ?></span>
 </div>
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?php echo oc_t('EINST.ZUGANG_SPEICHERN'); ?></button>
@@ -1008,6 +1057,25 @@ for ($oc_i = 0; $oc_i < 12; $oc_i++) { ?>
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?php echo oc_t('ALLGEMEIN.SPEICHERN'); ?></button>
 </div>
 </form>
+
+<h2><?= oc_t('EINST.H_SICHERUNG') ?></h2>
+<div class="sm-hinweis"><?= oc_t('EINST.SICH_ERKLAERUNG') ?></div>
+<div class="sm-warnung"><?= oc_t('EINST.SICH_WARNUNG') ?></div>
+<div class="sm-knopfreihe">
+  <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
+       exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
+       Wer beides in ein Formular legt, bekommt entweder keinen Upload oder
+       einen Download, der das Speichern verschluckt. -->
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="oc_sichern" value="1"><?= oc_t('EINST.K_SICHERN') ?></button>
+  </form>
+  <form action="index.php" method="post" enctype="multipart/form-data">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <input data-role="none" type="file" name="oc_sicherung" accept=".json">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="oc_zurueck" value="1"><?= oc_t('EINST.K_ZURUECK') ?></button>
+  </form>
+</div>
 </div><!-- /tab-settings -->
 
 <!-- ==================== Reiter: MQTT ==================== -->
@@ -1060,7 +1128,7 @@ for ($oc_i = 0; $oc_i < 12; $oc_i++) { ?>
 <b><?php echo oc_t('MQTT.ABO_TITEL'); ?></b><br>
 <?php echo oc_t('MQTT.ABO_WEG'); ?>
 <div class="sm-pre"><?php echo oc_e($oc_cfg['mqtt_topic']); ?>/#</div>
-<b><?php echo oc_t('MQTT.ABO_WARNUNG'); ?></b>
+<b><?php echo oc_abo_text(); ?></b>
 </div>
 
 <h2><?php echo oc_t('MQTT.H_THEMEN'); ?></h2>
@@ -1112,7 +1180,7 @@ for ($oc_i = 0; $oc_i < 12; $oc_i++) { ?>
 
 <div class="sm-step"><b><?php echo oc_t('LOX.S2_T'); ?></b><br><?php echo oc_t('LOX.S2'); ?>
 <div class="sm-pre"><?php echo oc_e($oc_cfg['mqtt_topic']); ?>/#</div>
-<b><?php echo oc_t('LOX.S2_WARN'); ?></b></div>
+<b><?php echo oc_abo_text(); ?></b></div>
 
 <div class="sm-step"><b><?php echo oc_t('LOX.S3_T'); ?></b><br><?php echo oc_t('LOX.S3'); ?>
 <table class="sm-tbl">
