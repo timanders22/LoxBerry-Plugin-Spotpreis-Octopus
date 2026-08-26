@@ -65,6 +65,23 @@ if (preg_match($oc_muster, (string) (isset($_POST['activetab']) ? $_POST['active
 $oc_cfg = oc_config();
 $oc_zug = oc_zugang();
 
+/* ==================================================================
+ * DIE HANDLER STEHEN VOR lbheader() - DAS IST BAUVORSCHRIFT
+ * ==================================================================
+ *
+ * Stand der Kopf davor, war er beim Aufruf von header() schon
+ * geschrieben - "Cannot modify header information", und der Knopf
+ * "Einstellungen sichern" lieferte eine Seite mit angehaengtem JSON
+ * statt einer Datei.
+ *
+ * Am PHP-CLI ist das unsichtbar: header() ist dort wirkungslos und
+ * headers_sent() immer falsch. Und wer OHNE gueltiges Formularmerkmal
+ * misst, wird vom Wachposten abgewiesen, bevor der Handler anlaeuft.
+ * Beides hat den Fehler lange verdeckt.
+ *
+ * Reihenfolge: Bibliothek, Konfiguration, Wachposten, Reiterwahl,
+ * ALLE Handler samt Downloads, dann erst lbheader(), dann HTML.
+ * ================================================================== */
 /* ================= Loxone-Vorlage herunterladen ================= */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['download'])) {
     $oc_art = ((string) $_POST['download'] === 'http_in') ? 'http_in' : 'mqtt_in';
@@ -412,10 +429,6 @@ function oc_chart($st)
 }
 
 $oc_rahmen = class_exists('LBWeb', false);
-if ($oc_rahmen) {
-    LBWeb::lbheader('Octopus Dynamic' . ($oc_ver !== '' ? ' ' . $oc_ver : ''),
-        'https://wiki.loxberry.de/', 'help.html');
-}
 
 /* ---------------- Einstellungen sichern ----------------
  *
@@ -462,6 +475,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['oc_zurueck'])) {
             $oc_fehler[] = oc_t('EINST.SICH_SCHREIBFEHLER');
         }
     }
+}
+
+
+if ($oc_rahmen) {
+    LBWeb::lbheader('Octopus Dynamic' . ($oc_ver !== '' ? ' ' . $oc_ver : ''),
+        'https://wiki.loxberry.de/', 'help.html');
 }
 
 ?>
