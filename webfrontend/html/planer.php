@@ -4,9 +4,12 @@
  *
  * DIESE DATEI IST IN MEHREREN PLUGINS BYTEWEISE GLEICH.
  * Sie liegt derzeit in LoxBerry-Plugin-Spotpreis-aWATTar und in
- * LoxBerry-Plugin-Octopus. Wer sie aendert, aendert sie in beiden - und
- * prueft danach mit md5sum ueber beide Ablageorte, dass die Pruefsumme
+ * LoxBerry-Plugin-Spotpreis-Octopus. Wer sie aendert, aendert sie in beiden -
+ * und prueft danach mit sha256sum ueber beide Ablageorte, dass die Pruefsumme
  * wieder uebereinstimmt. Der Reiter Test zeigt sie an.
+ *
+ * Der Ordnername stand hier bis 1.1.0 falsch ("LoxBerry-Plugin-Octopus"). Wer
+ * danach gesucht hat, fand nichts - deshalb steht er jetzt vollstaendig da.
  *
  * Deshalb traegt sie das neutrale Kuerzel 'plan_' statt des Plugin-Kuerzels.
  * Das ist die einzige Ausnahme von der Regel "Funktionen tragen das Kuerzel
@@ -71,13 +74,19 @@
  *
  * Alles hier ist reine Rechnung: kein Netz, keine Dateien, keine Uhr ausser
  * dem uebergebenen Zeitpunkt. Deshalb laesst sich der Planer vollstaendig
- * durchpruefen - plan_selbsttest() rechnet 30 Faelle nach.
+ * durchpruefen - plan_selbsttest() rechnet die Faelle nach und nennt ihre
+ * Zahl selbst.
+ *
+ * KEINE ZAHL IM FLIESSTEXT. Bis 1.0.0 stand hier und weiter unten
+ * "dreissig Faelle". Gemessen waren es 53 - der Satz war um 23 Faelle
+ * veraltet, und niemand hatte es bemerkt, weil ihn nichts nachzaehlt.
+ * Eine Zahl, die neben einer erzeugten Liste steht, ist eine Zeitbombe.
  *
  * Kompatibel mit PHP 7.4 und PHP 8.x.
  */
 
 /** Fassung dieser Datei. Steht in beiden Plugins im Reiter Test. */
-define('PLAN_FASSUNG', '1.0.0');
+define('PLAN_FASSUNG', '1.1.0');
 
 /* ==================================================================
  * Vorgaben
@@ -101,6 +110,13 @@ function plan_regel_vorgabe()
         'pv_sperre' => 0.0,   // kWh Tagesprognose, ab der die Regel schweigt; 0 = aus
         'soc_min'   => 0,     // Prozent; Regel erst ab diesem Speicherstand
         'soc_max'   => 0,     // Prozent; Regel nur bis zu diesem Stand; 0 = aus
+        // ---- ab 1.1.0: Taktschutz ----
+        // Beide in MINUTEN, 0 = aus. Bei Viertelstundenpreisen ist kurzes
+        // Takten der Normalfall und nicht die Ausnahme: eine Schwellenregel
+        // schaltet sonst alle 15 Minuten. Waermepumpe und Kompressor nehmen
+        // davon Schaden.
+        'min_lauf'  => 0,     // Mindestlaufzeit eines zusammenhaengenden Blocks
+        'min_pause' => 0,     // Mindestpause zwischen zwei Bloecken
     );
 }
 
@@ -111,6 +127,20 @@ function plan_global_vorgabe()
         'budget_kw'    => 0.0,   // gleichzeitige Leistung; 0 = kein Budget
         'pv_bonus'     => 0.0,   // ct/kWh Gutschrift bei voller PV-Scheibe; 0 = aus
         'pv_schwelle'  => 500,   // Wh je Zeitscheibe fuer die volle Gutschrift
+        /* ---- ab 1.1.0: zweites, zeitlich begrenztes Budget (Paragraf 14a) ----
+         *
+         * Wer eine steuerbare Verbrauchseinrichtung angemeldet hat, darf zu
+         * bestimmten Zeiten nur eine verminderte Leistung ziehen. Das ist ein
+         * ZWEITES Budget neben dem ersten, kein Ersatz: es gilt zusaetzlich
+         * und nur innerhalb seines Zeitfensters. Beide werden geprueft, die
+         * kleinere Schranke gewinnt.
+         *
+         * budget2_kw = 0 schaltet es ab. von == bis heisst "ganzer Tag" -
+         * dieselbe Lesart wie beim Zeitfenster einer Regel, damit niemand
+         * zwei Bedeutungen fuer dieselbe Schreibweise lernen muss. */
+        'budget2_kw'   => 0.0,   // kW waehrend der Sperrzeit; 0 = aus
+        'budget2_von'  => 0,     // Stunde, ab der es gilt (einschliesslich)
+        'budget2_bis'  => 0,     // Stunde, bis zu der es gilt (ausschliesslich)
     );
 }
 
@@ -151,15 +181,34 @@ function plan_frist_ende($jetzt, $frist)
 {
     $frist = (int) $frist;
     if ($frist < 0 || $frist > 23) { return 0; }
-    $tagesbeginn = (int) mktime(0, 0, 0, (int) date('n', $jetzt), (int) date('j', $jetzt),
-                                (int) date('Y', $jetzt));
-    $ziel = $tagesbeginn + $frist * 3600;
+    /* $jetzt ganzzahlig, bevor er in date() geht. Ein Float loest unter
+     * PHP 8 "Implicit conversion ... loses precision" aus; unter 7.4
+     * schweigt es. Beide Aufrufer rastern heute sauber, aber der Schutz
+     * kostet nichts. */
+    $jetzt = (int) $jetzt;
+
+    /* BEIDE Zweige ueber mktime() mit der STUNDE als Argument.
+     *
+     * Bis 1.0.0 rechnete der erste Zweig "Tagesbeginn + Frist * 3600" -
+     * genau der Fehler, vor dem der Kommentar im zweiten Zweig warnt. An
+     * den beiden Umstellungstagen hat ein Tag 23 oder 25 Stunden, und eine
+     * Stunde ist dann nicht 3600 Sekunden vom Tagesbeginn entfernt.
+     * Gemessen, unter 7.4 wie unter 8.4:
+     *     29.03.2026, Frist 7 -> 08:00 statt 07:00
+     *     25.10.2026, Frist 7 -> 06:00 statt 07:00
+     * Im Fruehjahrsfall war die Waesche eine Stunde NACH der Frist fertig.
+     *
+     * mktime() loest eine uebersprungene Stunde selbst auf: Frist 2 am
+     * 29.03. gibt es nicht, mktime liefert dafuer 03:00 - die naechste
+     * Uhrzeit, die es wirklich gibt. Das ist die richtige Antwort. */
+    $m = (int) date('n', $jetzt);
+    $t = (int) date('j', $jetzt);
+    $j = (int) date('Y', $jetzt);
+    $ziel = (int) mktime($frist, 0, 0, $m, $t, $j);
     if ($ziel <= $jetzt) {
         // Schon vorbei - dann ist morgen gemeint. Ueber die Datumsfunktion
-        // gerechnet und nicht mit +86400: an den beiden Umstellungstagen hat
-        // ein Tag 23 oder 25 Stunden.
-        $ziel = (int) mktime($frist, 0, 0, (int) date('n', $jetzt),
-                             (int) date('j', $jetzt) + 1, (int) date('Y', $jetzt));
+        // gerechnet und nicht mit +86400, aus demselben Grund.
+        $ziel = (int) mktime($frist, 0, 0, $m, $t + 1, $j);
     }
     return $ziel;
 }
@@ -183,7 +232,27 @@ function plan_slots_noetig($r, $slotlen)
         $stunden = $energie / $leistung;
         return max(1, (int) ceil($stunden * $pro));
     }
-    return max(1, (int) $r['n']) * $pro;
+    // isset auf 'n': die Regelvorgabe des Planers kennt das Feld nicht, es
+    // kommt aus der Plugin-Vorgabe. Eine Regel ohne 'n' loeste unter PHP 8
+    // eine Warnung aus und rechnete mit 0.
+    return max(1, isset($r['n']) ? (int) $r['n'] : 1) * $pro;
+}
+
+/**
+ * Traegt die Regel eine Energiemenge, aber keine Leistung?
+ *
+ * Dann faellt plan_slots_noetig() stillschweigend auf 'n' zurueck: wer
+ * "7 kWh" eintraegt und die Leistung vergisst, bekommt ein ganz anderes
+ * Ergebnis und kein Wort dazu. Der Planer kann das nicht selbst beheben -
+ * ohne Leistung gibt es keine Laufzeit -, aber er kann es SAGEN. Die
+ * Oberflaeche weist es beim Speichern ab; hier steht es fuer den Fall,
+ * dass die Werte aus einer zurueckgespielten Sicherung kommen.
+ */
+function plan_energie_ohne_leistung($r)
+{
+    $energie = isset($r['energie']) ? (float) $r['energie'] : 0.0;
+    $leistung = isset($r['leistung']) ? (float) $r['leistung'] : 0.0;
+    return ($energie > 0 && $leistung <= 0);
 }
 
 /* ==================================================================
@@ -239,24 +308,38 @@ function plan_effektivpreise($preise, $pv, $bonus, $schwelle)
  *
  * Rueckgabe: array(ts => Effektivpreis)
  */
-function plan_kandidaten($r, $eff, $jetzt, $slotlen, $belegt, $budget)
+function plan_kandidaten($r, $eff, $jetzt, $slotlen, $belegt, $budget, $b2 = null)
 {
-    $ende = $jetzt + max(1, (int) $r['horizont']) * 3600;
+    $jetzt = (int) $jetzt;
+    $ende = $jetzt + max(1, isset($r['horizont']) ? (int) $r['horizont'] : 24) * 3600;
     $frist = plan_frist_ende($jetzt, isset($r['frist']) ? $r['frist'] : -1);
     if ($frist > 0 && $frist < $ende) { $ende = $frist; }
 
     $leistung = isset($r['leistung']) ? (float) $r['leistung'] : 0.0;
     $budget = (float) $budget;
 
+    /* Das zweite Budget gilt nur in seinem Zeitfenster. $b2 ist entweder
+     * null (aus) oder array(kw, von, bis). */
+    $b2kw  = (is_array($b2) && isset($b2['kw']))  ? (float) $b2['kw']  : 0.0;
+    $b2von = (is_array($b2) && isset($b2['von'])) ? (int) $b2['von'] : 0;
+    $b2bis = (is_array($b2) && isset($b2['bis'])) ? (int) $b2['bis'] : 0;
+
+    $von = isset($r['von']) ? $r['von'] : 0;
+    $bis = isset($r['bis']) ? $r['bis'] : 0;
+
     $out = array();
     foreach ($eff as $ts => $ct) {
         if ($ts < $jetzt || $ts >= $ende) { continue; }
-        if (!plan_in_zeitfenster((int) date('G', $ts), $r['von'], $r['bis'])) { continue; }
-        if ($budget > 0 && $leistung > 0) {
+        $stunde = (int) date('G', $ts);
+        if (!plan_in_zeitfenster($stunde, $von, $bis)) { continue; }
+        if ($leistung > 0) {
             $schon = isset($belegt[$ts]) ? (float) $belegt[$ts] : 0.0;
-            // Rundung auf vier Stellen, damit 3.7 + 3.7 <= 7.4 nicht an der
-            // Gleitkommadarstellung scheitert.
-            if (round($schon + $leistung, 4) > round($budget, 4)) { continue; }
+            /* Beide Schranken pruefen, die kleinere gewinnt. Rundung auf
+             * vier Stellen, damit 3.7 + 3.7 <= 7.4 nicht an der
+             * Gleitkommadarstellung scheitert. */
+            if ($budget > 0 && round($schon + $leistung, 4) > round($budget, 4)) { continue; }
+            if ($b2kw > 0 && plan_in_zeitfenster($stunde, $b2von, $b2bis)
+                && round($schon + $leistung, 4) > round($b2kw, 4)) { continue; }
         }
         $out[$ts] = (float) $ct;
     }
@@ -267,9 +350,10 @@ function plan_kandidaten($r, $eff, $jetzt, $slotlen, $belegt, $budget)
 /**
  * Aus den Kandidaten die Treffer waehlen.
  *
- * Vier Arten, wie bisher:
+ * Fuenf Arten:
  *   fenster   die guenstigsten $anzahl Scheiben AM STUECK
  *   stunden   die guenstigsten VOLLEN Stunden, ueber den Tag verstreut
+ *   scheiben  die guenstigsten EINZELNEN Scheiben, ohne Stundenraster (1.1.0)
  *   schwelle  alles unter einem festen Preis
  *   mittel    alles X Prozent unter dem Tagesmittel
  *
@@ -277,6 +361,19 @@ function plan_kandidaten($r, $eff, $jetzt, $slotlen, $belegt, $budget)
  * guenstigsten Viertelstunden zu picken - sonst schaltet die Wallbox im
  * Viertelstundentakt an und aus. Bei stuendlichen Preisen ist das
  * dieselbe Rechnung, nur mit Bloecken der Laenge eins.
+ *
+ * WARUM 'scheiben' DAZUKOMMT (1.1.0)
+ * Bisher gab es nur "am Stueck" oder "volle Stunden". Wer eine Wallbox mit
+ * Zeitpuffer hat, will aber die guenstigsten Viertelstunden EINZELN - das
+ * ist bares Geld, und der Zeitpuffer macht das Takten unschaedlich. Wer
+ * takten nicht vertraegt, nimmt 'fenster' oder setzt min_lauf. Deshalb eine
+ * eigene Art und kein Schalter an einer bestehenden: eine Art beschreibt,
+ * WAS gewaehlt wird, ein Schalter haette dieselbe Art zwei Dinge bedeuten
+ * lassen.
+ *
+ * $mittel darf null sein - das heisst "nicht bekannt" und wird aus den
+ * Kandidaten ersetzt. Ein echtes negatives Tagesmittel ist NICHT dasselbe
+ * wie "nicht bekannt"; bis 1.0.0 wurden beide gleich behandelt.
  *
  * Rueckgabe: sortierte Liste von Zeitstempeln.
  */
@@ -316,20 +413,50 @@ function plan_waehlen($r, $kand, $slotlen, $anzahl, $mittel)
             // guenstig oder teuer, je nachdem welche Viertel fehlen.
             if ($v[1] === $pro) { $mittelwerte[$h] = $v[0] / $pro; }
         }
-        asort($mittelwerte);
+        /* Stabile Reihenfolge bei gleichem Stundenmittel: asort() ist zwar
+         * seit PHP 8.0 stabil, unter 7.4 aber nicht. Ohne den Zweitschluessel
+         * kann derselbe Fahrplan unter zwei PHP-Fassungen anders aussehen. */
+        $stunden = array_keys($mittelwerte);
+        usort($stunden, function ($a, $b) use ($mittelwerte) {
+            if ($mittelwerte[$a] !== $mittelwerte[$b]) {
+                return $mittelwerte[$a] < $mittelwerte[$b] ? -1 : 1;
+            }
+            return $a < $b ? -1 : ($a > $b ? 1 : 0);
+        });
         $wieviele = max(1, (int) ceil($anzahl / $pro));
-        $gewaehlt = array_slice(array_keys($mittelwerte), 0, $wieviele);
+        $gewaehlt = array_slice($stunden, 0, $wieviele);
         foreach ($kand as $ts => $ct) {
             if (in_array($ts - ($ts % 3600), $gewaehlt, true)) { $treffer[] = $ts; }
         }
 
+    } elseif ($art === 'scheiben') {
+        /* Die guenstigsten Einzelscheiben, ohne Stundenraster und ohne
+         * Zusammenhang. Bei Preisgleichstand entscheidet die fruehere
+         * Scheibe - sonst haengt das Ergebnis an der Sortierfunktion. */
+        $sortiert = $ks;
+        usort($sortiert, function ($a, $b) use ($kand) {
+            if ($kand[$a] !== $kand[$b]) { return $kand[$a] < $kand[$b] ? -1 : 1; }
+            return $a < $b ? -1 : ($a > $b ? 1 : 0);
+        });
+        $treffer = array_slice($sortiert, 0, max(1, (int) $anzahl));
+
     } else {
         if ($art === 'schwelle') {
-            $grenze = (float) $r['schwelle'];
+            $grenze = isset($r['schwelle']) ? (float) $r['schwelle'] : 0.0;
         } else {
-            $m = (float) $mittel;
-            if ($m <= 0 && $kand) { $m = array_sum($kand) / count($kand); }
-            $grenze = round($m * (1 - max(0, min(90, (int) $r['prozent'])) / 100), 3);
+            /* null heisst "Tagesmittel nicht bekannt". Bis 1.0.0 stand hier
+             * "$m <= 0", und damit galt ein ECHTES negatives Tagesmittel als
+             * unbekannt - an genau dem Tag, an dem die Regel am meisten
+             * bewirkt. */
+            $m = ($mittel === null || !is_numeric($mittel)) ? null : (float) $mittel;
+            if ($m === null) { $m = $kand ? array_sum($kand) / count($kand) : 0.0; }
+            $prozent = max(0, min(90, isset($r['prozent']) ? (int) $r['prozent'] : 0));
+            /* "X Prozent UNTER dem Mittel" - gemessen am Betrag des Mittels,
+             * nicht als Faktor. Bei einem Mittel von -10 ct und 20 Prozent
+             * ergab "$m * (1 - 0.2)" die Grenze -8, also OBERHALB des
+             * Mittels: die Regel wurde bei Negativpreisen weiter statt
+             * enger. Richtig ist -12. */
+            $grenze = round($m - abs($m) * $prozent / 100, 3);
         }
         foreach ($kand as $ts => $ct) {
             if ($ct <= $grenze) { $treffer[] = $ts; }
@@ -337,6 +464,106 @@ function plan_waehlen($r, $kand, $slotlen, $anzahl, $mittel)
     }
 
     sort($treffer);
+    return $treffer;
+}
+
+/* ==================================================================
+ * Taktschutz
+ * ================================================================== */
+
+/**
+ * Eine Trefferliste in zusammenhaengende Bloecke zerlegen.
+ * Rueckgabe: Liste von array(erster_ts, letzter_ts, anzahl).
+ */
+function plan_bloecke($treffer, $slotlen)
+{
+    $slotlen = max(1, (int) $slotlen);
+    $out = array();
+    $vorher = null;
+    foreach ($treffer as $ts) {
+        if ($vorher !== null && $ts - $vorher === $slotlen) {
+            $out[count($out) - 1][1] = $ts;
+            $out[count($out) - 1][2]++;
+        } else {
+            $out[] = array($ts, $ts, 1);
+        }
+        $vorher = $ts;
+    }
+    return $out;
+}
+
+/**
+ * Mindestlaufzeit und Mindestpause durchsetzen.
+ *
+ * Zwei Schritte, in dieser Reihenfolge - und die Reihenfolge ist der ganze
+ * Trick:
+ *
+ *   1. LOECHER ZUMACHEN. Ist die Pause zwischen zwei Bloecken kuerzer als
+ *      min_pause, laeuft das Geraet durch. Lieber ein paar teure Minuten
+ *      mitnehmen als aus- und gleich wieder einschalten.
+ *
+ *   2. ZU KURZE BLOECKE VERLAENGERN. Was danach noch kuerzer ist als
+ *      min_lauf, wird nach hinten aus den Kandidaten aufgefuellt. Reicht
+ *      das nicht, faellt der Block weg - ein Block unter der
+ *      Mindestlaufzeit ist genau das, was die Regel verhindern soll.
+ *
+ * Zuerst zumachen, dann verlaengern: umgekehrt wuerde ein zu kurzer Block
+ * verworfen, den das Zumachen gerettet haette.
+ *
+ * Verlaengert wird nur mit Scheiben, die ohnehin Kandidaten sind - damit
+ * bleiben Budget, Frist und Zeitfenster gewahrt.
+ *
+ * $kand darf leer sein; dann wird nur zugemacht und geworfen.
+ */
+function plan_takt($treffer, $kand, $slotlen, $min_lauf, $min_pause)
+{
+    $slotlen = max(1, (int) $slotlen);
+    $min_lauf = max(0, (int) $min_lauf);
+    $min_pause = max(0, (int) $min_pause);
+    if (!$treffer || ($min_lauf <= 0 && $min_pause <= 0)) { return $treffer; }
+
+    $je = max(1, (int) round($slotlen / 60));     // Minuten je Scheibe
+    $gesetzt = array_flip($treffer);
+
+    // ---- 1. Loecher zumachen ----
+    if ($min_pause > 0) {
+        $bloecke = plan_bloecke($treffer, $slotlen);
+        for ($i = 1; $i < count($bloecke); $i++) {
+            $luecke = (int) round(($bloecke[$i][0] - $bloecke[$i - 1][1] - $slotlen) / 60);
+            if ($luecke > 0 && $luecke < $min_pause) {
+                for ($ts = $bloecke[$i - 1][1] + $slotlen; $ts < $bloecke[$i][0]; $ts += $slotlen) {
+                    $gesetzt[$ts] = 1;
+                }
+            }
+        }
+        $treffer = array_keys($gesetzt);
+        sort($treffer);
+        $gesetzt = array_flip($treffer);
+    }
+
+    // ---- 2. Zu kurze Bloecke verlaengern, sonst werfen ----
+    if ($min_lauf > 0) {
+        $bloecke = plan_bloecke($treffer, $slotlen);
+        foreach ($bloecke as $b) {
+            $laenge = $b[2] * $je;
+            if ($laenge >= $min_lauf) { continue; }
+            $ts = $b[1] + $slotlen;
+            while ($laenge < $min_lauf && isset($kand[$ts]) && !isset($gesetzt[$ts])) {
+                $gesetzt[$ts] = 1;
+                $laenge += $je;
+                $ts += $slotlen;
+            }
+            if ($laenge < $min_lauf) {
+                // Immer noch zu kurz: der ganze Block faellt weg, samt dem,
+                // was gerade angehaengt wurde.
+                for ($x = $b[0]; $x <= $b[1]; $x += $slotlen) { unset($gesetzt[$x]); }
+                for ($x = $b[1] + $slotlen; $x < $ts; $x += $slotlen) { unset($gesetzt[$x]); }
+            }
+        }
+        $treffer = array_keys($gesetzt);
+        sort($treffer);
+    }
+
     return $treffer;
 }
 
@@ -406,6 +633,11 @@ function plan_nach_wh($wert, $einheit, $slotlen)
 {
     $w = (float) $wert;
     $std = max(1, (int) $slotlen) / 3600.0;
+    /* Klein schreiben, bevor verglichen wird. Ohne das fiel 'KW' oder 'kW'
+     * stillschweigend auf 'wh' zurueck - Faktor 1000 daneben, ohne eine
+     * Meldung. Gemessen: plan_nach_wh(1, 'KW', 3600) gab 1 Wh statt 1000.
+     * Genau davor warnt der Kommentar zwei Zeilen darueber. */
+    $einheit = strtolower(trim((string) $einheit));
     if ($einheit === 'kw') { return $w * 1000.0 * $std; }
     if ($einheit === 'w')  { return $w * $std; }
     return $w;   // 'wh'
@@ -515,26 +747,63 @@ function plan_soc_lesen($daten, $pfad)
  * $jetzt    Beginn der laufenden Zeitscheibe
  * $regeln   Liste der Regeln (mit den Feldern beider Vorgaben)
  * $umwelt   array('pv' => array(ts=>Wh)|null, 'pv_summe' => kWh|null,
- *                 'soc' => Prozent|null, 'neg' => 0/1, 'mittel' => ct)
- * $g        array('budget_kw','pv_bonus','pv_schwelle')
+ *                 'soc' => Prozent|null, 'neg' => 0/1, 'mittel' => ct|null,
+ *                 'laufend' => array(regel_index => bis_ts))
+ * $g        array('budget_kw','pv_bonus','pv_schwelle',
+ *                 'budget2_kw','budget2_von','budget2_bis')
  *
  * Rueckgabe je Regel: nr, aktiv, in, rest, ct, start, startmin, grund,
- * slots, anzahl, verdraengt, gesperrt, rang, leistung.
+ * slots, anzahl, noetig, fehlt, verdraengt, gesperrt, rang, leistung,
+ * ct_sofort, spart_ct, spart_eur, kwh, mangel.
  *
  * 'in' und 'rest' zaehlen in MINUTEN, damit dieselbe Rechnung fuer
  * stuendliche und viertelstuendliche Preise passt. Das aufrufende Plugin
  * rechnet um, wenn es Stunden ausgeben will.
+ *
+ * ------------------------------------------------------------------
+ * Die moeglichen Werte von 'grund' - vollstaendig, damit die Oberflaeche
+ * keinen erfinden muss:
+ *
+ *   aus        die Regel ist abgeschaltet
+ *   gesperrt   PV-Prognose oder Speicherstand sperren sie ('gesperrt' sagt
+ *              welche - siehe Feld 'gesperrt')
+ *   keine      es gibt ueberhaupt keine Zeitscheibe (keine Preise, oder
+ *              Zeitfenster und Horizont lassen nichts uebrig)
+ *   frist      die Frist hat das Fenster abgeschnitten; ohne sie waere
+ *              etwas dagewesen
+ *   budget     das Leistungsbudget hat alles weggenommen
+ *   wartet     geplant, aber jetzt gerade nicht dran
+ *   laeuft     laeuft nur noch, weil der Block schon begonnen hat
+ *              (Hysterese)
+ *   negativ    laeuft, weil der Preis negativ ist
+ *   fenster | stunden | scheiben | schwelle | mittel
+ *              laeuft aus dem Grund, den die Regelart nennt
+ * ------------------------------------------------------------------
  */
 function plan_rechnen($preise, $slotlen, $jetzt, $regeln, $umwelt, $g)
 {
     $slotlen = max(1, (int) $slotlen);
+    $jetzt = (int) $jetzt;
     $budget = isset($g['budget_kw']) ? (float) $g['budget_kw'] : 0.0;
+    $b2 = null;
+    if (isset($g['budget2_kw']) && (float) $g['budget2_kw'] > 0) {
+        $b2 = array(
+            'kw'  => (float) $g['budget2_kw'],
+            'von' => isset($g['budget2_von']) ? (int) $g['budget2_von'] : 0,
+            'bis' => isset($g['budget2_bis']) ? (int) $g['budget2_bis'] : 0,
+        );
+    }
     $eff = plan_effektivpreise($preise,
         isset($umwelt['pv']) ? $umwelt['pv'] : null,
         isset($g['pv_bonus']) ? $g['pv_bonus'] : 0,
         isset($g['pv_schwelle']) ? $g['pv_schwelle'] : 500);
-    $mittel = isset($umwelt['mittel']) ? (float) $umwelt['mittel'] : 0.0;
+    /* null heisst "nicht bekannt" und wird in plan_waehlen() aus den
+     * Kandidaten ersetzt. 0.0 waere ein Wert und kein Nichtwissen. */
+    $mittel = (isset($umwelt['mittel']) && is_numeric($umwelt['mittel']))
+        ? (float) $umwelt['mittel'] : null;
     $neg = !empty($umwelt['neg']);
+    $laufend = (isset($umwelt['laufend']) && is_array($umwelt['laufend']))
+        ? $umwelt['laufend'] : array();
 
     /* Reihenfolge: erst nach Rang, bei gleichem Rang nach der Nummer.
      * Der zweite Teil ist wichtig - ohne ihn haengt das Ergebnis bei
@@ -561,9 +830,35 @@ function plan_rechnen($preise, $slotlen, $jetzt, $regeln, $umwelt, $g)
         $e = array(
             'nr' => $i + 1, 'aktiv' => 0, 'in' => -1, 'rest' => 0, 'ct' => 0.0,
             'start' => -1, 'startmin' => 0, 'grund' => 'aus', 'slots' => array(),
-            'anzahl' => 0, 'verdraengt' => 0, 'gesperrt' => '',
+            'anzahl' => 0, 'noetig' => 0, 'fehlt' => 0,
+            'verdraengt' => 0, 'gesperrt' => '',
             'rang' => isset($r['rang']) ? (int) $r['rang'] : 50, 'leistung' => $leistung,
+            // ---- ab 1.1.0 ----
+            'ct_sofort' => 0.0, 'spart_ct' => 0.0, 'spart_eur' => 0.0, 'kwh' => 0.0,
+            'mangel' => '',
         );
+
+        /* ---- Maengel an der Regel selbst ----
+         *
+         * Nicht behoben, sondern GENANNT. Die Oberflaeche weist beides beim
+         * Speichern ab; hierher kommen sie, wenn die Werte aus einer
+         * zurueckgespielten Sicherung oder einer von Hand bearbeiteten
+         * Konfigurationsdatei stammen. Eine Regel, die aus einem Zahlendreher
+         * nie laufen kann, soll das sagen und nicht schweigen. */
+        $maengel = array();
+        if (plan_energie_ohne_leistung($r)) {
+            // Ohne Leistung gibt es keine Laufzeit; die Zahl kommt weiter
+            // aus 'n', und die eingetragene Energiemenge blieb ungenutzt.
+            $maengel[] = 'energie_ohne_leistung';
+        }
+        $smin = isset($r['soc_min']) ? (int) $r['soc_min'] : 0;
+        $smax = isset($r['soc_max']) ? (int) $r['soc_max'] : 0;
+        if ($smin > 0 && $smax > 0 && $smin >= $smax) {
+            // "erst ab 80 Prozent, aber nur bis 20" - die Regel kann nie
+            // laufen, und ohne diesen Hinweis sieht man nur eine Sperre.
+            $maengel[] = 'soc_reihe';
+        }
+        $e['mangel'] = implode(',', $maengel);
 
         if (empty($r['aktiv'])) { $erg[$i] = $e; continue; }
 
@@ -576,15 +871,53 @@ function plan_rechnen($preise, $slotlen, $jetzt, $regeln, $umwelt, $g)
         }
 
         $noetig = plan_slots_noetig($r, $slotlen);
+        $e['noetig'] = $noetig;
 
         /* Wie viele Scheiben faenden ohne Budget Platz? Die Differenz zu dem,
          * was uebrig bleibt, ist die Verdraengung - sie steht in der
          * Oberflaeche und beantwortet die Frage "warum laedt es nicht?". */
-        $ohne = plan_kandidaten($r, $eff, $jetzt, $slotlen, array(), 0);
-        $mit  = plan_kandidaten($r, $eff, $jetzt, $slotlen, $belegt, $budget);
+        $ohne = plan_kandidaten($r, $eff, $jetzt, $slotlen, array(), 0, null);
+        $mit  = plan_kandidaten($r, $eff, $jetzt, $slotlen, $belegt, $budget, $b2);
         $e['verdraengt'] = max(0, count($ohne) - count($mit));
 
+        /* Und wie viele waeren es OHNE die Frist? Nur so laesst sich
+         * "die Frist war zu knapp" von "es gab ohnehin nichts"
+         * unterscheiden - und genau das ist die Frage, die der Anwender
+         * am naechsten Morgen stellt. */
+        $ohne_frist = count($ohne);
+        if (isset($r['frist']) && (int) $r['frist'] >= 0) {
+            $rf = $r;
+            $rf['frist'] = -1;
+            $ohne_frist = count(plan_kandidaten($rf, $eff, $jetzt, $slotlen, array(), 0, null));
+        }
+
         $treffer = plan_waehlen($r, $mit, $slotlen, $noetig, $mittel);
+
+        /* Taktschutz auf die gewaehlten Scheiben, bevor irgendetwas gebucht
+         * wird - sonst stuende in der Belegung eine andere Leistung als im
+         * Fahrplan. */
+        $treffer = plan_takt($treffer, $mit, $slotlen,
+            isset($r['min_lauf']) ? $r['min_lauf'] : 0,
+            isset($r['min_pause']) ? $r['min_pause'] : 0);
+
+        /* Hysterese: ein Block, der schon laeuft, bleibt bis zu seinem Ende
+         * stehen - auch wenn die neue Preisreihe inzwischen eine billigere
+         * Scheibe kennt. Ohne das schaltet die Wallbox bei jedem Abruf um,
+         * und der Fahrplan von vor fuenf Minuten war eine Luege. */
+        $bis = isset($laufend[$i]) ? (int) $laufend[$i] : 0;
+        /* Vor der Hysterese merken, ob die laufende Scheibe ohnehin gewaehlt
+         * war. Nur wenn NICHT, laeuft die Regel allein wegen des begonnenen
+         * Blocks - und nur dann sagt 'laeuft' mehr als der Name der
+         * Regelart. Die Frage laesst sich hinterher nicht mehr stellen. */
+        $lief_ohnehin = in_array($jetzt, $treffer, true);
+        if ($bis > $jetzt) {
+            $vorhanden = array_flip($treffer);
+            for ($ts = $jetzt; $ts < $bis; $ts += $slotlen) {
+                if (isset($preise[$ts])) { $vorhanden[$ts] = 1; }
+            }
+            $treffer = array_keys($vorhanden);
+            sort($treffer);
+        }
 
         if ($treffer) {
             $e['slots'] = $treffer;
@@ -608,7 +941,13 @@ function plan_rechnen($preise, $slotlen, $jetzt, $regeln, $umwelt, $g)
                 }
                 $e['rest'] = $rest;
             }
-            $e['grund'] = $e['aktiv'] ? (string) $r['art'] : 'wartet';
+            $art = isset($r['art']) ? (string) $r['art'] : 'fenster';
+            $e['grund'] = $e['aktiv'] ? $art : 'wartet';
+            /* Laeuft die Scheibe nur, weil der Block schon begonnen hat?
+             * Dann sagt 'laeuft' mehr als der Name der Regelart. */
+            if ($e['aktiv'] && $bis > $jetzt && !$lief_ohnehin) {
+                $e['grund'] = 'laeuft';
+            }
 
             // Buchen - erst jetzt, und nur was wirklich gewaehlt wurde.
             if ($leistung > 0) {
@@ -620,6 +959,64 @@ function plan_rechnen($preise, $slotlen, $jetzt, $regeln, $umwelt, $g)
             // Nichts gefunden, aber es waere etwas dagewesen: das war das
             // Budget. Das gehoert unterschieden von "es gibt keine Stunde".
             $e['grund'] = 'budget';
+        } elseif ($ohne_frist > count($ohne)) {
+            // Ohne die Frist waere etwas dagewesen - dann war sie es.
+            $e['grund'] = 'frist';
+        } else {
+            $e['grund'] = 'keine';
+        }
+
+        /* ---- Fehlt etwas an der Laufzeit? ----
+         *
+         * Bis 1.0.0 bekam eine Regel mit n=5 und einer Frist, die nur zwei
+         * Stunden zulaesst, stillschweigend zwei Stunden: verdraengt=0,
+         * grund='fenster', und nichts im Rueckgabefeld sagte, dass drei
+         * Stunden fehlen. Genau die Frage "warum ist die Waesche nicht
+         * fertig?" blieb unbeantwortet.
+         *
+         * Bei den Arten 'schwelle' und 'mittel' gibt es keine Sollmenge -
+         * sie nehmen, was unter der Grenze liegt. Dort waere 'fehlt' eine
+         * Falschaussage. */
+        $art = isset($r['art']) ? (string) $r['art'] : 'fenster';
+        if (in_array($art, array('fenster', 'stunden', 'scheiben'), true)) {
+            $e['fehlt'] = max(0, $noetig - $e['anzahl']);
+            if ($e['fehlt'] > 0 && $e['anzahl'] > 0 && $ohne_frist > count($ohne)) {
+                // Teilweise geplant, und die Frist ist schuld.
+                $e['grund'] = $e['aktiv'] ? $art : 'frist';
+            }
+        }
+
+        /* ---- Was es sofort gekostet haette, und was das Warten bringt ----
+         *
+         * Die Gegenrechnung ist "jetzt einschalten und durchlaufen lassen":
+         * die naechsten $noetig Scheiben ab jetzt, der Reihe nach, egal was
+         * sie kosten. Nur so ist die Zahl ehrlich - ein Vergleich gegen den
+         * Tagesdurchschnitt waere geschmeichelt.
+         *
+         * Gerechnet wird mit den ECHTEN Preisen, nicht mit dem
+         * Effektivpreis: die PV-Gutschrift ist eine Lenkungsgroesse, kein
+         * Geld auf der Rechnung. */
+        if ($e['anzahl'] > 0) {
+            $summe = 0.0; $n = 0;
+            for ($k = 0; $k < $noetig; $k++) {
+                $ts = $jetzt + $k * $slotlen;
+                if (!isset($preise[$ts])) { break; }
+                $summe += (float) $preise[$ts];
+                $n++;
+            }
+            if ($n > 0) {
+                $e['ct_sofort'] = round($summe / $n, 3);
+                $e['spart_ct'] = round($e['ct_sofort'] - $e['ct'], 3);
+            }
+            /* Die verschobene Energiemenge: entweder eingetragen, oder aus
+             * Leistung mal geplanter Laufzeit. Ohne beides bleibt sie 0 -
+             * dann gibt es einen Preisvorteil je kWh, aber keine Summe. */
+            $energie = isset($r['energie']) ? (float) $r['energie'] : 0.0;
+            if ($energie <= 0 && $leistung > 0) {
+                $energie = $leistung * $e['anzahl'] * $slotlen / 3600.0;
+            }
+            $e['kwh'] = round($energie, 3);
+            $e['spart_eur'] = round($e['spart_ct'] / 100.0 * $energie, 2);
         }
 
         /* Negativer Preis sticht - wer dann nicht laedt, verschenkt Geld.
@@ -629,11 +1026,38 @@ function plan_rechnen($preise, $slotlen, $jetzt, $regeln, $umwelt, $g)
          * laufende Scheibe noch Leistung frei ist. */
         if (!empty($r['neg']) && $neg) {
             $schon = isset($belegt[$jetzt]) ? (float) $belegt[$jetzt] : 0.0;
-            $passt = ($budget <= 0 || $leistung <= 0
-                      || round($schon + ($e['aktiv'] ? 0 : $leistung), 4) <= round($budget, 4));
+            $kuenftig = round($schon + ($e['aktiv'] ? 0 : $leistung), 4);
+            $passt = true;
+            if ($leistung > 0) {
+                if ($budget > 0 && $kuenftig > round($budget, 4)) { $passt = false; }
+                if ($b2 !== null && $b2['kw'] > 0
+                    && plan_in_zeitfenster((int) date('G', $jetzt), $b2['von'], $b2['bis'])
+                    && $kuenftig > round($b2['kw'], 4)) { $passt = false; }
+            }
             if ($passt) {
                 if (!$e['aktiv'] && $leistung > 0) {
                     $belegt[$jetzt] = $schon + $leistung;
+                }
+                /* Die laufende Scheibe gehoert in die Trefferliste.
+                 *
+                 * Bis 1.0.0 wurde hier nur 'aktiv' gesetzt und intern
+                 * gebucht - 'slots' blieb leer. plan_belegung() liest aber
+                 * NUR 'slots'. Gemessen: drei Regeln zu 4 kW, Budget 9 kW,
+                 * Negativpreis, kein Treffer aus der Regelart - zwei Regeln
+                 * liefen mit zusammen 8 kW, und die Belegungstabelle zeigte
+                 * 0 kW. Wer dort nachsieht, warum die dritte nicht laeuft,
+                 * findet eine leere Tabelle und keine Antwort. */
+                if (!in_array($jetzt, $e['slots'], true)) {
+                    $e['slots'][] = $jetzt;
+                    sort($e['slots']);
+                    $e['anzahl'] = count($e['slots']);
+                    $summe = 0.0;
+                    foreach ($e['slots'] as $ts) {
+                        $summe += isset($preise[$ts]) ? (float) $preise[$ts] : 0.0;
+                    }
+                    $e['ct'] = round($summe / max(1, count($e['slots'])), 3);
+                    $e['start'] = (int) date('G', $jetzt);
+                    $e['startmin'] = (int) date('i', $jetzt);
                 }
                 $e['aktiv'] = 1;
                 $e['in'] = 0;
@@ -670,12 +1094,33 @@ function plan_belegung($fahrplan)
 /* ==================================================================
  * Selbsttest
  *
- * Dreissig Faelle, jeder von Hand nachgerechnet. Sie laufen ohne Netz,
- * ohne Dateien und mit einer festen Uhrzeit - deshalb ist das Ergebnis
- * reproduzierbar und taugt als Knopf im Reiter Test.
+ * Jeder Fall von Hand nachgerechnet. Sie laufen ohne Netz, ohne Dateien
+ * und mit einer festen Uhrzeit - deshalb ist das Ergebnis reproduzierbar
+ * und taugt als Knopf im Reiter Test. Die Zahl der Faelle steht in der
+ * ersten Ausgabezeile und wird gezaehlt, nicht behauptet.
  *
  * Die Preisreihe ist bewusst klein und von Hand gesetzt, damit sich jeder
  * erwartete Wert nachzaehlen laesst.
+ *
+ * ------------------------------------------------------------------
+ * WAS 1.1.0 AN FAELLEN DAZUBEKOMMEN HAT - UND WARUM
+ * ------------------------------------------------------------------
+ * Der Selbsttest von 1.0.0 meldete 53 gruene Faelle. Ein Mutationslauf
+ * (28 absichtliche Verfaelschungen im Quelltext, danach der Selbsttest)
+ * zeigte, dass 11 davon UEBERLEBTEN - der Test prueft diese Stellen also
+ * gar nicht. Eine gruene Zeile deckt nur, was sie misst.
+ *
+ * Ungeprueft waren unter anderem:
+ *   - die Regelarten 'stunden' und 'mittel' wurden nie geplant
+ *   - kein Fahrplanfall setzte ein Zeitfenster (von/bis)
+ *   - keiner hatte zwei Regeln mit GLEICHEM Rang
+ *   - keiner hatte ein Loch in der Preisreihe
+ *   - keiner rechnete gegen die beiden Sommerzeit-Umstellungstage;
+ *     genau dort steckte ein Fehler, der ein Jahr lang mitlief
+ *   - der Vergangenheitsfilter, die Einheit 'w', eine inaktive Regel
+ *
+ * Diese Faelle stehen jetzt unten unter "Nachgezogen". Sie sind nicht
+ * schoener als die anderen - sie sind die, die gefehlt haben.
  * ================================================================== */
 
 /** Eine Preisreihe: 24 Stunden ab $start, Preise aus der Liste. */
@@ -931,15 +1376,326 @@ function plan_selbsttest()
     $preise3 = plan_test_reihe($t0, array(10, 20, 20, 20, 30, 30, 30, 30));
     $pv3 = array($t0 + 7200 => 1000);
     $u3 = array_merge($u0, array('pv' => $pv3));
+    $gpv = array('budget_kw' => 0.0, 'pv_bonus' => 15.0, 'pv_schwelle' => 500);
     $fp = plan_rechnen($preise3, 3600, $t0,
-        array(plan_test_regel(array('art' => 'fenster', 'n' => 1))), $u3,
-        array('budget_kw' => 0.0, 'pv_bonus' => 15.0, 'pv_schwelle' => 500));
+        array(plan_test_regel(array('art' => 'fenster', 'n' => 1))), $u3, $gpv);
     $pruefe('PV-Gutschrift laesst die Sonnenstunde gewinnen', $fp[0]['start'], 2);
+    /* Der ausgewiesene Preis wird an DIESEM Lauf geprueft, nicht am
+     * Lauf ohne Gutschrift.
+     *
+     * Bis 1.0.0 stand die Pruefung unter dem Lauf mit $g0 - also ohne
+     * Bonus. Dort SIND Effektivpreis und Boersenpreis identisch, der Fall
+     * konnte die beiden gar nicht unterscheiden und pruefte nichts.
+     * Belegt durch eine Mutation: ersetzte man in plan_rechnen() den
+     * Boersenpreis durch den Effektivpreis, blieb der Selbsttest gruen.
+     * Hier ist der Unterschied sichtbar: die Sonnenstunde kostet echte
+     * 20 ct, ihr Effektivpreis ist 5 ct. */
+    $pruefe('Der ausgewiesene Preis ist der echte, nicht der Effektivpreis',
+        $fp[0]['ct'], 20.0);
     $fp = plan_rechnen($preise3, 3600, $t0,
         array(plan_test_regel(array('art' => 'fenster', 'n' => 1))), $u3, $g0);
     $pruefe('Ohne Gutschrift gewinnt die billigste Stunde', $fp[0]['start'], 0);
-    $pruefe('Der ausgewiesene Preis bleibt der echte, nicht der Effektivpreis',
-        $fp[0]['ct'], 10.0);
+    $pruefe('Ohne Gutschrift stimmt der Preis ebenfalls', $fp[0]['ct'], 10.0);
+
+    /* ==================================================================
+     * Nachgezogen in 1.1.0 - die Faelle, die gefehlt haben
+     * ================================================================== */
+
+    /* ---- Sommerzeit: die beiden Umstellungstage ----
+     * Der Fehler, den 1.0.0 ein Jahr lang mitgefuehrt hat. Am 29.03. hat
+     * der Tag 23 Stunden, am 25.10. deren 25 - "Tagesbeginn + 7 * 3600"
+     * trifft dann 08:00 bzw. 06:00 statt 07:00. */
+    $pruefe('Frist 7 Uhr am 29.03. (Tag mit 23 Stunden)',
+        plan_frist_ende(mktime(0, 0, 0, 3, 29, 2026), 7), mktime(7, 0, 0, 3, 29, 2026));
+    $pruefe('Frist 7 Uhr am 25.10. (Tag mit 25 Stunden)',
+        plan_frist_ende(mktime(0, 0, 0, 10, 25, 2026), 7), mktime(7, 0, 0, 10, 25, 2026));
+    $pruefe('Frist ueber die Umstellung hinweg (24.10. 09 Uhr -> 25.10. 07 Uhr)',
+        plan_frist_ende(mktime(9, 0, 0, 10, 24, 2026), 7), mktime(7, 0, 0, 10, 25, 2026));
+    /* Die uebersprungene Stunde: 02:00 gibt es am 29.03. nicht. mktime
+     * liefert dafuer 03:00 - die naechste Uhrzeit, die es wirklich gibt. */
+    $pruefe('Frist 2 Uhr am 29.03. faellt in die uebersprungene Stunde',
+        plan_frist_ende(mktime(0, 0, 0, 3, 29, 2026), 2), mktime(3, 0, 0, 3, 29, 2026));
+
+    /* ---- Einheiten, klein und gross geschrieben ---- */
+    $pruefe('Einheit w bei Stundenscheiben: 1000 W -> 1000 Wh',
+        plan_nach_wh(1000, 'w', 3600), 1000.0);
+    $pruefe('Einheit w bei Viertelstunden: 1000 W -> 250 Wh',
+        plan_nach_wh(1000, 'w', 900), 250.0);
+    $pruefe('Einheit KW gross geschrieben zaehlt wie kw',
+        plan_nach_wh(1, 'KW', 3600), 1000.0);
+    $pruefe('Unbekannte Einheit bleibt Wh', plan_nach_wh(7, 'furlong', 3600), 7.0);
+
+    /* ---- Zeitfenster im Fahrplan ----
+     * Preise 30 30 10 10 30 ... Das billige Fenster liegt 02:00-03:00,
+     * das Zeitfenster laesst nur 04:00-06:00 zu. Die Regel muss auf 04:00
+     * ausweichen, obwohl 02:00 billiger waere. */
+    $fp = plan_rechnen($preise, 3600, $t0,
+        array(plan_test_regel(array('art' => 'fenster', 'n' => 1, 'von' => 4, 'bis' => 6))),
+        $u0, $g0);
+    $pruefe('Zeitfenster 4 bis 6 schliesst die billige Stunde aus',
+        array($fp[0]['start'], $fp[0]['aktiv']), array(4, 0));
+
+    /* ---- Vergangenheit wird nicht geplant ----
+     * Dieselbe Reihe, aber jetzt ist es 03:00. Die billigen Stunden 02:00
+     * und 03:00 sind angebrochen bzw. vorbei - 03:00 zaehlt noch. */
+    $fp = plan_rechnen($preise, 3600, $t0 + 3 * 3600,
+        array(plan_test_regel(array('art' => 'fenster', 'n' => 1))), $u0, $g0);
+    $pruefe('Was vorbei ist, wird nicht mehr geplant', $fp[0]['start'], 3);
+
+    /* ---- Inaktive Regel ---- */
+    $fp = plan_rechnen($preise, 3600, $t0,
+        array(plan_test_regel(array('aktiv' => 0))), $u0, $g0);
+    $pruefe('Inaktive Regel: aus, ohne Treffer',
+        array($fp[0]['aktiv'], $fp[0]['grund'], $fp[0]['anzahl']), array(0, 'aus', 0));
+
+    /* ---- Loch in der Preisreihe ----
+     * Ueber eine fehlende Stunde darf nicht geklebt werden, sonst stuende
+     * die Wallbox mittendrin.
+     *
+     * Die Reihe hat die Stunden 0, 1, [3, 4], [6] - zwei Loecher, und das
+     * laengste zusammenhaengende Stueck ist deshalb ZWEI Stunden lang.
+     * Drei am Stueck kann es nicht geben.
+     *
+     * (Beim ersten Anlauf stand hier eine Reihe mit nur einem Loch. Sie
+     * enthielt sehr wohl drei zusammenhaengende Stunden - der Fall war
+     * falsch gerechnet, nicht der Planer. Nachgezaehlt statt geglaubt.) */
+    $loch = array($t0 => 30.0, $t0 + 3600 => 10.0,
+                  $t0 + 10800 => 10.0, $t0 + 14400 => 10.0,
+                  $t0 + 21600 => 30.0);
+    $fp = plan_rechnen($loch, 3600, $t0,
+        array(plan_test_regel(array('art' => 'fenster', 'n' => 3))), $u0, $g0);
+    $pruefe('Ueber ein Loch in der Preisreihe wird nicht geklebt',
+        $fp[0]['anzahl'], 0);
+    $fp = plan_rechnen($loch, 3600, $t0,
+        array(plan_test_regel(array('art' => 'fenster', 'n' => 2))), $u0, $g0);
+    $pruefe('Zwei Stunden am Stueck gibt es trotz Loch: 03:00 und 04:00',
+        array($fp[0]['start'], $fp[0]['anzahl']), array(3, 2));
+
+    /* ---- Gleicher Rang: die Regelnummer entscheidet, immer gleich ---- */
+    $regeln_gl = array(
+        plan_test_regel(array('art' => 'fenster', 'n' => 1, 'leistung' => 3.7, 'rang' => 5)),
+        plan_test_regel(array('art' => 'fenster', 'n' => 1, 'leistung' => 3.7, 'rang' => 5)),
+    );
+    $fp = plan_rechnen($preise2, 3600, $t0, $regeln_gl, $u0, $g1);
+    $pruefe('Gleicher Rang: die kleinere Regelnummer waehlt zuerst',
+        array($fp[0]['start'], $fp[1]['start']), array(2, 3));
+
+    /* ---- Regelart 'stunden' ----
+     * Viertelstundenreihe: 4x30, 4x10, 4x20, 4x30. Die guenstigste VOLLE
+     * Stunde ist 01:00. Eine Stunde = 4 Scheiben. */
+    $vs2 = plan_test_reihe($t0, array(30, 30, 30, 30, 10, 10, 10, 10,
+                                      20, 20, 20, 20, 30, 30, 30, 30), 900);
+    $fp = plan_rechnen($vs2, 900, $t0,
+        array(plan_test_regel(array('art' => 'stunden', 'n' => 1))), $u0, $g0);
+    $pruefe('Stunden: die guenstigste volle Stunde ist 01:00, vier Scheiben',
+        array($fp[0]['start'], $fp[0]['anzahl']), array(1, 4));
+    $fp = plan_rechnen($vs2, 900, $t0,
+        array(plan_test_regel(array('art' => 'stunden', 'n' => 2))), $u0, $g0);
+    $pruefe('Stunden: zwei Stunden sind acht Scheiben, verstreut erlaubt',
+        $fp[0]['anzahl'], 8);
+    /* Eine angebrochene Stunde wird nicht bewertet: ab 00:15 fehlt der
+     * ersten Stunde eine Scheibe, sie faellt aus der Wertung. */
+    $fp = plan_rechnen($vs2, 900, $t0 + 900,
+        array(plan_test_regel(array('art' => 'stunden', 'n' => 1))), $u0, $g0);
+    $pruefe('Stunden: angebrochene Stunden werden nicht bewertet',
+        array($fp[0]['start'], $fp[0]['anzahl']), array(1, 4));
+
+    /* ---- Regelart 'mittel' ---- */
+    $preise_m = plan_test_reihe($t0, array(10, 20, 30, 20, 20, 20, 20, 20));
+    $fp = plan_rechnen($preise_m, 3600, $t0,
+        array(plan_test_regel(array('art' => 'mittel', 'prozent' => 20))),
+        array_merge($u0, array('mittel' => 20.0)), $g0);
+    $pruefe('Mittel: 20 Prozent unter 20 ct ist die Grenze 16 ct - nur die 10 ct',
+        array($fp[0]['anzahl'], $fp[0]['aktiv']), array(1, 1));
+    /* Und der Fall, an dem die alte Rechnung in die falsche Richtung lief:
+     * bei einem Mittel von -10 ct war die Grenze -8 - also OBERHALB des
+     * Mittels, die Regel wurde weiter statt enger. Richtig sind -12. */
+    $preise_n = plan_test_reihe($t0, array(-30.0, -12.0, -10.0, -8.0, 0.0, 0.0, 0.0, 0.0));
+    $fp = plan_rechnen($preise_n, 3600, $t0,
+        array(plan_test_regel(array('art' => 'mittel', 'prozent' => 20))),
+        array_merge($u0, array('mittel' => -10.0)), $g0);
+    $pruefe('Mittel: bei negativem Tagesmittel ist die Grenze -12, nicht -8',
+        $fp[0]['anzahl'], 2);
+    /* Ein echtes negatives Mittel ist nicht dasselbe wie "nicht bekannt". */
+    $fp = plan_rechnen($preise_n, 3600, $t0,
+        array(plan_test_regel(array('art' => 'mittel', 'prozent' => 20))),
+        array_merge($u0, array('mittel' => null)), $g0);
+    $pruefe('Mittel: ohne Angabe wird aus den Kandidaten gemittelt',
+        $fp[0]['anzahl'] > 0, true);
+
+    /* ---- Regelart 'scheiben' (neu in 1.1.0) ----
+     * Viertelstunden 30 10 30 10 30 10 ... Die vier guenstigsten
+     * EINZELNEN Scheiben sind die vier Zehner - ohne Stundenraster und
+     * ohne Zusammenhang. */
+    $vs3 = plan_test_reihe($t0, array(30, 10, 30, 10, 30, 10, 30, 10), 900);
+    $fp = plan_rechnen($vs3, 900, $t0,
+        array(plan_test_regel(array('art' => 'scheiben', 'n' => 1))), $u0, $g0);
+    $pruefe('Scheiben: die vier guenstigsten Einzelscheiben, verstreut',
+        array($fp[0]['anzahl'], $fp[0]['ct']), array(4, 10.0));
+    $pruefe('Scheiben: die erste liegt um 00:15',
+        $fp[0]['slots'][0], $t0 + 900);
+
+    /* ---- Taktschutz ----
+     * Dieselbe Reihe: ohne Schutz vier Einzelscheiben mit Loechern.
+     * Mit min_pause 30 werden die Luecken von je 15 Minuten zugemacht. */
+    $fp = plan_rechnen($vs3, 900, $t0,
+        array(plan_test_regel(array('art' => 'scheiben', 'n' => 1, 'min_pause' => 30))),
+        $u0, $g0);
+    $pruefe('Mindestpause 30 min macht die Loecher von 15 min zu',
+        $fp[0]['anzahl'], 7);
+    /* Mindestlaufzeit: ein einzelner Block von 15 Minuten wird auf 60
+     * verlaengert, solange Kandidaten nachkommen. */
+    $vs4 = plan_test_reihe($t0, array(30, 10, 30, 30, 30, 30, 30, 30), 900);
+    $fp = plan_rechnen($vs4, 900, $t0,
+        array(plan_test_regel(array('art' => 'scheiben', 'n' => 1, 'min_lauf' => 60))),
+        $u0, $g0);
+    $pruefe('Mindestlaufzeit 60 min verlaengert den Block auf vier Scheiben',
+        $fp[0]['anzahl'], 4);
+    /* Und wenn nichts nachkommt, faellt der Block weg - ein Block unter
+     * der Mindestlaufzeit ist genau das, was die Regel verhindern soll. */
+    $vs5 = array($t0 => 30.0, $t0 + 900 => 10.0);
+    $fp = plan_rechnen($vs5, 900, $t0,
+        array(plan_test_regel(array('art' => 'scheiben', 'n' => 1, 'min_lauf' => 60))),
+        $u0, $g0);
+    $pruefe('Zu kurzer Block ohne Nachschub faellt weg', $fp[0]['anzahl'], 0);
+    $pruefe('Ohne Taktschutz bleibt die Auswahl unveraendert',
+        count(plan_takt(array($t0, $t0 + 1800), array(), 900, 0, 0)), 2);
+
+    /* ---- Hysterese ----
+     * Preise 30 10 ...: ohne Hysterese laeuft die Regel um 00:00 nicht.
+     * Mit einem laufenden Block bis 01:00 laeuft sie trotzdem weiter. */
+    $preise_h = plan_test_reihe($t0, array(30, 10, 10, 30, 30, 30, 30, 30));
+    $fp = plan_rechnen($preise_h, 3600, $t0,
+        array(plan_test_regel(array('art' => 'fenster', 'n' => 1))), $u0, $g0);
+    $pruefe('Ohne Hysterese laeuft die Regel um 00:00 nicht', $fp[0]['aktiv'], 0);
+    $u_h = array_merge($u0, array('laufend' => array(0 => $t0 + 3600)));
+    $fp = plan_rechnen($preise_h, 3600, $t0,
+        array(plan_test_regel(array('art' => 'fenster', 'n' => 1))), $u_h, $g0);
+    $pruefe('Hysterese: der begonnene Block laeuft bis zu seinem Ende',
+        array($fp[0]['aktiv'], $fp[0]['grund']), array(1, 'laeuft'));
+    /* Eine abgelaufene Hysterese haelt nichts mehr fest. */
+    $u_h2 = array_merge($u0, array('laufend' => array(0 => $t0 - 3600)));
+    $fp = plan_rechnen($preise_h, 3600, $t0,
+        array(plan_test_regel(array('art' => 'fenster', 'n' => 1))), $u_h2, $g0);
+    $pruefe('Abgelaufene Hysterese haelt nichts fest', $fp[0]['aktiv'], 0);
+
+    /* ---- Zweites Budget (Paragraf 14a) ----
+     * Erstes Budget 10 kW, zweites 4 kW von 00 bis 04 Uhr. Eine Regel mit
+     * 6 kW findet in der Sperrzeit nichts und weicht auf 04:00 aus. */
+    $preise_b = plan_test_reihe($t0, array(10, 10, 10, 10, 20, 20, 20, 20));
+    $g14 = array('budget_kw' => 10.0, 'pv_bonus' => 0.0, 'pv_schwelle' => 500,
+                 'budget2_kw' => 4.0, 'budget2_von' => 0, 'budget2_bis' => 4);
+    $fp = plan_rechnen($preise_b, 3600, $t0,
+        array(plan_test_regel(array('art' => 'fenster', 'n' => 1, 'leistung' => 6.0))),
+        $u0, $g14);
+    $pruefe('Paragraf 14a: 6 kW weichen aus der Sperrzeit auf 04:00 aus',
+        $fp[0]['start'], 4);
+    /* Ohne das zweite Budget nimmt dieselbe Regel die billige Stunde. */
+    $fp = plan_rechnen($preise_b, 3600, $t0,
+        array(plan_test_regel(array('art' => 'fenster', 'n' => 1, 'leistung' => 6.0))),
+        $u0, array('budget_kw' => 10.0, 'pv_bonus' => 0.0, 'pv_schwelle' => 500));
+    $pruefe('Ohne zweites Budget nimmt sie 00:00', $fp[0]['start'], 0);
+    /* 3 kW passen auch in der Sperrzeit. */
+    $fp = plan_rechnen($preise_b, 3600, $t0,
+        array(plan_test_regel(array('art' => 'fenster', 'n' => 1, 'leistung' => 3.0))),
+        $u0, $g14);
+    $pruefe('Paragraf 14a: 3 kW passen in die Sperrzeit', $fp[0]['start'], 0);
+
+    /* ---- Frist zu knapp: fehlt und grund ----
+     * n=5, aber die Frist um 02:00 laesst nur zwei Stunden zu. */
+    $fp = plan_rechnen($preise, 3600, $t0,
+        array(plan_test_regel(array('art' => 'fenster', 'n' => 5, 'frist' => 2))), $u0, $g0);
+    $pruefe('Frist zu knapp: zwei von fuenf Stunden, drei fehlen',
+        array($fp[0]['anzahl'], $fp[0]['noetig'], $fp[0]['fehlt']), array(2, 5, 3));
+    /* Ohne Frist fehlt nichts. */
+    $fp = plan_rechnen($preise, 3600, $t0,
+        array(plan_test_regel(array('art' => 'fenster', 'n' => 5))), $u0, $g0);
+    $pruefe('Ohne Frist fehlt nichts', $fp[0]['fehlt'], 0);
+    /* Bei 'schwelle' gibt es keine Sollmenge - dort waere 'fehlt' eine
+     * Falschaussage. */
+    $fp = plan_rechnen($preise, 3600, $t0,
+        array(plan_test_regel(array('art' => 'schwelle', 'schwelle' => 15))), $u0, $g0);
+    $pruefe('Bei schwelle bleibt fehlt auf 0', $fp[0]['fehlt'], 0);
+    /* Und wenn die Frist alles abschneidet: grund sagt, dass sie es war. */
+    $fp = plan_rechnen($preise, 3600, $t0 + 3 * 3600,
+        array(plan_test_regel(array('art' => 'fenster', 'n' => 1, 'von' => 5, 'bis' => 7,
+                                    'frist' => 4))), $u0, $g0);
+    $pruefe('Frist schneidet alles ab: grund nennt die Frist',
+        $fp[0]['grund'], 'frist');
+    /* Gibt es ohnehin nichts, heisst der Grund 'keine' und nicht 'frist'. */
+    $fp = plan_rechnen(array(), 3600, $t0,
+        array(plan_test_regel(array('art' => 'fenster', 'n' => 1))), $u0, $g0);
+    $pruefe('Ohne Preise heisst der Grund keine', $fp[0]['grund'], 'keine');
+
+    /* ---- Ersparnis ----
+     * Preise 30 30 10 10 ...: sofort losfahren kostet zwei Stunden zu je
+     * 30 ct, geplant sind zwei zu je 10 ct. Ersparnis 20 ct/kWh; bei
+     * 3,7 kW mal zwei Stunden sind das 7,4 kWh und 1,48 Euro. */
+    $fp = plan_rechnen($preise, 3600, $t0,
+        array(plan_test_regel(array('art' => 'fenster', 'n' => 2, 'leistung' => 3.7))),
+        $u0, $g0);
+    $pruefe('Ersparnis: sofort 30 ct, geplant 10 ct, Vorteil 20 ct/kWh',
+        array($fp[0]['ct_sofort'], $fp[0]['ct'], $fp[0]['spart_ct']),
+        array(30.0, 10.0, 20.0));
+    $pruefe('Ersparnis in Euro: 7,4 kWh mal 20 ct sind 1,48 Euro',
+        array($fp[0]['kwh'], $fp[0]['spart_eur']), array(7.4, 1.48));
+    /* Eine eingetragene Energiemenge sticht die Rechnung aus Leistung mal
+     * Laufzeit - sie ist die Angabe, die der Mensch kennt. */
+    $fp = plan_rechnen($preise, 3600, $t0,
+        array(plan_test_regel(array('art' => 'fenster', 'n' => 2, 'leistung' => 3.7,
+                                    'energie' => 5.0))), $u0, $g0);
+    $pruefe('Eingetragene Energiemenge gilt fuer die Euro-Rechnung',
+        array($fp[0]['kwh'], $fp[0]['spart_eur']), array(5.0, 1.0));
+
+    /* ---- Maengel an der Regel ---- */
+    $fp = plan_rechnen($preise, 3600, $t0,
+        array(plan_test_regel(array('energie' => 7.0, 'leistung' => 0.0))), $u0, $g0);
+    $pruefe('Energie ohne Leistung wird gemeldet',
+        $fp[0]['mangel'], 'energie_ohne_leistung');
+    $fp = plan_rechnen($preise, 3600, $t0,
+        array(plan_test_regel(array('soc_min' => 80, 'soc_max' => 20))), $u0, $g0);
+    $pruefe('soc_min ueber soc_max wird gemeldet', $fp[0]['mangel'], 'soc_reihe');
+    $fp = plan_rechnen($preise, 3600, $t0,
+        array(plan_test_regel()), $u0, $g0);
+    $pruefe('Eine saubere Regel meldet keinen Mangel', $fp[0]['mangel'], '');
+
+    /* ---- Eine Regel ohne die Plugin-Felder darf nicht knallen ----
+     * So sieht sie aus, wenn sie aus einer alten Sicherung kommt. Es darf
+     * keine Warnung geben und der Grund darf nicht leer sein. */
+    $fp = plan_rechnen($preise, 3600, $t0, array(array('aktiv' => 1)), $u0, $g0);
+    $pruefe('Regel ohne Felder: kein Absturz, ein benannter Grund',
+        $fp[0]['grund'] !== '', true);
+
+    /* ---- Belegung: zwei Regeln in DERSELBEN Stunde werden addiert ----
+     * Der alte Fall prueft nur eine Regel je Stunde und konnte die
+     * Summierung gar nicht sehen. */
+    $regeln_s = array(
+        plan_test_regel(array('art' => 'fenster', 'n' => 1, 'leistung' => 3.7, 'rang' => 1)),
+        plan_test_regel(array('art' => 'fenster', 'n' => 1, 'leistung' => 2.0, 'rang' => 2)),
+    );
+    $bel2 = plan_belegung(plan_rechnen($preise2, 3600, $t0, $regeln_s, $u0, $g0));
+    $pruefe('Belegung: zwei Regeln in derselben Stunde ergeben 5,7 kW',
+        array(count($bel2), array_values($bel2)), array(1, array(5.7)));
+
+    /* ---- Negativpreis fuellt die Belegung ----
+     * Zwei Regeln zu 4 kW, Budget 9 kW, Schwelle, die niemand erfuellt.
+     * Zwei laufen, die Belegung muss 8 kW zeigen - bis 1.0.0 zeigte sie
+     * eine leere Tabelle. */
+    $regeln_n = array(
+        plan_test_regel(array('art' => 'schwelle', 'schwelle' => -99, 'leistung' => 4.0,
+                              'rang' => 1, 'neg' => 1)),
+        plan_test_regel(array('art' => 'schwelle', 'schwelle' => -99, 'leistung' => 4.0,
+                              'rang' => 2, 'neg' => 1)),
+        plan_test_regel(array('art' => 'schwelle', 'schwelle' => -99, 'leistung' => 4.0,
+                              'rang' => 3, 'neg' => 1)),
+    );
+    $fp = plan_rechnen($preise, 3600, $t0, $regeln_n, array_merge($u0, array('neg' => 1)),
+        array('budget_kw' => 9.0, 'pv_bonus' => 0.0, 'pv_schwelle' => 500));
+    $pruefe('Negativpreis: zwei laufen, die dritte nicht',
+        array($fp[0]['aktiv'], $fp[1]['aktiv'], $fp[2]['aktiv']), array(1, 1, 0));
+    $bel3 = plan_belegung($fp);
+    $pruefe('Negativpreis: die Belegung zeigt die 8 kW, nicht nichts',
+        array(count($bel3), array_values($bel3)), array(1, array(8.0)));
 
     array_unshift($z, sprintf('Planer %s: %d Faelle geprueft, %d Fehlschlaege.',
         PLAN_FASSUNG, $anzahl, $fehl), '');

@@ -7,6 +7,240 @@ HTTP-Endpunkt als Rückfallebene.
 
 ---
 
+## Was 1.1.0 bringt — und was es behebt
+
+Diese Fassung ist aus einer Zeile-für-Zeile-Durchsicht des ganzen Plugins
+entstanden. Sie behebt **zwölf Befunde** und ergänzt **elf Funktionen**.
+Alles, was hier steht, ist unter PHP 7.4.33 *und* 8.4.24 nachgemessen.
+
+### Der schwerste Befund: der Miniserver bekam die Schaltregeln praktisch nie
+
+`oc_state()` schrieb seinen Zwischenspeicher **mitten in der Funktion**.
+Alles, was danach noch entstand — die Stundenprofile `ph`/`pm`/`pr`, die
+PV-Summe, der Speicherstand, **die Regeln** und `planlast` —, fehlte darin.
+Am Endpunkt gemessen, zwei Aufrufe hintereinander:
+
+| | Felder | fehlten |
+|---|---|---|
+| 1. Aufruf, frisch gerechnet | 146 | – |
+| 2. Aufruf, aus dem Zwischenspeicher | **118** | `REGEL1_AKTIV` … `REGEL4_RANG`, `PH/PM/PR00–23` |
+
+Und weil der minütliche Cron den Zwischenspeicher selbst füllt, war das der
+Regelfall und nicht die Ausnahme. Nebenwirkung: die MQTT-Sendebremse „nur
+bei Änderung senden" war wirkungslos, weil ihre Signatur im Minutentakt
+zwischen 145 und 117 Schlüsseln sprang.
+
+*Jetzt*: der Zwischenspeicher wird geschrieben, wenn der Wert fertig ist.
+Drei Aufrufe hintereinander liefern **163 / 163 / 163** Felder und sind
+zeichenweise gleich — bis auf den Zeitstempel des Lebenszeichens.
+
+### Der Knopf „Vorlage herunterladen" war unter PHP 8 tot
+
+Drei Thementexte trugen zwei Platzhalter (`%d%s`), `oc_thema_text()` reicht
+aber nur einen an `sprintf()`. Unter PHP 7.4 gab das eine Warnung und eine
+Vorlage mit kaputten Kommentaren, unter **PHP 8 einen Fatalfehler** — auf
+LoxBerry 4 lieferte der Knopf also eine leere Seite.
+
+Gefunden wurde das erst, als die Themenliste auch auf der Seite über
+`oc_thema_text()` lief. Vorher wurde die Funktion **ausschließlich** im
+Vorlagen-Knopf benutzt, und den hatte kein Prüfstand je gedrückt.
+
+### Weitere behobene Befunde
+
+* **Die Sicherungsdatei prüfte nur die Schlüssel, nie die Werte.** Von zehn
+  von Hand gebauten Dateien wurden **neun angenommen** — darunter ein
+  MQTT-Präfix mit Zeilenumbruch, das die UDP-Zeile an den Gateway in zwei
+  zerlegt und ein erfundenes Thema erzeugt. Jetzt wird jeder Wert gegen
+  dieselbe Positivliste geprüft, die auch die Konfiguration benutzt; von
+  denselben zehn Dateien gehen noch **drei** durch, und alle drei mit
+  Absicht (siehe unten).
+* **Ein erfolgreiches Zurückspielen meldete gar nichts.** Die
+  Meldungsablage `$oc_meldungen` wurde beschrieben, aber nirgends angelegt
+  und nirgends ausgegeben — genau ein Vorkommen in der ganzen Datei.
+* **Nach dem Zurückspielen zeigte die Seite den alten Stand.** Der Block
+  „Anzeige vorbereiten" lief vor dem Handler. Er steht jetzt hinter *allen*
+  Handlern, damit es kein künftiger vergessen kann.
+* **Der Warntext am Sicherungsknopf war unwahr.** Er behauptete, die Datei
+  enthalte die Zugangsdaten; gemessen enthielt sie keine.
+* **56 rohe `%d` standen auf der Seite** — die Themenliste und die
+  Baustein-Liste gaben den Sprachtext ungefüllt aus, samt Verlust des vom
+  Anwender vergebenen Regelnamens.
+* **Der Rückfallpfad des Cron endete im Fatalfehler.** `lb_wurzel_ermitteln()`
+  wurde in Zeile 25 gerufen und erst am Dateiende *bedingt* definiert —
+  PHP hebt das nicht vor. Der Rückfall war nie eine Absicherung, sondern
+  eine Erzählung; `cron.01min` leitet nach `/dev/null` um.
+* **Keine Cron-Sperre**, obwohl ein Lauf aus den Zeitschranken bis 151 s
+  dauern kann — bei einem Takt von 60 s.
+* **Die Frist war an zwei Tagen im Jahr falsch.** `plan_frist_ende()`
+  rechnete im ersten Zweig „Tagesbeginn + Stunde × 3600" — genau der
+  Fehler, vor dem der Kommentar im zweiten Zweig warnt. Am 29.03. war die
+  Wäsche eine Stunde **nach** der Frist fertig, am 25.10. eine Stunde davor.
+* **Die Belegungstabelle unterschlug Geräte, die der Negativpreis
+  eingeschaltet hatte.** Zwei Regeln liefen mit zusammen 8 kW, die Tabelle
+  zeigte 0 kW.
+* **`mittel` rechnete bei negativem Tagesmittel in die falsche Richtung**
+  (Grenze −8 statt −12) und hielt ein echtes negatives Mittel für „nicht
+  bekannt".
+* **Ein Tag Historie ging verloren**, wenn der LoxBerry zwischen 23:50 und
+  23:59 aus war — und die Historie ist die Grundlage des Kostenvergleichs.
+
+### Der Selbsttest des Planers: von 53 auf 101 Fälle
+
+Der alte Selbsttest meldete 53 grüne Fälle — der Kommentar daneben sprach
+von „dreißig". Ein Mutationslauf (28 absichtliche Verfälschungen im
+Quelltext) zeigte: **11 überlebten**, der Test prüfte diese Stellen also
+gar nicht. Ungeprüft waren unter anderem die Regelarten `stunden` und
+`mittel`, jedes Zeitfenster, der Rang-Gleichstand, ein Loch in der
+Preisreihe — und die beiden Sommerzeit-Umstellungstage, wo der Fehler saß.
+
+Jetzt: **101 Fälle, 0 Fehlschläge**, unter beiden PHP-Fassungen. Die Zahl
+steht nicht mehr im Fließtext, sondern wird gezählt.
+
+---
+
+## Neu in 1.1.0
+
+### Sichern und Zurückspielen: jetzt vollständig
+
+Die zwei Knöpfe gab es schon. Neu ist der Haken **Zugangsdaten
+mitsichern**. Ohne ihn enthält die Datei alle Einstellungen und das
+Aktionstoken; mit ihm zusätzlich E-Mail, Passwort und Kundennummer — und
+erst damit ist der erklärte Zweck erfüllt, der **Umzug auf einen zweiten
+LoxBerry**. Ohne die Zugangsdaten stünden dort alle Felder richtig, und es
+kämen trotzdem keine Preise.
+
+Die Datei trägt jetzt einen lesbaren Kopf (`_hinweis`, `_plugin`,
+`_fassung`, `_stand`), den die Leseseite überspringt statt ihn als fremd
+abzuweisen. Beim Zurückspielen gilt weiterhin **alles oder nichts**, und
+alle Beanstandungen kommen auf einmal.
+
+Drei Dinge gehen absichtlich durch: eine Adresse auf `127.0.0.1` (der
+dokumentierte Fall ist ein Zähler-Plugin auf demselben LoxBerry), eine
+eigene Ansage-Vorlage (der Modus *custom* ist eine freie Adresse), und eine
+erfundene Regelart (die Konfiguration setzt sie nachvollziehbar auf
+`fenster`). Ein leeres Aktionstoken in der Datei wird durch ein frisches
+ersetzt — und das steht dann als Meldung auf der Seite.
+
+### Ein Wachposten am Eingang
+
+Das Plugin hatte **keinen** Formularschutz: kein `formtoken`, kein `fmt`,
+kein `hash_hmac` im ganzen `webfrontend`-Zweig. Eine fremde Seite konnte im
+angemeldeten Browser einen Preisabruf, ein MQTT-Senden oder eine
+Sprachansage auslösen.
+
+Jetzt prüft **eine** Stelle am Eingang jeden POST; fällt die Prüfung durch,
+wird `$_POST` geleert und danach läuft kein Zweig mehr an. Das Merkmal wird
+aus dem Aktionstoken abgeleitet — es gibt also kein zweites Geheimnis, und
+die Sicherungsdatei trägt beides mit dem einen Wert. Alle elf Formulare der
+Seite führen das Feld.
+
+### `?selftest=1` am Endpunkt
+
+Hausstandard, und er fehlte. Er prüft das Token genauso wie jeder andere
+Aufruf, löst aber nichts aus:
+
+    ?selftest=1&token=<TOKEN>   SELFTEST;OK=1;TOKEN=OK;AKTIV=1;FASSUNG=…;PLANER=1.1.0
+    falsches oder kein Token    SELFTEST;OK=0;ERR=TOKEN            (HTTP 403)
+    kein Token eingerichtet     SELFTEST;OK=0;ERR=KEIN_TOKEN_EINGERICHTET
+
+### Lebenszeichen
+
+Drei Themen gehen bei **jedem** Durchgang hinaus, auch wenn sich sonst
+nichts geändert hat: `status/ok`, `status/ts` und `status/zaehler`. Sonst
+schweigt das Plugin an einem Tag mit gleichbleibenden Preisen stundenlang,
+und niemand kann „läuft noch" von „hängt" unterscheiden. Sie stehen
+ausdrücklich **nicht** in der Sendebremse — sonst wäre die wirkungslos.
+
+### Wiederholsperren am Endpunkt
+
+`refresh` verwirft das Kraken-Token und meldet sich neu an — das ist der
+teuerste Aufruf überhaupt. Ein Loxone-Baustein, der versehentlich in einer
+Schleife hängt, hat so schon einmal 21 Anmeldeversuche gekostet. Jetzt:
+`refresh` höchstens alle 60 s, `say` alle 20 s, `ptest` alle 10 s.
+Gesperrt heißt nicht gescheitert — es kommt der letzte Stand, und die
+Antwort sagt `GESPERRT=1`.
+
+### Ersparnis je Regel — die Zahl, die die Frage beantwortet
+
+Der Reiter Test zeigt unter dem Fahrplan eine Zeile je Regel: was der
+geplante Zeitraum kostet, was es gekostet hätte, **jetzt sofort**
+einzuschalten und durchlaufen zu lassen, und die Differenz in ct/kWh und in
+Euro. Über MQTT: `regelN_spart` und `regelN_spart_eur`, dazu `plan_spart`
+als Summe.
+
+Das ist der einzige Wert, an dem sich ablesen lässt, ob der ganze Aufwand
+sich lohnt — und er beantwortet nachts um drei die Frage „warum lädt die
+Wallbox nicht?" mit einer Zahl statt mit einer Regel.
+
+### „Frist nicht erfüllbar" ist jetzt ein eigener Ausgang
+
+Eine Regel mit `n=5` und einer Frist, die nur zwei Stunden zulässt, bekam
+stillschweigend zwei Stunden: `verdraengt=0`, kein Hinweis. Jetzt zählen
+`noetig` und `fehlt`, und `grund` unterscheidet **frist**, **budget**,
+**keine** und **gesperrt**. Über MQTT: `regelN_fehlt`.
+
+### Taktschutz und Hysterese
+
+Bei Viertelstundenpreisen ist kurzes Takten der Normalfall, nicht die
+Ausnahme. Zwei Mittel:
+
+* je Regel eine **Mindestlaufzeit** und eine **Mindestpause** in Minuten.
+  Erst werden zu kurze Pausen zugemacht, dann zu kurze Blöcke nach hinten
+  verlängert; was dann noch zu kurz ist, entfällt. Die Reihenfolge ist der
+  Trick — umgekehrt würde ein Block verworfen, den das Zumachen gerettet
+  hätte.
+* **Begonnene Blöcke laufen zu Ende** (ab Werk an). Ohne das kann ein Gerät
+  mitten im Betrieb abschalten, weil die neue Preisreihe drei Stunden
+  später etwas Billigeres kennt.
+
+### Die fünfte Regelart: `scheiben`
+
+Die *N* günstigsten **einzelnen** Viertelstunden, ohne Stundenraster und
+ohne Zusammenhang. Bisher gab es nur „am Stück" oder „volle Stunden". Für
+eine Wallbox mit Zeitpuffer ist das bares Geld; wer Takten nicht verträgt,
+nimmt `fenster` oder setzt `min_lauf`.
+
+### Zweites Leistungsbudget (§ 14a EnWG)
+
+Neben dem Budget ein zweites mit eigenem Zeitfenster, für steuerbare
+Verbrauchseinrichtungen. Es gilt **zusätzlich**; die kleinere der beiden
+Schranken gewinnt. Über MQTT: `plan_budget2`.
+
+### Echter Verbrauch statt geschätztem Profil
+
+Der Kostenvergleich gewichtet die Stunden mit einem vereinfachten
+Haushaltsprofil — einer ehrlichen, aber geratenen Abschätzung. Wer eine
+Adresse hinterlegt, die den Verbrauch je Stunde liefert, bekommt statt der
+Schätzung eine Messung. Dieselben drei Formen wie bei der PV-Prognose,
+ausgewertet mit derselben Funktion. Unter der Tabelle steht, welches
+Profil gerechnet hat.
+
+### Benachrichtigung des LoxBerry
+
+Die Glocke in der Kopfzeile meldet, wenn seit einer einstellbaren Zahl von
+Stunden kein Preisabruf mehr gelungen ist, und wenn die Preise für morgen
+da sind. Bis 1.0.9 gab es dafür nur MQTT-Themen, die erst in Loxone
+verdrahtet werden mussten — wer das nicht getan hat, merkte einen Ausfall
+gar nicht.
+
+### Historie: Nachtrag und CSV
+
+Der Tageswert wird ab 23:40 beiseitegelegt und ab 00:05 nachgetragen, falls
+der Lauf um 23:50 ausgefallen ist. Dazu ein Knopf, der die ganze Historie
+als CSV herunterlädt — nach 400 Tagen fällt der älteste Tag heraus.
+
+### MQTT-Gateway V1 gegen V2
+
+Das war schon richtig gebaut: `Mqtt.Gatewayversion` wird gelesen, und der
+Hinweis hat drei Ausgänge (V1, V2, nicht feststellbar — dann werden beide
+Fälle genannt). Neu ist, dass die **Autostart-Warnung über allen Reitern**
+steht statt nur als Zeile in einer Tabelle, die man erst aufschlagen muss.
+Sie erscheint nur, wenn der Wert wirklich *aus* ist — nicht, wenn er sich
+nicht feststellen lässt.
+
+---
+---
+
 ## Was 0.9.2 behebt
 
 Zwei Meldungen eines Mitlesers. Eine trifft zu, aber aus einem anderen Grund

@@ -139,6 +139,21 @@ function oc_e($s)
 }
 
 /**
+ * Eine Datei wegraeumen - aber nur, wenn es sie gibt.
+ *
+ * DAS @ GENUEGT NICHT. Ist ein eigener Fehlerbehandler gesetzt - der
+ * Hauspruefstand tut das -, wird er unabhaengig von error_reporting
+ * gerufen, und "unlink(...): No such file or directory" steht als Befund
+ * im Protokoll, obwohl gar nichts fehlt. Im Haus zweimal hineingelaufen,
+ * einmal bei mkdir() und einmal hier.
+ */
+function oc_weg($f)
+{
+    if ($f !== '' && is_file($f)) { @unlink($f); }
+}
+
+
+/**
  * Protokollzeile. Bewusst ohne Umlaute: die Datei wird auch ueber die
  * Konsole gelesen, und dort ist die Zeichensatzlage unklar.
  */
@@ -266,7 +281,98 @@ function oc_vorgaben()
         'pv_einheit'    => 'wh',   // wh | w | kw
         'soc_url'       => '',
         'soc_pfad'      => '',
+        /* Ab 1.1.0: der ECHTE Verbrauch statt des erfundenen Haushaltsprofils.
+         *
+         * Ohne diese Angabe gewichtet der Kostenvergleich mit einem
+         * vereinfachten H0-Profil - das ist eine Abschaetzung und wird auch
+         * so genannt. Wer eine Adresse hinterlegt, die den Verbrauch je
+         * Stunde liefert, bekommt statt der Abschaetzung eine Messung.
+         * Dieselben drei Formen wie bei der PV-Prognose, damit niemand eine
+         * zweite Schreibweise lernen muss. */
+        'verbrauch_quelle'   => '',    // '' | objekt | liste
+        'verbrauch_url'      => '',
+        'verbrauch_pfad'     => '',
+        'verbrauch_zeitfeld' => '',
+        'verbrauch_wertfeld' => '',
+        'verbrauch_einheit'  => 'wh',  // wh | w | kw
+        /* Ab 1.1.0: Hysterese. Ein begonnener Block laeuft bis zu seinem
+         * Ende, auch wenn die neue Preisreihe inzwischen etwas Billigeres
+         * kennt. Ab Werk AN - ohne sie schaltet die Wallbox bei jedem
+         * Abruf um, und das ist kein Zustand, den jemand absichtlich will.
+         * Wer den alten Stand braucht, schaltet sie ab. */
+        'hysterese'     => 1,
     ) + plan_global_vorgabe();
+}
+
+/* ------------------------------------------------------------------
+ * Drei Umformer, die JEDEN Wert derselben Behandlung unterziehen
+ *
+ * Sie stehen hier, weil oc_config() sie braucht - und oc_config() braucht
+ * sie, seit die Konfiguration auch aus einer zurueckgespielten
+ * Sicherungsdatei kommen kann. Bis 1.0.9 kappte nur das Formular; wer eine
+ * Datei von Hand baute, schrieb ungeprueft in die Konfiguration.
+ *
+ * Ein Feld statt einer Zahl ergibt hier den Vorgabewert und keine Meldung -
+ * die Meldung macht oc_sicherung_lesen() beim EINLESEN. Hier geht es nur
+ * darum, dass die Rechnung danach mit Zahlen rechnet.
+ * ------------------------------------------------------------------ */
+
+/** Kommazahl in Schranken; alles Unbrauchbare wird zum Vorgabewert. */
+function oc_zahl($v, $vorgabe, $min, $max)
+{
+    if (is_array($v) || is_bool($v) || $v === null) { return (float) $vorgabe; }
+    $s = str_replace(',', '.', trim((string) $v));
+    if (!is_numeric($s)) { return (float) $vorgabe; }
+    return max((float) $min, min((float) $max, (float) $s));
+}
+
+/** Ganze Zahl in Schranken. */
+function oc_ganz($v, $vorgabe, $min, $max)
+{
+    if (is_array($v) || is_bool($v) || $v === null) { return (int) $vorgabe; }
+    $s = trim((string) $v);
+    if (!preg_match('/^-?[0-9]+$/', $s)) { return (int) $vorgabe; }
+    return (int) max((int) $min, min((int) $max, (int) $s));
+}
+
+/**
+ * Text ohne Steuerzeichen, gekappt.
+ *
+ * NICHT hart gefiltert: eine Positivliste zerstoert gueltige Eingaben -
+ * Adressen, Vorlagen, Namen. Entfernt werden Steuerzeichen (die zerlegen
+ * die UDP-Zeile an den MQTT-Gateway) und die Anfuehrungszeichen, die den
+ * Sprachdateien und dem XML-Export zu schaffen machen.
+ */
+function oc_text($v, $max = 500)
+{
+    if (is_array($v) || is_bool($v) || $v === null) { return ''; }
+    $s = preg_replace('/[\x00-\x1F\x7F]/u', ' ', (string) $v);
+    $s = trim(preg_replace('/ {2,}/', ' ', (string) $s));
+    return function_exists('mb_substr')
+        ? mb_substr($s, 0, (int) $max, 'UTF-8') : substr($s, 0, (int) $max);
+}
+
+/**
+ * Ein MQTT-Thema oder -Praefix unschaedlich machen.
+ *
+ * DAS GEGENSTUECK ZU oc_mqtt_wert_saeubern(), UND ES HAT GEFEHLT.
+ *
+ * Der Wert wurde seit jeher gesaeubert, das Thema nie - das Formular
+ * filterte es, der Rueckspielweg nicht. Gemessen mit einer Sicherungsdatei,
+ * die als Praefix "octopus/x publish fremd/thema 1\nboese" trug:
+ *
+ *     Zeile 1: publish octopus/x publish fremd/thema 1
+ *     Zeile 2: boese/cur 12.3
+ *
+ * Der Gateway liest zeilenweise und hat daraus ein erfundenes Thema
+ * gebildet. Ein Praefix darf deshalb nur enthalten, was ein Thema sein
+ * darf: Buchstaben, Ziffern, Unterstrich, Bindestrich und Schraegstrich.
+ */
+function oc_mqtt_thema_saeubern($v, $vorgabe = 'octopus')
+{
+    $s = preg_replace('#[^A-Za-z0-9_/-]#', '', (string) (is_array($v) ? '' : $v));
+    $s = trim((string) $s, '/ ');
+    return $s === '' ? $vorgabe : substr($s, 0, 64);
 }
 
 function oc_config()
@@ -275,7 +381,13 @@ function oc_config()
     // Selbstheilung: fehlende oder leere Konfiguration aus der Sicherung holen
     $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
     if (($roh === '' || $roh === '{}') && is_file($p['backup'])) {
-        @mkdir(dirname($p['config']), 0775, true);
+        /* is_dir() VOR mkdir(). Das @ genuegt nicht: ist ein eigener
+         * Fehlerbehandler gesetzt - der Hauspruefstand tut das -, wird er
+         * unabhaengig von error_reporting gerufen, und "mkdir(): File
+         * exists" steht als Befund im Protokoll, obwohl nichts fehlt. */
+        if (!is_dir(dirname($p['config']))) {
+            @mkdir(dirname($p['config']), 0775, true);
+        }
         @copy($p['backup'], $p['config']);
         $roh = trim((string) @file_get_contents($p['config']));
     }
@@ -291,12 +403,54 @@ function oc_config()
         'only_cheap' => 0,         // nur melden, wenn unter der Schwelle "guenstig"
         'negative'   => 1,         // zusaetzlich immer bei negativem Nettopreis
         'tomorrow'   => 0,         // Meldung, sobald die Preise fuer morgen da sind
+        /* Ab 1.1.0: die Benachrichtigung des LoxBerry selbst (die Glocke in
+         * der Kopfzeile). Bis dahin gab es nur MQTT-Themen, die erst in
+         * Loxone verdrahtet werden mussten - wer das nicht getan hat,
+         * merkte einen Ausfall gar nicht. */
+        'lb'         => 1,         // Glocke bei Ausfall und "Preise fuer morgen"
+        'lb_stunden' => 6,         // ab wie vielen Stunden ohne Abruf gemeldet wird
     );
     if (!is_array($cfg['notify']['hours'])) { $cfg['notify']['hours'] = array(); }
+    foreach (array('audio', 'push', 'only_cheap', 'negative', 'tomorrow', 'lb') as $nk) {
+        $cfg['notify'][$nk] = empty($cfg['notify'][$nk]) ? 0 : 1;
+    }
+    $cfg['notify']['lb_stunden'] = oc_ganz($cfg['notify']['lb_stunden'], 6, 1, 72);
+    $std = array();
+    foreach ((array) $cfg['notify']['hours'] as $h) {
+        if (is_array($h)) { continue; }
+        $h = (int) $h;
+        if ($h >= 0 && $h <= 23 && !in_array($h, $std, true)) { $std[] = $h; }
+    }
+    sort($std);
+    $cfg['notify']['hours'] = $std;
 
     if (!is_array($cfg['tts'])) { $cfg['tts'] = array(); }
     $cfg['tts'] += array('mode' => 'musicserver', 'ip' => '', 'port' => 7091,
                          'zones' => '1', 'volume' => 8, 'lang' => 'de', 'template' => '');
+    /* Auch die Ansage-Angaben kommen aus der Sicherungsdatei, wenn eine
+     * zurueckgespielt wurde. Die Vorlage traegt eine Adresse - eine
+     * ungeprueft uebernommene schickte den Ansagetext an einen fremden
+     * Rechner. */
+    if (!in_array($cfg['tts']['mode'], array('musicserver', 'ms4h', 'audioserver', 'custom'), true)) {
+        $cfg['tts']['mode'] = 'musicserver';
+    }
+    $cfg['tts']['ip'] = oc_text($cfg['tts']['ip'], 100);
+    if ($cfg['tts']['ip'] !== '' && !preg_match('/^[A-Za-z0-9._-]+$/', $cfg['tts']['ip'])) {
+        $cfg['tts']['ip'] = '';
+    }
+    $cfg['tts']['port']   = oc_ganz($cfg['tts']['port'], 7091, 1, 65535);
+    $cfg['tts']['volume'] = oc_ganz($cfg['tts']['volume'], 8, 1, 100);
+    $cfg['tts']['zones']  = trim(preg_replace('/[^0-9,~ ]/', '',
+        is_array($cfg['tts']['zones']) ? '' : (string) $cfg['tts']['zones']));
+    if ($cfg['tts']['zones'] === '') { $cfg['tts']['zones'] = '1'; }
+    $cfg['tts']['lang'] = preg_replace('/[^a-z]/', '',
+        strtolower(is_array($cfg['tts']['lang']) ? '' : (string) $cfg['tts']['lang']));
+    if ($cfg['tts']['lang'] === '') { $cfg['tts']['lang'] = 'de'; }
+    $cfg['tts']['template'] = oc_text($cfg['tts']['template'], 400);
+    if ($cfg['tts']['template'] !== ''
+        && !preg_match('#^https?://#i', $cfg['tts']['template'])) {
+        $cfg['tts']['template'] = '';
+    }
 
     if (!is_array($cfg['months'])) { $cfg['months'] = array(); }
     for ($i = 0; $i < 12; $i++) {
@@ -309,14 +463,14 @@ function oc_config()
         $r += oc_regel_vorgabe();
         $r['aktiv'] = empty($r['aktiv']) ? 0 : 1;
         $r['neg'] = empty($r['neg']) ? 0 : 1;
-        $r['name'] = trim((string) $r['name']);
-        $r['art'] = in_array($r['art'], array('fenster', 'stunden', 'schwelle', 'mittel'), true) ? $r['art'] : 'fenster';
-        $r['n'] = max(1, min(12, (int) $r['n']));
-        $r['von'] = max(0, min(23, (int) $r['von']));
-        $r['bis'] = max(0, min(23, (int) $r['bis']));
-        $r['horizont'] = max(1, min(48, (int) $r['horizont']));
-        $r['schwelle'] = (float) $r['schwelle'];
-        $r['prozent'] = max(0, min(90, (int) $r['prozent']));
+        $r['name'] = oc_text($r['name'], 40);
+        $r['art'] = in_array($r['art'], oc_regel_arten(), true) ? $r['art'] : 'fenster';
+        $r['n'] = oc_ganz($r['n'], 3, 1, 12);
+        $r['von'] = oc_ganz($r['von'], 0, 0, 23);
+        $r['bis'] = oc_ganz($r['bis'], 0, 0, 23);
+        $r['horizont'] = oc_ganz($r['horizont'], 24, 1, 48);
+        $r['schwelle'] = oc_zahl($r['schwelle'], 20.0, -100, 200);
+        $r['prozent'] = oc_ganz($r['prozent'], 20, 0, 90);
         // Felder des Fahrplaners. Hier wird gekappt, nicht abgewiesen - das
         // Abweisen macht die Oberflaeche beim Speichern.
         $r['rang'] = max(1, min(99, (int) $r['rang']));
@@ -324,25 +478,162 @@ function oc_config()
         $r['energie'] = max(0.0, min(500.0, (float) $r['energie']));
         $r['frist'] = (int) $r['frist'];
         if ($r['frist'] < 0 || $r['frist'] > 23) { $r['frist'] = -1; }
-        $r['pv_sperre'] = max(0.0, min(500.0, (float) $r['pv_sperre']));
-        $r['soc_min'] = max(0, min(100, (int) $r['soc_min']));
-        $r['soc_max'] = max(0, min(100, (int) $r['soc_max']));
+        $r['pv_sperre'] = oc_zahl($r['pv_sperre'], 0.0, 0, 500);
+        $r['soc_min'] = oc_ganz($r['soc_min'], 0, 0, 100);
+        $r['soc_max'] = oc_ganz($r['soc_max'], 0, 0, 100);
+        /* Taktschutz ab 1.1.0. Beide in Minuten, 0 = aus. Die Obergrenze
+         * von 720 Minuten ist keine Willkuer: laenger als zwoelf Stunden am
+         * Stueck ist keine Mindestlaufzeit mehr, sondern ein Dauerlauf. */
+        $r['min_lauf'] = oc_ganz($r['min_lauf'], 0, 0, 720);
+        $r['min_pause'] = oc_ganz($r['min_pause'], 0, 0, 720);
         $cfg['regeln'][$i] = $r;
     }
+    /* ---- Alle uebrigen Werte in ihre Schranken ----
+     *
+     * DIESE LISTE IST DIE ZWEITE HAELFTE DER SICHERUNGSPRUEFUNG. Sie muss
+     * dieselben Grenzen tragen wie der Speichern-Handler in der Oberflaeche;
+     * steht dort eine andere Zahl, hat man zwei Wahrheiten. Wer eine Grenze
+     * aendert, aendert sie an beiden Stellen - der Selbsttest im Reiter Test
+     * vergleicht sie und meldet, wenn sie auseinanderlaufen. */
+    $cfg['enabled']     = empty($cfg['enabled']) ? 0 : 1;
+    $cfg['demo']        = empty($cfg['demo']) ? 0 : 1;
+    $cfg['co2_enabled'] = empty($cfg['co2_enabled']) ? 0 : 1;
+    $cfg['mqtt_enabled'] = empty($cfg['mqtt_enabled']) ? 0 : 1;
+    $cfg['hysterese']   = empty($cfg['hysterese']) ? 0 : 1;
+
+    $cfg['demo_aufschlag'] = oc_zahl($cfg['demo_aufschlag'], 15.0, 0, 100);
+    $cfg['demo_vat']       = oc_zahl($cfg['demo_vat'], 19.0, 0, 30);
+    $cfg['cheap']          = oc_zahl($cfg['cheap'], 20.0, 0, 200);
+    $cfg['expensive']      = oc_zahl($cfg['expensive'], 35.0, 0, 400);
+    /* Eine Schwelle "guenstig" oberhalb von "teuer" ergibt ein Preisniveau,
+     * das nie 2 wird. Das Formular weist es ab und meldet es; hier, wo die
+     * Werte aus einer Datei kommen koennen, wird auf die Vorgaben
+     * zurueckgestellt - lieber ein bekannter Stand als ein unmoeglicher. */
+    if ($cfg['cheap'] >= $cfg['expensive']) {
+        $cfg['cheap'] = 20.0;
+        $cfg['expensive'] = 35.0;
+    }
+    $cfg['window']       = oc_ganz($cfg['window'], 3, 1, 12);
+    $cfg['co2_clean']    = oc_zahl($cfg['co2_clean'], 200, 0, 1000);
+    $cfg['fixed_price']  = oc_zahl($cfg['fixed_price'], 30.90, 0, 200);
+    $cfg['fix_grund']    = oc_zahl($cfg['fix_grund'], 12.90, 0, 500);
+    $cfg['dyn_grund']    = oc_zahl($cfg['dyn_grund'], 0.0, 0, 500);
+    $cfg['fix_sofortbonus']  = oc_zahl($cfg['fix_sofortbonus'], 0.0, 0, 5000);
+    $cfg['fix_neubonus']     = oc_zahl($cfg['fix_neubonus'], 0.0, 0, 5000);
+    $cfg['fix_neubonus_pct'] = oc_zahl($cfg['fix_neubonus_pct'], 0.0, 0, 100);
+    $cfg['fix_rabatt']   = oc_zahl($cfg['fix_rabatt'], 0.0, 0, 100);
+    $cfg['consumption']  = oc_ganz($cfg['consumption'], 3500, 100, 100000);
+    $cfg['shift_kwh']    = oc_zahl($cfg['shift_kwh'], 3.0, 0, 100);
+
+    /* Das Praefix geht in die UDP-Zeile an den MQTT-Gateway. Siehe
+     * oc_mqtt_thema_saeubern() - dort steht, was ohne diese Zeile passiert. */
+    $cfg['mqtt_topic'] = oc_mqtt_thema_saeubern($cfg['mqtt_topic'], 'octopus');
+
+    /* Das Aktionstoken steht in den Adressen im Miniserver. Was nicht seine
+     * Form hat, ist keines - dann lieber leer, denn der Endpunkt weist ein
+     * leeres Token ausdruecklich ab (fail closed) und sagt auch, warum. */
+    $tok = is_array($cfg['aktionstoken']) ? '' : trim((string) $cfg['aktionstoken']);
+    $cfg['aktionstoken'] = preg_match('/^[A-Za-z0-9]{8,64}$/', $tok) ? $tok : '';
+
+    foreach (array('pv_url', 'soc_url', 'verbrauch_url') as $f) {
+        $cfg[$f] = oc_text($cfg[$f], 500);
+        if ($cfg[$f] !== '' && !preg_match('#^https?://#i', $cfg[$f])) { $cfg[$f] = ''; }
+    }
+    foreach (array('pv_pfad', 'pv_zeitfeld', 'pv_wertfeld', 'soc_pfad',
+                   'verbrauch_pfad', 'verbrauch_zeitfeld', 'verbrauch_wertfeld') as $f) {
+        $cfg[$f] = oc_text($cfg[$f], 200);
+    }
+
     // Fahrplaner, global
-    $cfg['budget_kw'] = max(0.0, min(200.0, (float) $cfg['budget_kw']));
-    $cfg['pv_bonus'] = max(0.0, min(100.0, (float) $cfg['pv_bonus']));
-    $cfg['pv_schwelle'] = max(1, min(100000, (int) $cfg['pv_schwelle']));
+    $cfg['budget_kw']   = oc_zahl($cfg['budget_kw'], 0.0, 0, 200);
+    $cfg['pv_bonus']    = oc_zahl($cfg['pv_bonus'], 0.0, 0, 100);
+    $cfg['pv_schwelle'] = oc_ganz($cfg['pv_schwelle'], 500, 1, 100000);
+    $cfg['budget2_kw']  = oc_zahl($cfg['budget2_kw'], 0.0, 0, 200);
+    $cfg['budget2_von'] = oc_ganz($cfg['budget2_von'], 0, 0, 23);
+    $cfg['budget2_bis'] = oc_ganz($cfg['budget2_bis'], 0, 0, 23);
+
     if (!in_array($cfg['pv_quelle'], array('', 'forecast_solar', 'objekt', 'liste'), true)) {
         $cfg['pv_quelle'] = '';
     }
     if (!in_array($cfg['pv_einheit'], array('wh', 'w', 'kw'), true)) {
         $cfg['pv_einheit'] = 'wh';
     }
+    if (!in_array($cfg['verbrauch_quelle'], array('', 'objekt', 'liste'), true)) {
+        $cfg['verbrauch_quelle'] = '';
+    }
+    if (!in_array($cfg['verbrauch_einheit'], array('wh', 'w', 'kw'), true)) {
+        $cfg['verbrauch_einheit'] = 'wh';
+    }
     if (!in_array($cfg['profil_ein'], array('aus', 'absolut', 'relativ', 'beides'), true)) {
         $cfg['profil_ein'] = 'aus';
     }
     return $cfg;
+}
+
+/**
+ * Die Schranken an EINER Stelle - damit Formular, Konfiguration und
+ * Sicherungspruefung nicht auseinanderlaufen koennen.
+ *
+ * array(Schluessel => array(Art, Vorgabe, Min, Max)); Art ist 'z' fuer
+ * Kommazahl, 'g' fuer ganze Zahl, 'b' fuer Haken, 't' fuer Text mit
+ * Hoechstlaenge und 'w' fuer eine Auswahl aus einer festen Liste.
+ *
+ * Der Selbsttest im Reiter Test prueft, dass jeder Schluessel aus
+ * oc_vorgaben() hier vorkommt - sonst rutscht ein neues Feld ungeprueft
+ * durch die Sicherung.
+ */
+function oc_schranken()
+{
+    return array(
+        'enabled'        => array('b'),
+        'demo'           => array('b'),
+        'co2_enabled'    => array('b'),
+        'mqtt_enabled'   => array('b'),
+        'hysterese'      => array('b'),
+        'demo_aufschlag' => array('z', 15.0, 0, 100),
+        'demo_vat'       => array('z', 19.0, 0, 30),
+        'cheap'          => array('z', 20.0, 0, 200),
+        'expensive'      => array('z', 35.0, 0, 400),
+        'window'         => array('g', 3, 1, 12),
+        'co2_clean'      => array('z', 200, 0, 1000),
+        'fixed_price'    => array('z', 30.90, 0, 200),
+        'fix_grund'      => array('z', 12.90, 0, 500),
+        'dyn_grund'      => array('z', 0.0, 0, 500),
+        'fix_sofortbonus'  => array('z', 0.0, 0, 5000),
+        'fix_neubonus'     => array('z', 0.0, 0, 5000),
+        'fix_neubonus_pct' => array('z', 0.0, 0, 100),
+        'fix_rabatt'     => array('z', 0.0, 0, 100),
+        'consumption'    => array('g', 3500, 100, 100000),
+        'shift_kwh'      => array('z', 3.0, 0, 100),
+        'budget_kw'      => array('z', 0.0, 0, 200),
+        'pv_bonus'       => array('z', 0.0, 0, 100),
+        'pv_schwelle'    => array('g', 500, 1, 100000),
+        'budget2_kw'     => array('z', 0.0, 0, 200),
+        'budget2_von'    => array('g', 0, 0, 23),
+        'budget2_bis'    => array('g', 0, 0, 23),
+        'mqtt_topic'     => array('t', 64),
+        'aktionstoken'   => array('t', 64),
+        'pv_url'         => array('t', 500),
+        'soc_url'        => array('t', 500),
+        'verbrauch_url'  => array('t', 500),
+        'pv_pfad'        => array('t', 200),
+        'pv_zeitfeld'    => array('t', 200),
+        'pv_wertfeld'    => array('t', 200),
+        'soc_pfad'       => array('t', 200),
+        'verbrauch_pfad' => array('t', 200),
+        'verbrauch_zeitfeld' => array('t', 200),
+        'verbrauch_wertfeld' => array('t', 200),
+        'pv_quelle'      => array('w', '', 'forecast_solar', 'objekt', 'liste'),
+        'pv_einheit'     => array('w', 'wh', 'w', 'kw'),
+        'verbrauch_quelle'  => array('w', '', 'objekt', 'liste'),
+        'verbrauch_einheit' => array('w', 'wh', 'w', 'kw'),
+        'profil_ein'     => array('w', 'aus', 'absolut', 'relativ', 'beides'),
+        // Diese vier sind Felder und werden eigens geprueft.
+        'regeln'         => array('f'),
+        'months'         => array('f'),
+        'notify'         => array('f'),
+        'tts'            => array('f'),
+    );
 }
 
 function oc_config_write($cfg)
@@ -357,7 +648,7 @@ function oc_config_write($cfg)
     @chmod($vor, 0640);
     if (!@rename($vor, $p['config'])) { return false; }
     @copy($p['config'], $p['backup']);
-    @unlink(oc_tmpdir() . '/state.json');   // Zustand mit neuen Schwellen neu rechnen
+    oc_weg(oc_tmpdir() . '/state.json');   // Zustand mit neuen Schwellen neu rechnen
     return true;
 }
 
@@ -398,8 +689,8 @@ function oc_zugang_write($email, $passwort, $konto)
     @chmod($vor, 0600);
     if (!@rename($vor, $f)) { return false; }
     @chmod($f, 0600);
-    @unlink(oc_datadir() . '/token.json');   // neue Zugangsdaten, altes Token verwerfen
-    @unlink(oc_tmpdir() . '/state.json');
+    oc_weg(oc_datadir() . '/token.json');   // neue Zugangsdaten, altes Token verwerfen
+    oc_weg(oc_tmpdir() . '/state.json');
     oc_log('Zugangsdaten gespeichert (Konto ' . oc_maske_konto($konto) . ', Passwortlaenge '
         . strlen((string) $passwort) . ' Zeichen)');
     return true;
@@ -634,7 +925,7 @@ function oc_kraken_preise($force = false)
         // Ein abgelaufenes Token gibt es nur einmal: einmal neu anmelden und
         // die Abfrage wiederholen, statt eine Stunde lang nichts zu liefern.
         if (!$force && stripos($m, 'token') !== false) {
-            @unlink(oc_datadir() . '/token.json');
+            oc_weg(oc_datadir() . '/token.json');
             return oc_kraken_preise(true);
         }
         $out['fehler'] = 'FEHLER_ABFRAGE';
@@ -863,13 +1154,27 @@ function oc_stunden($slots)
 
 define('OC_REGELN', 4);
 
+/**
+ * Die zulaessigen Regelarten - an EINER Stelle.
+ *
+ * Oberflaeche, Konfigurationspruefung und Sicherungspruefung lesen alle
+ * hier. Bis 1.0.9 stand die Liste dreimal im Quelltext; 'scheiben' waere
+ * beim Ergaenzen an einer der drei Stellen vergessen worden, und dann
+ * haette das Formular eine Art angeboten, die die Konfiguration wieder
+ * verwirft - ohne eine Meldung.
+ */
+function oc_regel_arten()
+{
+    return array('fenster', 'stunden', 'scheiben', 'schwelle', 'mittel');
+}
+
 /** Vorgabe einer Schaltregel. */
 function oc_regel_vorgabe()
 {
     return array_merge(array(
         'aktiv' => 0,
         'name' => '',
-        'art' => 'fenster',   // fenster | stunden | schwelle | mittel
+        'art' => 'fenster',   // fenster | stunden | scheiben | schwelle | mittel
         'n' => 3,             // Anzahl Stunden
         'von' => 0,           // Zeitfenster von (Stunde, einschliesslich)
         'bis' => 0,           // bis (Stunde, ausschliesslich); von == bis = ganzer Tag
@@ -914,6 +1219,13 @@ function oc_regel_werte($r, $slots, $st)
     $leer = array('aktiv' => 0, 'in' => -1, 'rest' => 0, 'ct' => 0.0,
                   'start' => -1, 'startmin' => 0, 'grund' => 'aus');
     if (empty($r['aktiv'])) { return $leer; }
+    /* Die Regelart 'scheiben' gibt es erst seit 1.1.0 und nur im Planer.
+     * Diese Funktion ist die Rechnung von 0.9.1, die der Reiter Test zum
+     * Vergleich daneben stellt - sie KANN dazu nichts sagen. Ein stiller
+     * Rueckfall auf 'mittel' waere eine Falschaussage; also sagt sie es. */
+    if ((string) $r['art'] === 'scheiben') {
+        return array_merge($leer, array('grund' => 'nicht_vergleichbar'));
+    }
     $jetzt = (int) $st['slotstart'];
     $kand = oc_regel_kandidaten($r, $slots, $jetzt);
     $treffer = array();
@@ -1099,11 +1411,19 @@ function oc_regeln($slots, $st)
         'pv_summe' => isset($umwelt['pv_summe']) ? $umwelt['pv_summe'] : null,
         'soc'      => isset($umwelt['soc']) ? $umwelt['soc'] : null,
         'neg'      => !empty($st['neg']) ? 1 : 0,
-        'mittel'   => (float) $st['heute']['avg'],
+        /* Das Tagesmittel nur uebergeben, wenn es eines gibt. 0.0 waere ein
+         * Wert und kein Nichtwissen - und bei negativen Preisen ist der
+         * Unterschied entscheidend. */
+        'mittel'   => (!empty($st['ok']) && !empty($st['heute']['n']))
+                      ? (float) $st['heute']['avg'] : null,
+        'laufend'  => oc_laufend_lesen(),
     ), array(
         'budget_kw'   => $cfg['budget_kw'],
         'pv_bonus'    => $cfg['pv_bonus'],
         'pv_schwelle' => $cfg['pv_schwelle'],
+        'budget2_kw'  => $cfg['budget2_kw'],
+        'budget2_von' => $cfg['budget2_von'],
+        'budget2_bis' => $cfg['budget2_bis'],
     ));
 
     $out = array();
@@ -1152,11 +1472,19 @@ function oc_fahrplan($st = null)
         'pv_summe' => isset($umwelt['pv_summe']) ? $umwelt['pv_summe'] : null,
         'soc'      => isset($umwelt['soc']) ? $umwelt['soc'] : null,
         'neg'      => !empty($st['neg']) ? 1 : 0,
-        'mittel'   => (float) $st['heute']['avg'],
+        /* Das Tagesmittel nur uebergeben, wenn es eines gibt. 0.0 waere ein
+         * Wert und kein Nichtwissen - und bei negativen Preisen ist der
+         * Unterschied entscheidend. */
+        'mittel'   => (!empty($st['ok']) && !empty($st['heute']['n']))
+                      ? (float) $st['heute']['avg'] : null,
+        'laufend'  => oc_laufend_lesen(),
     ), array(
         'budget_kw'   => $cfg['budget_kw'],
         'pv_bonus'    => $cfg['pv_bonus'],
         'pv_schwelle' => $cfg['pv_schwelle'],
+        'budget2_kw'  => $cfg['budget2_kw'],
+        'budget2_von' => $cfg['budget2_von'],
+        'budget2_bis' => $cfg['budget2_bis'],
     ));
     foreach ($plan as $i => $p) {
         $plan[$i]['name'] = (isset($cfg['regeln'][$i]['name']) && $cfg['regeln'][$i]['name'] !== '')
@@ -1345,7 +1673,30 @@ function oc_state($force = false)
     $st['shift_euro'] = $sh['euro'];
     $st['shift_jahr'] = $sh['euro_jahr'];
 
-    @file_put_contents($cache, json_encode($st));
+    /* HIER STAND DER SCHREIBBEFEHL FUER DEN ZWISCHENSPEICHER - MITTEN IN
+     * DER FUNKTION. Er steht jetzt am Ende, vor dem return.
+     *
+     * Was das angerichtet hat, ist am Endpunkt gemessen worden: alles, was
+     * unterhalb dieser Zeile noch in $st gelegt wird - die Stundenprofile
+     * ph/pm/pr, pv_summe, soc, die REGELN und planlast -, fehlte im
+     * Zwischenspeicher. Der zweite und jeder weitere Aufruf innerhalb von
+     * 240 Sekunden bekam ihn und damit einen verstuemmelten Zustand:
+     *
+     *     1. Aufruf (frisch)          146 Felder
+     *     2. Aufruf (Zwischenspeicher) 118 Felder
+     *     es fehlten REGEL1_AKTIV bis REGEL4_RANG und PH/PM/PR00-23
+     *
+     * Und weil der minuetliche Cron den Zwischenspeicher selbst fuellt,
+     * war das der Regelfall und nicht die Ausnahme: der Miniserver bekam
+     * die Schaltausgaenge praktisch nie. Dazu sprang das Zahlenformat
+     * (12.000 frisch, 12 aus dem Speicher), weil json_encode aus 12.0 eine
+     * ganze Zahl macht - und die MQTT-Bremse "nur bei Aenderung senden"
+     * war wirkungslos, weil ihre Signatur im Minutentakt zwischen 145 und
+     * 117 Schluesseln sprang.
+     *
+     * Merksatz fuer den naechsten, der hier etwas anhaengt: ein
+     * Zwischenspeicher wird geschrieben, wenn der Wert FERTIG ist. */
+
     // Stundenmittel fuer den Spot Price Optimizer: der Baustein hat nur
     // 24 Preiseingaenge, Viertelstunden nimmt er nicht an.
     $stdh = oc_stunden($slots);
@@ -1373,10 +1724,23 @@ function oc_state($force = false)
 
     // Verplante Leistung in der laufenden Viertelstunde.
     $st['planlast'] = 0.0;
+    $st['spart_eur'] = 0.0;
     foreach ($st['regeln'] as $r) {
         if (!empty($r['aktiv'])) { $st['planlast'] += (float) $r['leistung']; }
+        $st['spart_eur'] += isset($r['spart_eur']) ? (float) $r['spart_eur'] : 0.0;
     }
     $st['planlast'] = round($st['planlast'], 2);
+    $st['spart_eur'] = round($st['spart_eur'], 2);
+
+    /* Die Hysterese fortschreiben: welcher Block laeuft gerade, und bis
+     * wann? Erst NACH der Rechnung, damit der naechste Lauf ihn vorfindet.
+     * Siehe oc_laufend_fortschreiben(). */
+    oc_laufend_fortschreiben($st['regeln'], $slotstart);
+
+    /* ERST JETZT den Zwischenspeicher schreiben - $st ist vollstaendig.
+     * Die Begruendung steht oben an der Stelle, an der der Befehl bis
+     * 1.0.9 stand. */
+    @file_put_contents($cache, json_encode($st));
 
     oc_log_if_changed('zustand', 'jetzt=' . $st['cur'] . ' ct rang=' . $st['rank'] . '/' . $st['n']
         . ' niveau=' . $st['level'] . ' morgen=' . $st['tomorrow_ok'] . ' demo=' . $st['demo']);
@@ -1469,7 +1833,11 @@ function oc_history_add($st = null)
     foreach ($zeilen as $l) {
         if (strpos($l, $tag . ';') === 0) { return; }   // heute schon erfasst
     }
-    $prof = oc_profil(); $ws = 0.0; $w = 0.0;
+    /* Gewichtet wird mit dem ECHTEN Verbrauchsprofil, wenn eine Quelle
+     * hinterlegt ist - sonst mit dem vereinfachten H0-Profil wie bisher.
+     * Welches es war, steht in der Spalte 'quelle' der Historie. */
+    list($prof, $herkunft) = oc_profil_aktiv();
+    $ws = 0.0; $w = 0.0;
     foreach ($st['heute']['hours'] as $ts => $ct) {
         $h = (int) date('G', (int) $ts);
         $g = isset($prof[$h]) ? $prof[$h] : 1.0;
@@ -1477,13 +1845,45 @@ function oc_history_add($st = null)
         $w += $g;
     }
     $avgw = $w > 0 ? round($ws / $w, 3) : $st['heute']['avg'];
-    $zeilen[] = $tag . ';' . $st['heute']['avg'] . ';' . $st['heute']['minp'] . ';'
-              . $st['heute']['maxp'] . ';' . $avgw . ';' . (int) $st['co2_avg'] . ';' . (int) $st['demo'];
+    $zeile = $tag . ';' . $st['heute']['avg'] . ';' . $st['heute']['minp'] . ';'
+           . $st['heute']['maxp'] . ';' . $avgw . ';' . (int) $st['co2_avg'] . ';' . (int) $st['demo'];
+    $zeilen[] = $zeile;
     if (count($zeilen) > 400) { $zeilen = array_slice($zeilen, -400); }
     @file_put_contents($f, implode("\n", $zeilen) . "\n");
     oc_log('Tageswerte gesichert: Schnitt ' . $st['heute']['avg'] . ' ct (gewichtet ' . $avgw
-        . '), Min ' . $st['heute']['minp'] . ', Max ' . $st['heute']['maxp']
-        . ($st['demo'] ? ' [DEMO]' : ''));
+        . ', Profil ' . $herkunft . '), Min ' . $st['heute']['minp']
+        . ', Max ' . $st['heute']['maxp'] . ($st['demo'] ? ' [DEMO]' : ''));
+}
+
+/**
+ * Den fertigen Tageswert beiseitelegen, damit er sich nachtragen laesst.
+ *
+ * Wird ab 23:40 bei jedem Lauf gerufen und ueberschreibt sich selbst. Faellt
+ * der Lauf um 23:50 aus - Neustart, Update, Stromausfall -, findet der
+ * naechste Tag hier den fertigen Wert vor und traegt ihn nach. Die Datei
+ * liegt im DATENORDNER und nicht in /tmp: /tmp ist auf dem LoxBerry eine
+ * Ramdisk und waere nach einem Neustart genau dann leer, wenn man sie
+ * braucht. (Dieselbe Ueberlegung wie beim Marker des Monatsberichts.)
+ */
+function oc_tagesstand_merken($st = null)
+{
+    if ($st === null) { $st = oc_state(); }
+    if (empty($st['ok']) || empty($st['heute']['hours'])) { return false; }
+    list($prof, $herkunft) = oc_profil_aktiv();
+    $ws = 0.0; $w = 0.0;
+    foreach ($st['heute']['hours'] as $ts => $ct) {
+        $h = (int) date('G', (int) $ts);
+        $g = isset($prof[$h]) ? $prof[$h] : 1.0;
+        $ws += ((float) $ct) * $g;
+        $w += $g;
+    }
+    $avgw = $w > 0 ? round($ws / $w, 3) : $st['heute']['avg'];
+    $tag = date('Ymd');
+    $zeile = $tag . ';' . $st['heute']['avg'] . ';' . $st['heute']['minp'] . ';'
+           . $st['heute']['maxp'] . ';' . $avgw . ';' . (int) $st['co2_avg'] . ';' . (int) $st['demo'];
+    @file_put_contents(oc_datadir() . '/tagesstand.json',
+        json_encode(array('tag' => $tag, 'zeile' => $zeile, 'profil' => $herkunft)));
+    return true;
 }
 
 /** [[Ymd, avg, min, max, avg_gewichtet, co2, demo], ...] */
@@ -1720,12 +2120,27 @@ function oc_themen()
         $t['regel' . $i . '_verdraengt'] = array('THEMA.REGEL_VERDRAENGT', '', $i, $zusatz);
         $t['regel' . $i . '_sperre'] = array('THEMA.REGEL_SPERRE', '', $i, $zusatz);
         $t['regel' . $i . '_rang']   = array('THEMA.REGEL_RANG', '', $i, $zusatz);
+        // ---- ab 1.1.0 ----
+        $t['regel' . $i . '_fehlt'] = array('THEMA.REGEL_FEHLT', '', $i, $zusatz);
+        $t['regel' . $i . '_spart'] = array('THEMA.REGEL_SPART', 'ct/kWh', $i, $zusatz);
+        $t['regel' . $i . '_spart_eur'] = array('THEMA.REGEL_SPART_EUR', 'EUR', $i, $zusatz);
     }
     // Fahrplaner, global
     $t['plan_budget'] = array('THEMA.PLAN_BUDGET', 'kW');
+    $t['plan_budget2'] = array('THEMA.PLAN_BUDGET2', 'kW');
     $t['plan_last']   = array('THEMA.PLAN_LAST', 'kW');
     $t['plan_pv']     = array('THEMA.PLAN_PV', 'kWh');
     $t['plan_soc']    = array('THEMA.PLAN_SOC', '%');
+    $t['plan_spart']  = array('THEMA.PLAN_SPART', 'EUR');
+    /* ---- Lebenszeichen (Hausstandard) ----
+     * Diese drei gehen bei JEDEM Durchgang hinaus, auch wenn sich sonst
+     * nichts geaendert hat - sonst faellt bei einer Anlage, die tagelang
+     * dieselben Werte liefert, genau das Zeichen aus, das sagen soll, dass
+     * das Plugin noch lebt. Der Gateway macht aus dem Schraegstrich einen
+     * Unterstrich: octopus/status/ok wird zu octopus_status_ok. */
+    $t['status/ok']      = array('THEMA.STATUS_OK', '');
+    $t['status/ts']      = array('THEMA.STATUS_TS', 's');
+    $t['status/zaehler'] = array('THEMA.STATUS_ZAEHLER', '');
     // Stundenprofil fuer den Spot Price Optimizer.
     $modus = (string) $cfg['profil_ein'];
     if ($modus === 'absolut' || $modus === 'beides') {
@@ -1747,6 +2162,47 @@ function oc_themen()
  * Nummer (Regel 1-4, Stunde 0-23) und den vom Anwender vergebenen Namen -
  * ein Eingang "Wallbox" ist beim Verdrahten mehr wert als "Regel 1".
  */
+/**
+ * Der Name, unter dem ein Thema als virtueller Eingang ankommt.
+ *
+ * Der MQTT-Gateway ersetzt in Themen den Schraegstrich durch einen
+ * Unterstrich: aus octopus/status/ok wird octopus_status_ok. Wer den
+ * Eingang in Loxone unter dem Themennamen sucht, findet ihn sonst nicht -
+ * und die Vorlage erzeugte einen Titel, den es nie gibt.
+ *
+ * Dieselbe Umformung macht die HTTP-Zeile des Endpunkts, damit derselbe
+ * Wert auf beiden Wegen gleich heisst.
+ */
+function oc_thema_flach($k)
+{
+    return str_replace('/', '_', (string) $k);
+}
+
+/**
+ * Einen Wert fuer die HTTP-Zeile formatieren.
+ *
+ * ENTSCHIEDEN WIRD AN DER EINHEIT, NICHT AM PHP-TYP.
+ *
+ * Vorher stand hier "is_float($v) ? sprintf('%.3f', $v) : $v". Das sieht
+ * richtig aus und ist es nicht: der Zustand geht durch json_encode in den
+ * Zwischenspeicher, und json_decode macht aus 12.0 wieder eine GANZE Zahl.
+ * Derselbe Preis kam deshalb einmal als 12.000 und einmal als 12 heraus -
+ * je nachdem, ob frisch gerechnet oder aus dem Speicher gelesen wurde.
+ * Gemessen an zwei Aufrufen hintereinander.
+ *
+ * Fuer die Befehlserkennung in Loxone ist das gleichgueltig. Fuer den
+ * Menschen, der zwei Aufrufe nebeneinander legt, ist es das nicht - und
+ * fuer ein Pruefwerkzeug, das beide Wege vergleicht, erst recht nicht.
+ */
+function oc_wert_formatieren($k, $v, $info = null)
+{
+    if (is_array($v) || is_bool($v) || $v === null) { return ''; }
+    if (!is_numeric($v)) { return (string) $v; }
+    $einheit = (is_array($info) && isset($info[1])) ? (string) $info[1] : '';
+    $mit_komma = in_array($einheit, array('ct/kWh', 'kWh', 'kW', 'EUR', '%'), true);
+    return $mit_komma ? sprintf('%.3f', (float) $v) : (string) $v;
+}
+
 function oc_thema_text($info)
 {
     $t = strip_tags(html_entity_decode(oc_t($info[0]), ENT_QUOTES, 'UTF-8'));
@@ -1814,12 +2270,26 @@ function oc_werte($st = null)
         $w['regel' . $n . '_verdraengt'] = isset($r['verdraengt']) ? (int) $r['verdraengt'] : 0;
         $w['regel' . $n . '_sperre'] = oc_sperre_zahl(isset($r['gesperrt']) ? $r['gesperrt'] : '');
         $w['regel' . $n . '_rang'] = isset($r['rang']) ? (int) $r['rang'] : 50;
+        // ---- ab 1.1.0 ----
+        $w['regel' . $n . '_fehlt'] = isset($r['fehlt']) ? (int) $r['fehlt'] : 0;
+        $w['regel' . $n . '_spart'] = isset($r['spart_ct']) ? (float) $r['spart_ct'] : 0.0;
+        $w['regel' . $n . '_spart_eur'] = isset($r['spart_eur']) ? (float) $r['spart_eur'] : 0.0;
     }
     // Fahrplaner, global
     $w['plan_budget'] = (float) $cfg['budget_kw'];
+    $w['plan_budget2'] = (float) $cfg['budget2_kw'];
     $w['plan_last'] = isset($st['planlast']) ? (float) $st['planlast'] : 0.0;
     $w['plan_pv'] = (isset($st['pv_summe']) && $st['pv_summe'] !== null) ? (float) $st['pv_summe'] : 0.0;
     $w['plan_soc'] = (isset($st['soc']) && $st['soc'] !== null) ? (float) $st['soc'] : -1;
+    $w['plan_spart'] = isset($st['spart_eur']) ? (float) $st['spart_eur'] : 0.0;
+    /* ---- Lebenszeichen ----
+     * 'ok' ist NICHT dasselbe wie das Thema 'ok' weiter oben: dort heisst
+     * es "es liegen gueltige Preise vor", hier "das Plugin hat gerade
+     * gearbeitet". Beides kann auseinanderfallen, und genau dann will man
+     * es unterscheiden koennen. */
+    $w['status/ok'] = 1;
+    $w['status/ts'] = time();
+    $w['status/zaehler'] = oc_zaehler_stand();
     $modus = (string) $cfg['profil_ein'];
     if ($modus === 'absolut' || $modus === 'beides') {
         for ($h = 0; $h < 24; $h++) {
@@ -1850,7 +2320,17 @@ function oc_mqtt_wert_saeubern($v)
     return trim(preg_replace('/ {2,}/', ' ', $wert));
 }
 
-function oc_mqtt_publish($st = null)
+/**
+ * Die Werte an den UDP-Eingang des MQTT-Gateways geben.
+ *
+ * $nur_lebenszeichen = true schickt AUSSCHLIESSLICH status/ok, status/ts
+ * und status/zaehler. Das ist der Fall "es hat sich nichts geaendert": die
+ * Sendebremse haelt die 140 Werte zurueck, aber das Lebenszeichen geht
+ * trotzdem hinaus. Sonst schwiege das Plugin an einem Tag mit gleichen
+ * Preisen stundenlang, und niemand koennte "laeuft noch" von "haengt" oder
+ * "ist tot" unterscheiden.
+ */
+function oc_mqtt_publish($st = null, $nur_lebenszeichen = false)
 {
     $cfg = oc_config();
     if (empty($cfg['mqtt_enabled'])) { return false; }
@@ -1865,16 +2345,29 @@ function oc_mqtt_publish($st = null)
         oc_log_if_changed('mqtt', 'PHP-Erweiterung sockets fehlt - es kann nichts an den Gateway gesendet werden');
         return false;
     }
-    if ($st === null) { $st = oc_state(); }
-    $praefix = trim((string) $cfg['mqtt_topic']);
-    if ($praefix === '') { $praefix = 'octopus'; }
+    if ($st === null && !$nur_lebenszeichen) { $st = oc_state(); }
+    /* Das Praefix geht als THEMA in die Zeile. oc_mqtt_thema_saeubern()
+     * sorgt dafuer, dass darin kein Zeilenumbruch und kein Leerzeichen
+     * steckt - der Gateway liest zeilenweise, und aus den Bruchstuecken
+     * bildet er erfundene Themen. Der WERT wird weiter unten gesaeubert;
+     * bis 1.0.9 wurde nur der Wert behandelt und das Thema nie. */
+    $praefix = oc_mqtt_thema_saeubern($cfg['mqtt_topic'], 'octopus');
 
     $s = @socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
     if (!$s) {
         oc_log_if_changed('mqtt', 'UDP-Socket konnte nicht angelegt werden');
         return false;
     }
-    foreach (oc_werte($st) as $k => $v) {
+    if ($nur_lebenszeichen) {
+        $werte = array(
+            'status/ok'      => 1,
+            'status/ts'      => time(),
+            'status/zaehler' => oc_zaehler_stand(),
+        );
+    } else {
+        $werte = oc_werte($st);
+    }
+    foreach ($werte as $k => $v) {
         $msg = 'publish ' . $praefix . '/' . $k . ' ' . oc_mqtt_wert_saeubern($v);
         @socket_sendto($s, $msg, strlen($msg), 0, '127.0.0.1', $g['udpport']);
     }
@@ -2130,9 +2623,10 @@ function oc_vorlage($art = 'mqtt_in')
         $host = oc_eigene_ip();
         $cmds = array();
         foreach (oc_themen() as $k => $info) {
-            $cmds[] = array('title' => 'OCTOPUS_' . strtoupper($k),
+            $flach = strtoupper(oc_thema_flach($k));
+            $cmds[] = array('title' => 'OCTOPUS_' . $flach,
                             'comment' => oc_thema_text($info),
-                            'check' => strtoupper($k) . '=\v;');
+                            'check' => $flach . '=\v;');
         }
         return array('octopus_http.xml', oc_xml_virtual_in_http(array(
             'title'   => 'Octopus Dynamic (HTTP)',
@@ -2146,7 +2640,9 @@ function oc_vorlage($art = 'mqtt_in')
     $cmds = array();
     foreach (oc_themen() as $k => $info) {
         $cmds[] = array(
-            'title'   => $praefix . '_' . $k,
+            // Der Gateway bildet den Titel aus dem Thema und ersetzt dabei
+            // den Schraegstrich - siehe oc_thema_flach().
+            'title'   => $praefix . '_' . oc_thema_flach($k),
             'comment' => oc_thema_text($info) . ($info[1] !== '' ? ' [' . $info[1] . ']' : ''),
             'check'   => ' ',
         );
@@ -2353,10 +2849,66 @@ function oc_sicherung_lesen($roh)
     }
     $neu = oc_vorgaben();
     $bekannt = array_keys($neu);
+    $schranken = oc_schranken();
     $anzahl = 0;
+    $zugang = null;
+
     foreach ($daten as $k => $w) {
+        /* ---- 1. Der eigene Kopf ----
+         * Schluessel mit fuehrendem Unterstrich sind Beschriftung, keine
+         * Einstellung: _hinweis, _plugin, _fassung, _stand. Sie werden
+         * uebersprungen und NICHT als fremd beanstandet - sonst wiese das
+         * Plugin seine eigene Datei ab. Genau dieser Fall ist anderswo im
+         * Haus schon einmal aufgetreten. */
+        if ((string) $k !== '' && $k[0] === '_') { continue; }
+
+        /* ---- 2. Die Zugangsdaten ----
+         * Sie stehen nur in der Datei, wenn beim Sichern der Haken gesetzt
+         * war. Sie gehoeren NICHT in die Konfiguration, sondern in ihre
+         * eigene Datei mit Rechten 0600 - deshalb hier herausgenommen und
+         * dem Aufrufer gesondert zurueckgegeben. */
+        if ((string) $k === 'zugang' && is_array($w)) {
+            $zugang = array(
+                'email'    => oc_text(isset($w['email']) ? $w['email'] : '', 200),
+                'passwort' => (isset($w['passwort']) && !is_array($w['passwort']))
+                              ? (string) $w['passwort'] : '',
+                'konto'    => oc_text(isset($w['konto']) ? $w['konto'] : '', 40),
+            );
+            if ($zugang['email'] !== '' && !oc_email_gueltig($zugang['email'])) {
+                $mangel[] = sprintf(oc_t('EINST.SICH_WERT'), 'zugang.email');
+            }
+            if ($zugang['konto'] !== '' && !oc_konto_gueltig($zugang['konto'])) {
+                $mangel[] = sprintf(oc_t('EINST.SICH_WERT'), 'zugang.konto');
+            }
+            $anzahl++;
+            continue;
+        }
+
+        /* ---- 3. Unbekannte Schluessel ----
+         * Eine Beanstandung, kein stiller Verlust: sie stammen aus einer
+         * anderen Fassung oder aus einem anderen Plugin. */
         if (!in_array($k, $bekannt, true)) {
             $mangel[] = sprintf(oc_t('EINST.SICH_FREMD'),
+                                 htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
+            continue;
+        }
+
+        /* ---- 4. Und jetzt der WERT ----
+         *
+         * DAS IST DIE HAELFTE, DIE GEFEHLT HAT. Bis 1.0.9 wurde nur der
+         * Schluessel geprueft. Gemessen mit zehn von Hand gebauten Dateien:
+         * NEUN wurden angenommen - ein MQTT-Praefix mit Zeilenumbruch, ein
+         * leeres Aktionstoken, "cheap" als Feld und als Text, eine
+         * PV-Adresse auf 127.0.0.1, eine Ansage-Vorlage auf einen fremden
+         * Rechner, ein negativer Jahresverbrauch, eine Fensterlaenge 999.
+         * Das Formular weist jeden dieser Werte ab; der Rueckspielweg tat
+         * es nicht.
+         *
+         * ABGEWIESEN, NICHT GEKAPPT: beim Speichern ueber das Formular ist
+         * Kappen richtig, denn der Bediener sieht das Ergebnis sofort. Bei
+         * einer Datei saehe niemand, dass aus 99999 kW eine 200 wurde. */
+        if (oc_wert_pruefen($k, $w, $schranken) !== '') {
+            $mangel[] = sprintf(oc_t('EINST.SICH_WERT'),
                                  htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
             continue;
         }
@@ -2366,5 +2918,543 @@ function oc_sicherung_lesen($roh)
     if ($anzahl === 0) {
         $mangel[] = oc_t('EINST.SICH_LEER');
     }
-    return array($mangel ? null : $neu, $mangel, $anzahl);
+
+    /* ---- 5. Was nur im ZUSAMMENSPIEL falsch sein kann ----
+     *
+     * Einzeln sind 99 und 1 beide gueltige Schwellen. Zusammen ergeben sie
+     * ein Preisniveau, das nie "normal" wird. Das Formular weist die
+     * Kombination ab und meldet sie; oc_config() setzt sie stillschweigend
+     * auf die Vorgaben zurueck. Beim Zurueckspielen ist beides falsch: der
+     * Bediener saehe nicht, dass seine Schwellen verworfen wurden. */
+    if (oc_zahl($neu['cheap'], 20.0, -1000, 1000) >= oc_zahl($neu['expensive'], 35.0, -1000, 1000)) {
+        $mangel[] = oc_t('EINST.SICH_SCHWELLEN');
+    }
+
+    /* Die Regelliste ist eine LISTE von Regeln. Ein Feld mit Text darin
+     * kaeme durch die Typpruefung, und oc_config() machte daraus eine
+     * Regel aus lauter Vorgabewerten - ohne ein Wort. */
+    if (is_array($neu['regeln'])) {
+        foreach ($neu['regeln'] as $rk => $rv) {
+            if (!is_array($rv)) {
+                $mangel[] = sprintf(oc_t('EINST.SICH_WERT'),
+                    'regeln.' . htmlspecialchars((string) $rk, ENT_QUOTES, 'UTF-8'));
+                break;
+            }
+        }
+    }
+
+    /* Alles oder nichts: eine halb gueltige Datei ueberschreibt GAR NICHTS. */
+    return array($mangel ? null : $neu, $mangel, $anzahl, $mangel ? null : $zugang);
+}
+
+/**
+ * Taugt der Wert ueberhaupt als Wert?
+ *
+ * Die grobe Wache vor der feinen: kein Feld, wo eine Zahl stehen muss,
+ * keine Steuerzeichen, keine unmaessige Laenge. Sie greift auch fuer
+ * Schluessel, fuer die es keine eigene Schranke gibt.
+ */
+function oc_wert_taugt($w, $max = 4096)
+{
+    if (is_bool($w) || $w === null || is_array($w)) { return false; }
+    if (is_int($w) || is_float($w)) { return true; }
+    $s = (string) $w;
+    if (strlen($s) > $max) { return false; }
+    // Ein Zeilenumbruch in einem Wert zerlegt die UDP-Zeile an den
+    // MQTT-Gateway - siehe oc_mqtt_wert_saeubern().
+    return !preg_match('/[\x00-\x1F\x7F]/', $s);
+}
+
+/**
+ * Einen einzelnen Wert gegen dieselbe Positivliste pruefen, die auch die
+ * Konfiguration benutzt. Rueckgabe: '' wenn in Ordnung, sonst ein Kuerzel.
+ */
+function oc_wert_pruefen($k, $w, $schranken = null)
+{
+    if ($schranken === null) { $schranken = oc_schranken(); }
+    if (!isset($schranken[$k])) {
+        // Kein Eintrag in den Schranken: dann wenigstens die grobe Wache.
+        return oc_wert_taugt($w) ? '' : 'unbrauchbar';
+    }
+    $s = $schranken[$k];
+    $art = $s[0];
+
+    if ($art === 'f') {
+        /* Felder: regeln, months, notify, tts. Ihre Innereien normalisiert
+         * oc_config() Wert fuer Wert; hier zaehlt, dass es ueberhaupt ein
+         * Feld ist - ein Text an dieser Stelle liesse spaeter "+=" auf
+         * eine Zeichenkette laufen, und das ist unter PHP 8 ein
+         * TypeError mitten in der Seite. */
+        return is_array($w) ? '' : 'kein_feld';
+    }
+    if (!oc_wert_taugt($w)) { return 'unbrauchbar'; }
+
+    if ($art === 'b') {
+        return in_array((string) $w, array('0', '1'), true) ? '' : 'kein_haken';
+    }
+    if ($art === 'z' || $art === 'g') {
+        $roh = trim((string) $w);
+        $t = str_replace(',', '.', $roh);
+        if (!is_numeric($t)) { return 'keine_zahl'; }
+        if ($art === 'g' && !preg_match('/^-?[0-9]+$/', $roh)) { return 'nicht_ganz'; }
+        $v = (float) $t;
+        if ($v < (float) $s[2] || $v > (float) $s[3]) { return 'ausserhalb'; }
+        return '';
+    }
+    if ($art === 'w') {
+        return in_array((string) $w, array_slice($s, 1), true) ? '' : 'unbekannt';
+    }
+    if ($art === 't') {
+        $t = (string) $w;
+        $laenge = function_exists('mb_strlen') ? mb_strlen($t, 'UTF-8') : strlen($t);
+        if ($laenge > (int) $s[1]) { return 'zu_lang'; }
+        /* Adressen muessen Adressen sein - eine zurueckgespielte Datei darf
+         * den Abruf nicht auf einen fremden Rechner umlenken. */
+        if (substr($k, -4) === '_url' && $t !== '' && !preg_match('#^https?://#i', $t)) {
+            return 'keine_adresse';
+        }
+        if ($k === 'mqtt_topic' && $t !== '' && !preg_match('#^[A-Za-z0-9_/-]+$#', $t)) {
+            return 'kein_thema';
+        }
+        if ($k === 'aktionstoken' && $t !== '' && !preg_match('/^[A-Za-z0-9]{8,64}$/', $t)) {
+            return 'kein_token';
+        }
+        return '';
+    }
+    return '';
+}
+
+/**
+ * Die Sicherungsdatei bauen.
+ *
+ * VIER DINGE, DIE SIE TRAGEN MUSS:
+ *
+ *  1. ALLE Schluessel aus oc_vorgaben(), nicht nur die abweichenden -
+ *     sonst steht nach dem Zurueckspielen auf einer anderen Fassung ein
+ *     Vorgabewert, den niemand gewaehlt hat.
+ *
+ *  2. DAS AKTIONSTOKEN. Ohne es stuenden nach dem Zurueckspielen alle
+ *     Felder richtig, und das Plugin kaeme trotzdem nicht an die Anlage:
+ *     die Adressen im Miniserver tragen es. Die Datei waere wertlos.
+ *
+ *  3. WAHLWEISE DIE ZUGANGSDATEN. Der erklaerte Zweck ist der UMZUG auf
+ *     einen zweiten LoxBerry. Ohne E-Mail, Passwort und Kundennummer ist
+ *     der Umzug NICHT fertig - dort stuenden alle Felder richtig, und es
+ *     kaemen trotzdem keine Preise. Bis 1.0.9 behauptete der Warntext am
+ *     Knopf, die Datei enthalte die Zugangsdaten; gemessen enthielt sie
+ *     keine. Jetzt entscheidet ein Haken, und der Text sagt beides.
+ *
+ *  4. EINEN LESBAREN KOPF mit Datum, Plugin und Fassung. Seine Schluessel
+ *     beginnen mit einem Unterstrich und werden beim Einlesen
+ *     uebersprungen.
+ *
+ * Rueckgabe: der fertige JSON-Text, oder '' wenn er sich nicht bilden
+ * liess (ungueltiges UTF-8 in einem Regelnamen zum Beispiel).
+ */
+function oc_sicherung_bauen($mit_zugang = false)
+{
+    $cfg = oc_config();
+    $kopf = array(
+        '_hinweis' => 'Sicherung der Einstellungen des LoxBerry-Plugins Octopus Dynamic.'
+                    . ' Im Reiter Einstellungen unter "Einstellungen zurueckspielen"'
+                    . ' wieder einlesen.',
+        '_plugin'  => 'octopus',
+        '_fassung' => oc_version(),
+        '_stand'   => date('Y-m-d H:i:s'),
+        '_zugang'  => $mit_zugang ? 'enthalten' : 'nicht enthalten',
+    );
+    $daten = $kopf + $cfg;
+    if ($mit_zugang) {
+        $z = oc_zugang();
+        $daten['zugang'] = array(
+            'email' => $z['email'], 'passwort' => $z['passwort'], 'konto' => $z['konto'],
+        );
+    }
+    $js = json_encode($daten,
+        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    /* json_encode kann false liefern. Ein blankes "echo json_encode(...);
+     * exit;" haette dann eine 0-Byte-Datei geliefert, die wie eine
+     * Sicherung aussieht. Der Aufrufer meldet stattdessen einen Fehler. */
+    return $js === false ? '' : $js;
+}
+
+/* ==================================================================
+ * Formulartoken - der Wachposten am Eingang
+ *
+ * Bis 1.0.9 hatte dieses Plugin GAR KEINEN: gemessen mit einer Suche ueber
+ * den ganzen webfrontend-Zweig, kein 'formtoken', kein 'fmt', kein
+ * 'hash_hmac'. Eine fremde Seite konnte im angemeldeten Browser einen
+ * Preisabruf, ein MQTT-Senden oder eine Sprachansage ausloesen.
+ *
+ * Der Token wird aus dem Aktionstoken abgeleitet und nicht eigens
+ * gespeichert - es gibt also kein zweites Geheimnis, das verlorengehen
+ * kann, und die Sicherungsdatei traegt beides mit dem einen Wert.
+ *
+ * EIN Wachposten am Eingang, nicht eine Pruefung je Handler: einen
+ * einzelnen Handler kann man beim Erweitern vergessen, den Eingang nicht.
+ * ================================================================== */
+
+function oc_formtoken($cfg = null)
+{
+    if ($cfg === null) { $cfg = oc_config(); }
+    $t = isset($cfg['aktionstoken']) ? (string) $cfg['aktionstoken'] : '';
+    if ($t === '') { return ''; }
+    return hash_hmac('sha256', 'formular-v1', $t);
+}
+
+/**
+ * Traegt dieser POST ein gueltiges Merkmal?
+ *
+ * FAIL CLOSED an zwei Stellen: ohne eingerichtetes Aktionstoken gibt es
+ * kein Merkmal und damit kein Ja, und ein leeres Feld wird abgewiesen,
+ * BEVOR hash_equals darankommt - hash_equals('', '') ist true.
+ */
+function oc_formtoken_ok($cfg = null)
+{
+    $soll = oc_formtoken($cfg);
+    if ($soll === '') { return false; }
+    $ist = (isset($_POST['fmt']) && !is_array($_POST['fmt'])) ? (string) $_POST['fmt'] : '';
+    if ($ist === '') { return false; }
+    return hash_equals($soll, $ist);
+}
+
+/* ==================================================================
+ * Hysterese: was laeuft, laeuft zu Ende
+ *
+ * Der Planer bekommt bei jedem Lauf eine frische Preisreihe. Ohne
+ * Gedaechtnis kann er deshalb bei jedem Abruf zu einem anderen Ergebnis
+ * kommen - und die Wallbox schaltet mitten im Ladevorgang ab, weil in
+ * drei Stunden eine Viertelstunde billiger geworden ist.
+ *
+ * Gemerkt wird nur EINE Zahl je Regel: bis wann der begonnene Block
+ * laeuft. Sie wird gesetzt, wenn ein Block ANFAENGT, und nicht mehr
+ * angefasst, bis er vorbei ist. Damit kann sie sich nicht selbst
+ * verlaengern - das waere eine Regel, die nie wieder ausgeht.
+ *
+ * Die Ablage liegt in /tmp und uebersteht einen Neustart nicht. Das ist
+ * richtig so: nach einem Neustart laeuft ohnehin nichts mehr, und ein
+ * Gedaechtnis an einen Block, den niemand mehr faehrt, waere falsch.
+ * ================================================================== */
+
+/** array(Regelindex => bis_ts). Abgelaufene Eintraege fallen weg. */
+function oc_laufend_lesen()
+{
+    $cfg = oc_config();
+    if (empty($cfg['hysterese'])) { return array(); }
+    $f = oc_tmpdir() . '/laufend.json';
+    if (!is_file($f)) { return array(); }
+    $d = json_decode((string) @file_get_contents($f), true);
+    if (!is_array($d)) { return array(); }
+    $jetzt = time();
+    $out = array();
+    foreach ($d as $i => $bis) {
+        if (is_array($bis)) { continue; }
+        $bis = (int) $bis;
+        // Harte Obergrenze: kein Block laeuft laenger als 24 Stunden.
+        if ($bis > $jetzt && $bis <= $jetzt + 86400) { $out[(int) $i] = $bis; }
+    }
+    return $out;
+}
+
+/**
+ * Nach der Rechnung fortschreiben.
+ *
+ * Drei Faelle je Regel:
+ *   laeuft und war noch nicht vermerkt  -> Ende eintragen
+ *   laeuft und war vermerkt             -> unveraendert stehen lassen
+ *   laeuft nicht                        -> Eintrag entfernen
+ */
+function oc_laufend_fortschreiben($regeln, $jetzt)
+{
+    $cfg = oc_config();
+    $f = oc_tmpdir() . '/laufend.json';
+    if (empty($cfg['hysterese'])) {
+        /* is_file() VOR unlink(). Das @ genuegt nicht, wenn ein eigener
+         * Fehlerbehandler gesetzt ist - der wird unabhaengig von
+         * error_reporting gerufen, und "No such file or directory" steht
+         * dann als Befund im Protokoll, obwohl nichts fehlt. Dieselbe
+         * Falle wie bei mkdir(); im Haus schon zweimal hineingelaufen. */
+        if (is_file($f)) { @unlink($f); }
+        return;
+    }
+    $alt = oc_laufend_lesen();
+    $neu = array();
+    foreach ((array) $regeln as $r) {
+        if (!is_array($r) || empty($r['aktiv'])) { continue; }
+        $i = (int) $r['nr'] - 1;
+        if (isset($alt[$i])) {
+            $neu[$i] = $alt[$i];
+            continue;
+        }
+        $rest = isset($r['rest']) ? (int) $r['rest'] : 0;
+        if ($rest > 0) { $neu[$i] = (int) $jetzt + $rest * 60; }
+    }
+    @file_put_contents($f, json_encode($neu));
+}
+
+/* ==================================================================
+ * Benachrichtigung des LoxBerry (die Glocke in der Kopfzeile)
+ *
+ * Bis 1.0.9 gab es nur MQTT-Themen, die erst in Loxone verdrahtet werden
+ * mussten. Wer das nicht getan hat, merkte einen Ausfall gar nicht: die
+ * virtuellen Eingaenge behalten ihren letzten Wert, und in der App sieht
+ * alles normal aus, obwohl die Preise von gestern sind.
+ *
+ * notify_ext() steckt in loxberry_log.php. Ein '@' hilft gegen "undefined
+ * function" NICHT - das ist ein fataler Fehler, kein unterdrueckbarer.
+ * Deshalb function_exists() davor. (Bauart uebernommen aus dem
+ * Spotpreis-Tibber-Plugin, damit beide Linien dasselbe tun.)
+ * ================================================================== */
+
+function oc_notify($thema, $stufe, $text)
+{
+    $cfg = oc_config();
+    if (empty($cfg['notify']['lb'])) { return false; }
+
+    /* Nur bei AENDERUNG melden. Ohne diese Bremse stuenden nach einem Tag
+     * Ausfall 1440 gleichlautende Meldungen in der Glocke. */
+    $d = oc_datadir();
+    $f = $d . '/.notify_' . preg_replace('/[^a-z0-9_]/i', '', (string) $thema);
+    $neu = $stufe . '|' . md5((string) $text);
+    $alt = is_file($f) ? trim((string) @file_get_contents($f)) : '';
+    if ($alt === $neu) { return false; }
+    @file_put_contents($f, $neu);
+    if ($stufe === 'ok') { return true; }        // Entwarnung: nur merken
+
+    // loxberry_log.php nachladen, wenn es da ist - der Cron laedt es nicht.
+    $lib = oc_paths()['home'] . '/libs/phplib/loxberry_log.php';
+    if (!function_exists('notify_ext') && is_file($lib)) { @require_once $lib; }
+    if (!function_exists('notify_ext')) {
+        oc_log_if_changed('kein_notify', 'Der Hinweis "' . $text . '" konnte nicht an das '
+            . 'Benachrichtigungszentrum gehen: notify_ext() gibt es in dieser '
+            . 'LoxBerry-Fassung nicht.');
+        return false;
+    }
+    notify_ext(array(
+        'PACKAGE'  => oc_paths()['plugin'],
+        'NAME'     => 'octopus',
+        'MESSAGE'  => (string) $text,
+        'SEVERITY' => ($stufe === 'fehler') ? 3 : 4,
+    ));
+    return true;
+}
+
+/**
+ * Die beiden Anlaesse, bei denen die Glocke laeuten soll.
+ * Wird vom minuetlichen Lauf gerufen.
+ */
+function oc_notify_pruefen($st = null)
+{
+    $cfg = oc_config();
+    if (empty($cfg['notify']['lb'])) { return; }
+    if ($st === null) { $st = oc_state(); }
+
+    $grenze = max(1, (int) $cfg['notify']['lb_stunden']);
+    $alter = ((int) $st['stand'] > 0) ? (int) round((time() - (int) $st['stand']) / 3600) : 9999;
+    if ($alter >= $grenze) {
+        oc_notify('abruf', 'fehler', str_replace(
+            array('%H%', '%F%'),
+            array($alter === 9999 ? '?' : $alter, oc_fehlertext((string) $st['fehler'])),
+            oc_t('NOTIFY.ABRUF')));
+    } else {
+        oc_notify('abruf', 'ok', 'ok');
+    }
+
+    if (!empty($st['tomorrow_ok'])) {
+        oc_notify('morgen_' . date('Ymd'), 'hinweis', str_replace(
+            array('%MINP%', '%MINH%', '%MAXP%', '%MAXH%'),
+            array(oc_num($st['morgen']['minp'], 1), (int) $st['morgen']['minh'],
+                  oc_num($st['morgen']['maxp'], 1), (int) $st['morgen']['maxh']),
+            oc_t('NOTIFY.MORGEN')));
+    }
+    // Alte Merker aufraeumen: ein Tagesmerker von gestern hat ausgedient.
+    foreach (glob(oc_datadir() . '/.notify_morgen_*') ?: array() as $alt) {
+        if (basename($alt) !== '.notify_morgen_' . date('Ymd')) { @unlink($alt); }
+    }
+}
+
+/* ==================================================================
+ * Lebenszeichen
+ *
+ * Hausstandard: <praefix>/status/ok, /ts und /zaehler gehen bei JEDEM
+ * Durchgang hinaus - auch dann, wenn sich sonst nichts geaendert hat.
+ * Sonst faellt bei einer Anlage, die tagelang dieselben Werte liefert,
+ * genau das Zeichen aus, das sagen soll, dass das Plugin noch lebt.
+ * ================================================================== */
+
+/** Laufende Nummer 0 bis 999, je Durchgang eins weiter. */
+function oc_zaehler()
+{
+    $f = oc_tmpdir() . '/zaehler.txt';
+    $n = is_file($f) ? (int) @file_get_contents($f) : 0;
+    $n = ($n + 1) % 1000;
+    @file_put_contents($f, (string) $n);
+    return $n;
+}
+
+/** Der zuletzt vergebene Stand, ohne ihn weiterzudrehen. */
+function oc_zaehler_stand()
+{
+    $f = oc_tmpdir() . '/zaehler.txt';
+    return is_file($f) ? (int) @file_get_contents($f) : 0;
+}
+
+/* ==================================================================
+ * Der echte Verbrauch statt des erfundenen Haushaltsprofils
+ *
+ * oc_profil() liefert ein vereinfachtes H0-Profil. Das ist eine ehrliche
+ * Abschaetzung und wird auch so genannt - aber es ist geraten. Wer eine
+ * Adresse hinterlegt, die den Verbrauch je Stunde liefert, bekommt statt
+ * der Schaetzung eine Messung.
+ *
+ * Ausgewertet wird mit plan_pv_lesen() - dieselbe Rechnung, dieselben
+ * Formen, dieselben Fehlermeldungen. Zwei Auswerter fuer dasselbe waeren
+ * einer zu viel.
+ * ================================================================== */
+
+/**
+ * Rueckgabe: array('profil' => array(0..23 => Gewicht)|null,
+ *                  'meldung' => '', 'tage' => Anzahl ausgewerteter Tage)
+ * Gecacht wie die uebrigen Fremdauskuenfte: hoechstens alle 15 Minuten.
+ */
+function oc_verbrauch($force = false)
+{
+    $cfg = oc_config();
+    $leer = array('profil' => null, 'meldung' => '', 'tage' => 0, 'ts' => 0);
+    if ((string) $cfg['verbrauch_quelle'] === '' || trim((string) $cfg['verbrauch_url']) === '') {
+        return $leer;
+    }
+    $cache = oc_tmpdir() . '/verbrauch.json';
+    if (!$force && is_file($cache) && time() - filemtime($cache) < 900) {
+        $c = json_decode((string) @file_get_contents($cache), true);
+        if (is_array($c)) { return $c + $leer; }
+    }
+    $erg = $leer;
+    $erg['ts'] = time();
+    $roh = oc_holen($cfg['verbrauch_url']);
+    if ($roh === null) {
+        $erg['meldung'] = 'NICHT_ERREICHBAR';
+        @file_put_contents($cache, json_encode($erg));
+        return $erg;
+    }
+    list($werte, $m) = plan_pv_lesen($roh, $cfg['verbrauch_quelle'], $cfg['verbrauch_pfad'],
+        $cfg['verbrauch_zeitfeld'], $cfg['verbrauch_wertfeld'], $cfg['verbrauch_einheit'], 3600);
+    $erg['meldung'] = $m;
+    if ($werte) {
+        /* Aus den Stundenwerten ein Gewichtsprofil bilden: je Stunde des
+         * Tages der Mittelwert ueber alle gelieferten Tage, dann auf einen
+         * Mittelwert von 1,0 normiert. Damit passt es an dieselbe Stelle
+         * wie oc_profil(), und die Rechnung dahinter bleibt unveraendert. */
+        $eimer = array_fill(0, 24, array(0.0, 0));
+        $tage = array();
+        foreach ($werte as $ts => $wh) {
+            $h = (int) date('G', (int) $ts);
+            $eimer[$h][0] += (float) $wh;
+            $eimer[$h][1]++;
+            $tage[date('Ymd', (int) $ts)] = 1;
+        }
+        $roh24 = array();
+        $summe = 0.0; $n = 0;
+        for ($h = 0; $h < 24; $h++) {
+            $v = $eimer[$h][1] > 0 ? $eimer[$h][0] / $eimer[$h][1] : 0.0;
+            $roh24[$h] = $v;
+            if ($eimer[$h][1] > 0) { $summe += $v; $n++; }
+        }
+        /* Nur normieren, wenn ALLE 24 Stunden belegt sind. Ein Profil mit
+         * Loechern gewichtete die fehlenden Stunden mit null und machte den
+         * Vergleich schoener, als er ist. */
+        if ($n === 24 && $summe > 0) {
+            $mittel = $summe / 24.0;
+            $profil = array();
+            for ($h = 0; $h < 24; $h++) { $profil[$h] = round($roh24[$h] / $mittel, 4); }
+            $erg['profil'] = $profil;
+            $erg['tage'] = count($tage);
+        } else {
+            $erg['meldung'] = 'UNVOLLSTAENDIG';
+        }
+    }
+    @file_put_contents($cache, json_encode($erg));
+    return $erg;
+}
+
+/**
+ * Das Gewichtsprofil, das der Kostenvergleich benutzt - und woher es kommt.
+ * Rueckgabe: array(array(24 Gewichte), 'echt'|'geschaetzt')
+ */
+function oc_profil_aktiv()
+{
+    $v = oc_verbrauch();
+    if (is_array($v['profil']) && count($v['profil']) === 24) {
+        return array($v['profil'], 'echt');
+    }
+    return array(oc_profil(), 'geschaetzt');
+}
+
+/* ==================================================================
+ * Historie: Nachtrag und Ausfuhr
+ * ================================================================== */
+
+/**
+ * Die Tageswerte fortschreiben - mit Erledigt-Marker statt Zeitfenster.
+ *
+ * Bis 1.0.9 lief oc_history_add() nur zwischen 23:50 und 23:59. War der
+ * LoxBerry in diesen zehn Minuten aus, im Neustart oder im Update, war der
+ * Tag fuer immer verloren - und die Historie ist die Grundlage des ganzen
+ * Kostenvergleichs. Es ist dieselbe Klasse Fehler, die fuer den
+ * Monatsbericht schon einmal behoben wurde, nur eine Ebene tiefer.
+ *
+ * Jetzt: ab 23:50 wird der laufende Tag geschrieben, und ab 00:05 wird der
+ * VORTAG nachgetragen, falls er fehlt. Der Nachtrag greift auf die
+ * Historie zu, nicht auf die Preisliste - deshalb kann er nur aus dem
+ * Zwischenspeicher rechnen, den der letzte Lauf des Vortags hinterlassen
+ * hat. Liegt keiner vor, wird der Tag ausdruecklich als fehlend vermerkt
+ * und nicht erfunden.
+ */
+function oc_history_nachtrag()
+{
+    $f = oc_datadir() . '/tagesstand.json';
+    $gestern = date('Ymd', strtotime('yesterday'));
+    $csv = oc_datadir() . '/history.csv';
+    if (is_file($csv)) {
+        foreach (file($csv, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: array() as $l) {
+            if (strpos($l, $gestern . ';') === 0) { return false; }   // schon da
+        }
+    }
+    if (!is_file($f)) { return false; }
+    $d = json_decode((string) @file_get_contents($f), true);
+    if (!is_array($d) || !isset($d['tag']) || (string) $d['tag'] !== $gestern) { return false; }
+    $zeilen = is_file($csv)
+        ? (file($csv, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: array()) : array();
+    $zeilen[] = $d['zeile'];
+    sort($zeilen);
+    if (count($zeilen) > 400) { $zeilen = array_slice($zeilen, -400); }
+    @file_put_contents($csv, implode("\n", $zeilen) . "\n");
+    oc_log('Tageswerte nachgetragen fuer den ' . $gestern . ' (der Lauf um 23:50 ist ausgefallen)');
+    return true;
+}
+
+/**
+ * Die Historie als CSV zum Herunterladen.
+ *
+ * Nach 400 Tagen faellt der aelteste Tag heraus. Wer den Vergleich ueber
+ * Jahre fuehren will, braucht die Datei in der Hand - und wer einen
+ * Fehlerbericht schreibt, kann sie anhaengen.
+ *
+ * Semikolon als Trenner und Komma als Dezimalzeichen: so oeffnet eine
+ * deutsche Tabellenkalkulation die Datei ohne Rueckfrage.
+ */
+function oc_history_csv()
+{
+    $z = array('Datum;Schnitt ct/kWh;Minimum ct/kWh;Maximum ct/kWh;'
+             . 'gewichtet ct/kWh;CO2 g/kWh;Quelle');
+    foreach (oc_history_read(400) as $r) {
+        $z[] = substr($r[0], 6, 2) . '.' . substr($r[0], 4, 2) . '.' . substr($r[0], 0, 4)
+            . ';' . str_replace('.', ',', (string) $r[1])
+            . ';' . str_replace('.', ',', (string) $r[2])
+            . ';' . str_replace('.', ',', (string) $r[3])
+            . ';' . str_replace('.', ',', (string) $r[4])
+            . ';' . (int) $r[5]
+            . ';' . ((int) $r[6] ? 'Demo' : 'echt');
+    }
+    return implode("\r\n", $z) . "\r\n";
 }

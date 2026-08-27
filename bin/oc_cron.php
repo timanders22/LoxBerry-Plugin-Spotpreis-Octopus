@@ -14,6 +14,45 @@
 
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 
+/**
+ * Den LoxBerry-Wurzelordner ohne festen Systempfad finden.
+ *
+ * DIESE DEFINITION MUSS VOR IHREM ERSTEN AUFRUF STEHEN.
+ *
+ * Bis 1.0.9 stand sie am DATEIENDE, in einem
+ * "if (!function_exists(...)) { function ... }". Eine BEDINGTE
+ * Funktionsdefinition hebt PHP nicht vor - beim Aufruf weiter unten gab es
+ * die Funktion also noch nicht. Gemessen, unter 7.4 wie unter 8.4
+ * wortgleich:
+ *
+ *     Fatal error: Uncaught Error: Call to undefined function
+ *     lb_wurzel_ermitteln() in .../bin/oc_cron.php:25
+ *
+ * Getroffen wurde genau der Rueckfall, den der Kommentar darunter
+ * verspricht: Platzhalter nicht ersetzt UND LBHOMEDIR nicht gesetzt. Und
+ * weil cron.01min nach /dev/null umleitet, haette es niemand je gesehen.
+ * Der Rueckfall war also nie eine Absicherung, sondern eine Erzaehlung.
+ *
+ * Sie traegt kein Plugin-Kuerzel und ist deshalb gegen eine
+ * Doppeldefinition abgesichert - oc_lib.php bringt dieselbe Funktion mit,
+ * und beide koennen im selben Prozess landen.
+ */
+if (!function_exists('lb_wurzel_ermitteln')) {
+    function lb_wurzel_ermitteln()
+    {
+        $d = __DIR__;
+        for ($i = 0; $i < 8; $i++) {
+            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')) {
+                return $d;
+            }
+            $eltern = dirname($d);
+            if ($eltern === $d) { break; }
+            $d = $eltern;
+        }
+        return '';
+    }
+}
+
 /* Die Bibliothek liegt im unangemeldeten Webbereich, weil der Endpunkt fuer
    Loxone sie ebenfalls braucht. Der Platzhalter wird bei der Installation
    ersetzt; die beiden Rueckfaelle greifen im Archiv und wenn ein
@@ -23,7 +62,7 @@ if (!is_file($oc_lib)) {
     $oc_home = getenv('LBHOMEDIR');
     if (!$oc_home || !is_dir($oc_home)) {
         foreach (array(lb_wurzel_ermitteln(), '/home/loxberry/loxberry') as $k) {
-            if (is_dir($k)) { $oc_home = $k; break; }
+            if ($k !== '' && is_dir($k)) { $oc_home = $k; break; }
         }
     }
     // Eigener Ablageort: <home>/bin/plugins/<ordner>
@@ -42,6 +81,48 @@ require_once $oc_lib;
 $cfg = oc_config();
 if (empty($cfg['enabled'])) {
     echo "AUS\n";
+    exit(0);
+}
+
+/* ==================================================================
+ * Cron-Sperre - Pflicht, wo der Cron ins Netz geht
+ * ==================================================================
+ *
+ * Der Takt ist eine Minute. Was ein Lauf im schlimmsten Fall braucht,
+ * steht in den Zeitschranken der einzelnen Abrufe:
+ *
+ *     Kraken-Token   20 s
+ *     Kraken-Preise  25 s   (bei abgelaufenem Token noch einmal 20 + 25 s)
+ *     CO2            15 s
+ *     PV-Prognose    12 s
+ *     Speicherstand  12 s
+ *     Verbrauch      12 s
+ *     Ansage         10 s
+ *                   ------
+ *                   106 s, mit dem Wiederholversuch bis 151 s
+ *
+ * Zwei bis drei Laeufe koennen sich also ueberlappen. Sie schreiben in
+ * dieselben Zwischenspeicher, dieselben said_-Merker und dieselbe
+ * Signaturdatei - und der teuerste Fall ist der, in dem zwei Laeufe sich
+ * gleichzeitig bei Kraken anmelden.
+ *
+ * LOCK_NB, nicht warten: ein wartender Lauf waere beim naechsten Takt
+ * ohnehin ueberholt. Wer nicht drankommt, geht weg und sagt es einmal.
+ *
+ * Die Variable bleibt bis zum Programmende bestehen - gaebe man sie frei,
+ * loeste sich die Sperre mitten im Lauf auf.
+ */
+$oc_sperrdatei = oc_tmpdir() . '/cron.lock';
+$oc_sperre = @fopen($oc_sperrdatei, 'c');
+if ($oc_sperre === false) {
+    // Kein Grund abzubrechen: ohne Sperre laufen heisst laufen wie bisher.
+    oc_log_if_changed('cronsperre', 'Die Sperrdatei ' . $oc_sperrdatei
+        . ' liess sich nicht anlegen - der Lauf geht ohne Sperre weiter.');
+} elseif (!@flock($oc_sperre, LOCK_EX | LOCK_NB)) {
+    oc_log_if_changed('cronsperre', 'Ein vorheriger Lauf ist noch nicht fertig - '
+        . 'dieser Durchgang wird uebersprungen.');
+    fclose($oc_sperre);
+    echo "BELEGT\n";
     exit(0);
 }
 
@@ -116,9 +197,24 @@ if ((int) date('j') === 1 && (int) date('G') >= 8 && !is_file($oc_marke)) {
 /* ---- MQTT: bei Aenderung, mindestens alle 30 Minuten ----
    ann und ptest gehoeren in die Signatur: sie wechseln minutengenau, und
    ohne sie wuerde das Meldefenster erst beim naechsten Stundenschlag
-   veroeffentlicht. */
+   veroeffentlicht.
+
+   DIE LEBENSZEICHEN GEHOEREN NICHT IN DIE SIGNATUR. status/ts traegt die
+   Uhrzeit und status/zaehler eine laufende Nummer - beide aendern sich bei
+   JEDEM Lauf. Stuenden sie in der Signatur, waere die Bremse wirkungslos
+   und das Plugin schickte jede Minute alle 150 Werte. Sie gehen statt
+   dessen eigens hinaus, und zwar immer. */
+/* Den Zaehler VOR oc_werte() weiterdrehen: oc_werte() liest den Stand,
+ * es dreht ihn nicht selbst. Sonst stuende in der Meldung die Nummer des
+ * vorigen Durchgangs. */
+oc_zaehler();
 $werte = oc_werte($st);
-$sig = json_encode($werte);
+$fuer_sig = array();
+foreach ($werte as $k => $v) {
+    if (strpos((string) $k, 'status/') === 0) { continue; }
+    $fuer_sig[$k] = $v;
+}
+$sig = json_encode($fuer_sig);
 $sigf = oc_tmpdir() . '/mqtt_sig.txt';
 $beat = oc_tmpdir() . '/mqtt_beat';
 $alt = is_file($sigf) ? (string) @file_get_contents($sigf) : '';
@@ -127,11 +223,36 @@ if ($sig !== $alt || !is_file($beat) || time() - filemtime($beat) > 1800) {
         @file_put_contents($sigf, $sig);
         @touch($beat);
     }
+} else {
+    // Nichts Neues - aber das Lebenszeichen geht trotzdem hinaus.
+    oc_mqtt_publish(null, true);
 }
 
-/* ---- Tageswerte sichern ---- */
-if ((int) date('G') === 23 && (int) date('i') >= 50) {
+/* ---- Die Glocke des LoxBerry ---- */
+oc_notify_pruefen($st);
+
+/* ---- Tageswerte sichern ----
+ *
+ * Drei Zeitpunkte statt einem:
+ *   ab 23:40  den fertigen Tageswert beiseitelegen (ueberschreibt sich)
+ *   ab 23:50  ihn in die Historie schreiben, wie bisher
+ *   ab 00:05  den VORTAG nachtragen, falls er fehlt
+ *
+ * Bis 1.0.9 gab es nur den mittleren Schritt. War der LoxBerry in diesen
+ * zehn Minuten aus, im Neustart oder im Update, war der Tag fuer immer
+ * verloren - und die Historie ist die Grundlage des ganzen
+ * Kostenvergleichs. Es ist dieselbe Klasse Fehler, die fuer den
+ * Monatsbericht schon einmal behoben wurde. */
+$std = (int) date('G');
+$min = (int) date('i');
+if ($std === 23 && $min >= 40) {
+    oc_tagesstand_merken($st);
+}
+if ($std === 23 && $min >= 50) {
     oc_history_add($st);
+}
+if ($std === 0 && $min >= 5) {
+    oc_history_nachtrag();
 }
 
 /* ---- Alte Zwischendateien aufraeumen ---- */
@@ -139,35 +260,10 @@ if (rand(0, 60) === 0) {
     foreach (glob(oc_datadir() . '/demo_*.json') ?: array() as $f) {
         if (time() - (int) filemtime($f) > 10 * 86400) { @unlink($f); }
     }
+    // Die Wiederholsperren des Endpunkts: nach einem Tag sind sie erledigt.
+    foreach (glob(oc_tmpdir() . '/sperre_*') ?: array() as $f) {
+        if (time() - (int) filemtime($f) > 86400) { @unlink($f); }
+    }
 }
 
 echo "OK\n";
-
-
-/* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
- *
- * Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
- * config/plugins UND webfrontend enthaelt. Das trifft die uebliche
- * Installation genauso wie eine an einem anderen Ort - und es trifft auch
- * den Fall, dass das Plugin noch als entpacktes Archiv daliegt (dann findet
- * es nichts und gibt einen Leerstring zurueck, was der Aufrufer ohnehin
- * abfangen muss).
- *
- * Der Name traegt kein Plugin-Kuerzel und ist deshalb abgesichert: zwei
- * Bibliotheken landen nie im selben Prozess, aber die Pruefung kostet nichts.
- */
-if (!function_exists('lb_wurzel_ermitteln')) {
-    function lb_wurzel_ermitteln()
-    {
-        $d = __DIR__;
-        for ($i = 0; $i < 8; $i++) {
-            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')) {
-                return $d;
-            }
-            $eltern = dirname($d);
-            if ($eltern === $d) { break; }
-            $d = $eltern;
-        }
-        return '';
-    }
-}

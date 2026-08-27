@@ -36,18 +36,39 @@ if ($oc_p['home'] && file_exists($oc_p['home'] . '/libs/phplib/loxberry_system.p
     require_once $oc_p['home'] . '/libs/phplib/loxberry_web.php';
 }
 
+/* Eine Wache, einmal zugewiesen - und jeder Handler fragt sie.
+ *
+ * Vorher stand an elf Stellen $_SERVER['REQUEST_METHOD'] === 'POST'.
+ * Das ist zweierlei: erstens elf Gelegenheiten, sich zu vertippen,
+ * und zweitens greift es auf einen Schluessel zu, den es nicht immer gibt -
+ * am PHP-CLI fehlt er, und PHP 8 meldet dann eine Warnung je Stelle, PHP 7.4
+ * schweigt. Am Webserver ist der Schluessel immer da, der Unterschied fiel
+ * also nur am Pruefstand auf; aber ein Wert, den man elfmal ungeprueft
+ * liest, ist eine Wette.
+ *
+ * Und es ist die Form, die das Hauswerkzeug sicherung_verdrahtung.py
+ * messen kann: es sucht nach 'if ($wache && isset($_POST[...]))' und prueft,
+ * ob die Wache VOR dem Zweig zugewiesen wird. Eine undefinierte Variable
+ * waere false - lautlos, und der Knopf taete nie etwas. */
+$oc_ist_post = (isset($_SERVER['REQUEST_METHOD'])
+                && $_SERVER['REQUEST_METHOD'] === 'POST');
 $oc_gespeichert = false;
 $oc_fehler      = array();   // alle Beanstandungen sammeln, nicht nur die letzte
+/* Die Meldungsablage - das Gegenstueck zu $oc_fehler.
+ *
+ * SIE HAT BIS 1.0.9 GEFEHLT. Der Rueckspielzweig schrieb in
+ * $oc_meldungen[], und diese Ablage wurde nirgends angelegt und nirgends
+ * ausgegeben: gemessen mit einer Suche ueber die ganze Datei, GENAU EIN
+ * Vorkommen, und das war das Schreiben. Ein erfolgreiches Zurueckspielen
+ * meldete deshalb gar nichts - der Bediener drueckte den Knopf, und
+ * sichtbar geschah nichts. */
+$oc_meldungen   = array();
 /* Die erlaubten Werte des Fristfeldes: -1 fuer "keine Frist" und die
  * Stunden 0 bis 23. Als Text, weil das Formular Text liefert. */
 $oc_stunden_wahl = array_merge(array('-1'), array_map('strval', range(0, 23)));
-/* Ausgabe des Planer-Selbsttests. Er rechnet nur, spricht mit niemandem und
- * braucht keine Preise - deshalb ein einfacher Knopf ohne Nebenwirkung. */
+/* Ausgabe des Planer-Selbsttests. Der Handler dazu steht weiter unten bei
+ * den anderen - hinter dem Wachposten, nicht davor. */
 $oc_plantest = '';
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['plantest'])) {
-    list($oc_pt_n, $oc_pt_f, $oc_plantest) = plan_selbsttest();
-    $oc_tab = 'tab-test';
-}
 $oc_hinweis     = '';
 $oc_test_titel  = '';
 $oc_test_text   = '';
@@ -66,6 +87,51 @@ $oc_cfg = oc_config();
 $oc_zug = oc_zugang();
 
 /* ==================================================================
+ * Das Aktionstoken beim ERSTEN Oeffnen erzeugen
+ * ==================================================================
+ *
+ * Bis 1.0.9 entstand es erst beim ersten Speichern. Das genuegte, solange
+ * es nur die Adressen im Miniserver betraf. Seit 1.1.0 haengt auch das
+ * FORMULARMERKMAL daran - und ohne Token gaebe es keines, der Wachposten
+ * unten wiese jedes Formular ab, und niemand koennte je speichern.
+ *
+ * Danach wird es nur noch auf ausdruecklichen Wunsch neu gewuerfelt: es
+ * steckt in den Adressen im Miniserver.
+ */
+if ((string) $oc_cfg['aktionstoken'] === '') {
+    $oc_cfg['aktionstoken'] = oc_token_erzeugen();
+    oc_config_write($oc_cfg);
+    $oc_cfg = oc_config();
+}
+$oc_fmt = oc_formtoken($oc_cfg);
+
+/* ==================================================================
+ * Der Wachposten - EINE Pruefung am Eingang, nicht eine je Handler
+ * ==================================================================
+ *
+ * Bis 1.0.9 hatte dieses Plugin gar keine: gemessen mit einer Suche ueber
+ * den ganzen webfrontend-Zweig, kein 'formtoken', kein 'fmt', kein
+ * 'hash_hmac'. Eine fremde Seite konnte im angemeldeten Browser einen
+ * Preisabruf, ein MQTT-Senden oder eine Sprachansage ausloesen - es
+ * genuegte ein Formular, das auf diese Adresse zeigt.
+ *
+ * WARUM AM EINGANG UND NICHT JE HANDLER: einen einzelnen Handler kann man
+ * beim Erweitern vergessen, den Eingang nicht. Faellt die Pruefung durch,
+ * wird $_POST GELEERT - danach laeuft kein Zweig mehr an, ohne dass jeder
+ * einzelne davon wissen muesste.
+ *
+ * Der aktive Reiter bleibt stehen: die Meldung soll dort erscheinen, wo
+ * der Bediener gerade war.
+ */
+if ($oc_ist_post && !oc_formtoken_ok($oc_cfg)) {
+    $oc_fehler[] = oc_t('MELDUNG.CSRF');
+    oc_log('Ein Formular ohne gueltiges Merkmal wurde abgewiesen.');
+    $oc_behalten = isset($_POST['activetab']) ? $_POST['activetab'] : null;
+    $_POST = array();
+    if ($oc_behalten !== null) { $_POST['activetab'] = $oc_behalten; }
+}
+
+/* ==================================================================
  * DIE HANDLER STEHEN VOR lbheader() - DAS IST BAUVORSCHRIFT
  * ==================================================================
  *
@@ -82,8 +148,15 @@ $oc_zug = oc_zugang();
  * Reihenfolge: Bibliothek, Konfiguration, Wachposten, Reiterwahl,
  * ALLE Handler samt Downloads, dann erst lbheader(), dann HTML.
  * ================================================================== */
+/* ================= Selbsttest des Planers =================
+ * Er rechnet nur, spricht mit niemandem und braucht keine Preise. */
+if ($oc_ist_post && isset($_POST['plantest'])) {
+    list($oc_pt_n, $oc_pt_f, $oc_plantest) = plan_selbsttest();
+    $oc_tab = 'tab-test';
+}
+
 /* ================= Loxone-Vorlage herunterladen ================= */
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['download'])) {
+if ($oc_ist_post && isset($_POST['download'])) {
     $oc_art = ((string) $_POST['download'] === 'http_in') ? 'http_in' : 'mqtt_in';
     list($oc_name, $oc_inhalt) = oc_vorlage($oc_art);
     header('Content-Type: application/x-download');
@@ -94,7 +167,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['download'])) {
 }
 
 /* ================= Protokoll leeren ================= */
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['clearlog'])) {
+if ($oc_ist_post && isset($_POST['clearlog'])) {
     @mkdir(dirname($oc_p['log']), 0775, true);
     // Ueber oc_log_setzen(): dieselbe Sperre wie beim Kuerzen im Cron-Lauf,
     // damit sich Leeren und Anhaengen nicht in die Quere kommen.
@@ -103,14 +176,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['clearlog'])) {
 }
 
 /* ================= Testaktionen ================= */
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['test'])) {
+if ($oc_ist_post && isset($_POST['test'])) {
     require_once __DIR__ . '/oc_test.php';
     list($oc_test_titel, $oc_test_text) = oc_test_ausfuehren((string) $_POST['test']);
     $oc_tab = 'tab-test';
 }
 
 /* ================= Zugangsdaten speichern ================= */
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_zugang'])) {
+if ($oc_ist_post && isset($_POST['save_zugang'])) {
     // Nur Steuerzeichen und Anfuehrungszeichen entfernen. Ein Filter, der
     // alles ausser einer Positivliste wegwirft, zerstoert gueltige Eingaben.
     $oc_saeubern = function ($s) {
@@ -149,7 +222,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_zugang'])) {
 }
 
 /* ================= Einstellungen speichern ================= */
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
+if ($oc_ist_post && isset($_POST['save'])) {
     $oc_z = function ($k, $vorgabe, $min, $max) {
         $v = str_replace(',', '.', (string) (isset($_POST[$k]) ? $_POST[$k] : ''));
         if (!is_numeric($v)) { return $vorgabe; }
@@ -183,7 +256,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
             // Der Name landet im Kommentar der Loxone-Vorlage - deshalb nur
             // Steuerzeichen und Anfuehrungszeichen raus, nicht hart filtern.
             'name' => trim(preg_replace('/[\x00-\x1F\x7F"]/', '', (string) $oc_r('r_name'))),
-            'art' => in_array($oc_art, array('fenster', 'stunden', 'schwelle', 'mittel'), true) ? $oc_art : 'fenster',
+            'art' => in_array($oc_art, oc_regel_arten(), true) ? $oc_art : 'fenster',
             'n' => max(1, min(12, (int) $oc_r('r_n', 3))),
             'von' => max(0, min(23, (int) $oc_r('r_von', 0))),
             'bis' => max(0, min(23, (int) $oc_r('r_bis', 0))),
@@ -200,6 +273,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
             'pv_sperre' => max(0, min(500, (float) str_replace(',', '.', (string) $oc_r('r_pv_sperre', 0)))),
             'soc_min' => max(0, min(100, (int) $oc_r('r_soc_min', 0))),
             'soc_max' => max(0, min(100, (int) $oc_r('r_soc_max', 0))),
+            // ---- Taktschutz ----
+            'min_lauf' => max(0, min(720, (int) $oc_r('r_min_lauf', 0))),
+            'min_pause' => max(0, min(720, (int) $oc_r('r_min_pause', 0))),
         );
         $oc_rw = $oc_neu['regeln'][$oc_i];
         if ($oc_rw['aktiv'] && $oc_rw['energie'] > 0 && $oc_rw['leistung'] <= 0) {
@@ -214,11 +290,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
     $oc_neu['budget_kw'] = max(0, min(200, (float) str_replace(',', '.', (string) (isset($_POST['budget_kw']) ? $_POST['budget_kw'] : 0))));
     $oc_neu['pv_bonus'] = max(0, min(100, (float) str_replace(',', '.', (string) (isset($_POST['pv_bonus']) ? $_POST['pv_bonus'] : 0))));
     $oc_neu['pv_schwelle'] = max(1, min(100000, (int) (isset($_POST['pv_schwelle']) ? $_POST['pv_schwelle'] : 500)));
+    /* Zweites Budget (Paragraf 14a) und Hysterese. Die Schranken sind
+     * dieselben wie in oc_schranken() - stuenden hier andere Zahlen,
+     * gaebe es zwei Wahrheiten, und der Selbsttest im Reiter Test meldet
+     * genau das. */
+    $oc_neu['budget2_kw'] = max(0, min(200, (float) str_replace(',', '.', (string) (isset($_POST['budget2_kw']) ? $_POST['budget2_kw'] : 0))));
+    $oc_neu['budget2_von'] = $oc_g('budget2_von', 0, 0, 23);
+    $oc_neu['budget2_bis'] = $oc_g('budget2_bis', 0, 0, 23);
+    $oc_neu['hysterese'] = isset($_POST['hysterese']) ? 1 : 0;
+    $oc_vq = (string) (isset($_POST['verbrauch_quelle']) ? $_POST['verbrauch_quelle'] : '');
+    $oc_neu['verbrauch_quelle'] = in_array($oc_vq, array('', 'objekt', 'liste'), true) ? $oc_vq : '';
+    $oc_ve = (string) (isset($_POST['verbrauch_einheit']) ? $_POST['verbrauch_einheit'] : 'wh');
+    $oc_neu['verbrauch_einheit'] = in_array($oc_ve, array('wh', 'w', 'kw'), true) ? $oc_ve : 'wh';
     $oc_q = (string) (isset($_POST['pv_quelle']) ? $_POST['pv_quelle'] : '');
     $oc_neu['pv_quelle'] = in_array($oc_q, array('', 'forecast_solar', 'objekt', 'liste'), true) ? $oc_q : '';
     $oc_eh = (string) (isset($_POST['pv_einheit']) ? $_POST['pv_einheit'] : 'wh');
     $oc_neu['pv_einheit'] = in_array($oc_eh, array('wh', 'w', 'kw'), true) ? $oc_eh : 'wh';
-    foreach (array('pv_url', 'pv_pfad', 'pv_zeitfeld', 'pv_wertfeld', 'soc_url', 'soc_pfad') as $oc_f2) {
+    foreach (array('pv_url', 'pv_pfad', 'pv_zeitfeld', 'pv_wertfeld', 'soc_url', 'soc_pfad',
+                   'verbrauch_url', 'verbrauch_pfad', 'verbrauch_zeitfeld',
+                   'verbrauch_wertfeld') as $oc_f2) {
         // Nur Steuerzeichen und Anfuehrungszeichen raus - ein hartes Filtern
         // zerstoert eingefuegte Adressen.
         $oc_neu[$oc_f2] = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '',
@@ -228,6 +318,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
         if ($oc_neu[$oc_f2] !== '' && !preg_match('#^https?://#i', $oc_neu[$oc_f2])) {
             $oc_fehler[] = sprintf(oc_t('PLAN.FEHLER_URL'), oc_t('PLAN.L_' . strtoupper($oc_f2)));
         }
+    }
+    if ($oc_neu['verbrauch_url'] !== '' && !preg_match('#^https?://#i', $oc_neu['verbrauch_url'])) {
+        $oc_fehler[] = sprintf(oc_t('PLAN.FEHLER_URL'), oc_t('VERB.L_URL'));
+    }
+    if ($oc_neu['verbrauch_quelle'] === 'liste'
+        && ($oc_neu['verbrauch_zeitfeld'] === '' || $oc_neu['verbrauch_wertfeld'] === '')) {
+        $oc_fehler[] = oc_t('PLAN.FEHLER_FELDNAMEN');
+    }
+    if ($oc_neu['verbrauch_quelle'] !== '' && $oc_neu['verbrauch_pfad'] === '') {
+        $oc_fehler[] = oc_t('PLAN.FEHLER_PFAD');
     }
     if ($oc_neu['pv_quelle'] === 'liste'
         && ($oc_neu['pv_zeitfeld'] === '' || $oc_neu['pv_wertfeld'] === '')) {
@@ -293,6 +393,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
         'only_cheap' => isset($_POST['only_cheap']) ? 1 : 0,
         'negative'   => isset($_POST['neg_always']) ? 1 : 0,
         'tomorrow'   => isset($_POST['notify_tomorrow']) ? 1 : 0,
+        // Die Glocke des LoxBerry (ab 1.1.0)
+        'lb'         => isset($_POST['notify_lb']) ? 1 : 0,
+        'lb_stunden' => $oc_g('notify_lb_stunden', 6, 1, 72),
     );
     $oc_modus = (string) (isset($_POST['tts_mode']) ? $_POST['tts_mode'] : 'musicserver');
     $oc_ttsip = trim(preg_replace('/[\x00-\x1F\x7F"\']+/u', '',
@@ -329,7 +432,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
  * Eigenes Formular UND eigener Handler gehoeren zusammen. Loesten beide
  * Formulare denselben Handler aus, setzte dieser die Haken des jeweils
  * nicht abgeschickten Formulars per isset() auf 0. */
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_mqtt'])) {
+if ($oc_ist_post && isset($_POST['save_mqtt'])) {
     $oc_mcfg = oc_config();
     $oc_mcfg['mqtt_enabled'] = isset($_POST['mqtt_enabled']) ? 1 : 0;
     $oc_mprae = preg_replace('#[^A-Za-z0-9_/-]#', '',
@@ -350,24 +453,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_mqtt'])) {
     $oc_tab = 'tab-mqtt';
 }
 
-/* ================= Anzeige vorbereiten ================= */
-$oc_st  = oc_state();
-$oc_gw  = oc_gateway();
-$oc_mon = oc_months();
-$oc_kos = oc_cost_compare();
-$oc_hist = oc_history_read(60);
-$oc_ver = oc_version();
-$oc_hoursel = array_map('intval', (array) $oc_cfg['notify']['hours']);
-$oc_tts = $oc_cfg['tts'];
-$oc_ip  = oc_eigene_ip();
-$oc_endpunkt = 'http://' . $oc_ip . '/plugins/' . $oc_p['plugin'] . '/index.php';
-
-$oc_loglines = array();
-if (is_file($oc_p['log'])) {
-    $oc_loglines = array_slice(
-        array_reverse(file($oc_p['log'], FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: array()),
-        0, 300);
-}
 
 function oc_n($v, $d = 2) { return number_format((float) $v, $d, ',', '.'); }
 
@@ -436,17 +521,41 @@ $oc_rahmen = class_exists('LBWeb', false);
  * stuenden nach dem Zurueckspielen alle Felder richtig, und das Plugin
  * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
  * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das. */
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['oc_sichern'])) {
-    $oc_js = json_encode(oc_config(),
-        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    if ($oc_js !== false) {
+if ($oc_ist_post && isset($_POST['oc_sichern'])) {
+    /* Der Haken entscheidet, ob die Zugangsdaten mitgehen.
+     *
+     * Bis 1.0.9 gingen sie NIE mit - der Warntext am Knopf behauptete das
+     * Gegenteil ("Die Datei enthaelt Ihre Zugangsdaten"), und gemessen am
+     * erzeugten Download stimmte es nicht: oc_config() kennt weder E-Mail
+     * noch Passwort noch Kundennummer, die wohnen in zugang.json. Damit
+     * war der erklaerte Zweck - der Umzug auf einen zweiten LoxBerry -
+     * nicht erfuellbar: dort stuenden alle Felder richtig, und es kaemen
+     * trotzdem keine Preise.
+     *
+     * Jetzt entscheidet der Bediener, und der Dateiname sagt es mit. */
+    $oc_mit_zugang = isset($_POST['mit_zugang']);
+    $oc_js = oc_sicherung_bauen($oc_mit_zugang);
+    if ($oc_js !== '') {
         header('Content-Type: application/json; charset=utf-8');
-        header('Content-Disposition: attachment; filename="spotpreis_einstellungen_'
+        header('Content-Disposition: attachment; filename="octopus_einstellungen'
+               . ($oc_mit_zugang ? '_mit_zugang' : '') . '_'
                . date('Ymd_His') . '.json"');
+        header('Content-Length: ' . strlen($oc_js));
         echo $oc_js;
         exit;
     }
     $oc_fehler[] = oc_t('EINST.SICH_SCHREIBFEHLER');
+}
+
+/* ================= Historie als CSV herunterladen ================= */
+if ($oc_ist_post && isset($_POST['oc_csv'])) {
+    $oc_csv = oc_history_csv();
+    header('Content-Type: text/csv; charset=utf-8');
+    header('Content-Disposition: attachment; filename="octopus_historie_'
+           . date('Ymd') . '.csv"');
+    header('Content-Length: ' . strlen($oc_csv));
+    echo $oc_csv;
+    exit;
 }
 
 /* ---------------- Einstellungen zurueckspielen ----------------
@@ -454,29 +563,123 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['oc_sichern'])) {
  * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei des
  * Servers unterschieben. Dann die Groessengrenze - eine Sicherung dieses
  * Plugins ist wenige Kilobyte gross; alles darueber wird gar nicht gelesen. */
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['oc_zurueck'])) {
+if ($oc_ist_post && isset($_POST['oc_zurueck'])) {
     if (!isset($_FILES['oc_sicherung']) || !is_array($_FILES['oc_sicherung'])
         || !isset($_FILES['oc_sicherung']['tmp_name'])
         || !@is_uploaded_file($_FILES['oc_sicherung']['tmp_name'])) {
         $oc_fehler[] = oc_t('EINST.SICH_KEINE_DATEI');
-    } elseif ((int) $_FILES['oc_sicherung']['size'] > 262144) {
+    } elseif ((int) $_FILES['oc_sicherung']['size'] > 65536) {
+        /* 64 kB. Eine Sicherung dieses Plugins ist wenige Kilobyte gross;
+         * alles darueber wird gar nicht erst gelesen. */
         $oc_fehler[] = oc_t('EINST.SICH_ZU_GROSS');
     } else {
-        list($oc_neu, $oc_mangel, $oc_n) = oc_sicherung_lesen(
+        list($oc_neu, $oc_mangel, $oc_n, $oc_neu_zugang) = oc_sicherung_lesen(
             (string) @file_get_contents($_FILES['oc_sicherung']['tmp_name']));
         if ($oc_neu === null) {
             /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
              * nichts. */
             $oc_fehler[] = oc_t('EINST.SICH_ABGELEHNT') . ' '
                             . implode(' ', $oc_mangel);
-        } elseif (oc_config_write($oc_neu)) {
-            $oc_meldungen[] = sprintf(oc_t('EINST.SICH_UEBERNOMMEN'), $oc_n);
         } else {
-            $oc_fehler[] = oc_t('EINST.SICH_SCHREIBFEHLER');
+            /* ---- Ein leeres Aktionstoken in der Datei ----
+             *
+             * Vorkommen kann das: eine Sicherung, die vor dem ersten
+             * Speichern gezogen wurde, traegt einen Leerstring. Die Datei
+             * deswegen ganz abzuweisen waere zu hart - sie ist ja sonst in
+             * Ordnung. Ein leeres Token uebernehmen waere aber schlimmer:
+             * der Endpunkt macht danach richtigerweise zu (403), und
+             * saemtliche Adressen im Miniserver antworten nicht mehr,
+             * ohne dass irgendwo stuende, warum.
+             *
+             * Also: ein neues wuerfeln und es SAGEN. */
+            $oc_token_gewuerfelt = false;
+            if ((string) $oc_neu['aktionstoken'] === '') {
+                $oc_neu['aktionstoken'] = oc_token_erzeugen();
+                $oc_token_gewuerfelt = true;
+            }
+            if (!oc_config_write($oc_neu)) {
+                $oc_fehler[] = oc_t('EINST.SICH_SCHREIBFEHLER');
+            } else {
+                $oc_meldungen[] = sprintf(oc_t('EINST.SICH_UEBERNOMMEN'), $oc_n);
+                if ($oc_token_gewuerfelt) {
+                    $oc_meldungen[] = oc_t('EINST.SICH_TOKEN_LEER');
+                }
+
+                /* Die Zugangsdaten kommen aus derselben Datei, gehen aber
+                 * in ihre eigene mit Rechten 0600 - nicht in die
+                 * Konfiguration, die die Oberflaeche anzeigt. */
+                if (is_array($oc_neu_zugang)) {
+                    if (oc_zugang_write($oc_neu_zugang['email'], $oc_neu_zugang['passwort'],
+                                        $oc_neu_zugang['konto'])) {
+                        $oc_meldungen[] = oc_t('EINST.SICH_ZUGANG_DA');
+                    } else {
+                        $oc_fehler[] = str_replace('%F%', oc_e($oc_p['zugang']),
+                            oc_t('MELDUNG.ZUGANG_FEHLER'));
+                    }
+                }
+
+            /* ---- Den Stand NACHZIEHEN ----
+             *
+             * Bis 1.0.9 fehlte das, und der Block "Anzeige vorbereiten"
+             * lief ausserdem VOR diesem Handler. Der Bediener las "42
+             * Werte uebernommen" und sah darunter unveraendert seine alten
+             * Eingaben - das sieht aus wie ein Fehlschlag und ist keiner.
+             *
+             * Der Block steht jetzt hinter allen Handlern; diese drei
+             * Zeilen bleiben trotzdem, denn sie betreffen etwas, das der
+             * Block NICHT neu bildet: das Formularmerkmal. Es haengt am
+             * Aktionstoken, und das kam gerade aus der Datei. Ohne das
+             * Nachziehen truegen alle Formulare der frisch gezeichneten
+             * Seite das Merkmal des ALTEN Tokens, und der naechste
+             * Knopfdruck liefe in den Wachposten. */
+                $oc_cfg = oc_config();
+                $oc_zug = oc_zugang();
+                $oc_fmt = oc_formtoken($oc_cfg);
+                oc_weg(oc_tmpdir() . '/state.json');
+                oc_weg(oc_tmpdir() . '/laufend.json');
+                $oc_meldungen[] = oc_t('EINST.SICH_TOKEN_NEU');
+                oc_log('Einstellungen zurueckgespielt: ' . $oc_n . ' Werte'
+                    . (is_array($oc_neu_zugang) ? ' samt Zugangsdaten' : '')
+                    . '. Der Zustand wird neu gerechnet.');
+            }
         }
     }
+    $oc_tab = 'tab-settings';
 }
 
+
+/* ================= Anzeige vorbereiten =================
+ *
+ * HINTER ALLEN HANDLERN, und das ist Absicht.
+ *
+ * Bis 1.0.9 stand dieser Block VOR dem Sicherungszweig. Wer eine
+ * Sicherung zurueckspielte, bekam die Meldung "42 Werte uebernommen"
+ * und sah darunter unveraendert seine alten Eingaben - $oc_st, $oc_kos
+ * und $oc_hist waren laengst gerechnet, als der Handler schrieb.
+ *
+ * Man koennte das im Handler nachziehen. Dann muss es aber jeder
+ * kuenftige Handler auch tun, und einen davon vergisst man. Deshalb
+ * steht der Block jetzt hier: Bibliothek, Konfiguration, Wachposten,
+ * Reiterwahl, ALLE Handler samt Downloads, ANZEIGE VORBEREITEN, dann
+ * erst lbheader(), dann HTML.
+ */
+$oc_st  = oc_state();
+$oc_gw  = oc_gateway();
+$oc_mon = oc_months();
+$oc_kos = oc_cost_compare();
+$oc_hist = oc_history_read(60);
+$oc_ver = oc_version();
+$oc_hoursel = array_map('intval', (array) $oc_cfg['notify']['hours']);
+$oc_tts = $oc_cfg['tts'];
+$oc_ip  = oc_eigene_ip();
+$oc_endpunkt = 'http://' . $oc_ip . '/plugins/' . $oc_p['plugin'] . '/index.php';
+
+$oc_loglines = array();
+if (is_file($oc_p['log'])) {
+    $oc_loglines = array_slice(
+        array_reverse(file($oc_p['log'], FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: array()),
+        0, 300);
+}
 
 if ($oc_rahmen) {
     LBWeb::lbheader('Octopus Dynamic' . ($oc_ver !== '' ? ' ' . $oc_ver : ''),
@@ -577,7 +780,31 @@ if ($oc_rahmen) {
 <?php echo oc_t('MELDUNG.GESPEICHERT_ZUSATZ'); ?></div>
 <?php } ?>
 <?php if ($oc_hinweis !== '') { ?><div class="sm-hinweis"><?php echo $oc_hinweis; ?></div><?php } ?>
-<?php foreach ($oc_fehler as $oc_f) { ?><div class="sm-warnung"><?php echo $oc_f; ?></div><?php } ?>
+<?php
+/* Meldungen und Fehler stehen AUSSERHALB der Reiterflaechen - sie sollen
+ * sichtbar sein, egal auf welchem Reiter die Seite aufklappt.
+ *
+ * $oc_meldungen wurde bis 1.0.9 zwar beschrieben, aber nie angelegt und
+ * nie ausgegeben. Ein erfolgreiches Zurueckspielen meldete deshalb gar
+ * nichts. */
+foreach ($oc_meldungen as $oc_m) { ?><div class="sm-hinweis"><?php echo $oc_m; ?></div><?php }
+foreach ($oc_fehler as $oc_f) { ?><div class="sm-warnung"><?php echo $oc_f; ?></div><?php }
+?>
+
+<?php
+/* ---- Der MQTT-Gateway steht nicht auf Autostart ----
+ *
+ * UEBER ALLEN REITERN, nicht nur als Zeile in einer Tabelle im Reiter
+ * MQTT. Es ist die haeufigste Ursache dafuer, dass am Miniserver nichts
+ * ankommt - und wer den Reiter MQTT nie oeffnet, sah den Hinweis nie.
+ *
+ * Gewarnt wird nur, wenn der Wert wirklich AUS ist. Ist er nicht
+ * feststellbar (kein LoxBerry, keine general.json), bleibt es still: eine
+ * Warnung, die auf jedem Entwicklungsrechner erscheint, liest bald
+ * niemand mehr. Und wer gar kein MQTT benutzt, geht die Frage nichts an. */
+if (!empty($oc_cfg['mqtt_enabled']) && $oc_gw['vorhanden'] && !$oc_gw['autostart']) { ?>
+<div class="sm-warnung"><b>MQTT:</b> <?php echo oc_t('MQTT.AUTOSTART_AUS'); ?></div>
+<?php } ?>
 
 <?php if (!empty($oc_st['demo'])) { ?>
 <div class="sm-demo"><b><?php echo oc_t('TEXT.DEMO_TITEL'); ?></b>
@@ -675,6 +902,7 @@ $oc_reiter = array(
 <h2><?php echo oc_t('EINST.H_ZUGANG'); ?></h2>
 <div class="sm-hinweis"><?php echo oc_t('EINST.ZUGANG_ERKLAERUNG'); ?></div>
 <form action="index.php" method="post" autocomplete="off">
+<input data-role="none" type="hidden" name="fmt" value="<?php echo oc_e($oc_fmt); ?>">
 <input data-role="none" type="hidden" name="save_zugang" value="1">
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
 <div class="sm-reihe">
@@ -715,6 +943,7 @@ $oc_reiter = array(
 </form>
 
 <form action="index.php" method="post" autocomplete="off">
+<input data-role="none" type="hidden" name="fmt" value="<?php echo oc_e($oc_fmt); ?>">
 <input data-role="none" type="hidden" name="save" value="1">
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
 
@@ -774,6 +1003,21 @@ $oc_reiter = array(
     <div class="sm-hilfe"><?php echo oc_t('PLAN.H_PV_SCHWELLE'); ?></div></div>
 </div>
 <div class="sm-row">
+  <div><label><?php echo oc_t('PLAN.L_BUDGET2_KW'); ?></label>
+    <input data-role="none" type="text" name="budget2_kw" value="<?php echo oc_e($oc_cfg['budget2_kw']); ?>" placeholder="0">
+    <div class="sm-hilfe"><?php echo oc_t('PLAN.H_BUDGET2_KW'); ?></div></div>
+  <div><label><?php echo oc_t('PLAN.L_BUDGET2_VON'); ?></label>
+    <input data-role="none" type="number" name="budget2_von" value="<?php echo (int) $oc_cfg['budget2_von']; ?>" min="0" max="23"></div>
+  <div><label><?php echo oc_t('PLAN.L_BUDGET2_BIS'); ?></label>
+    <input data-role="none" type="number" name="budget2_bis" value="<?php echo (int) $oc_cfg['budget2_bis']; ?>" min="0" max="23">
+    <div class="sm-hilfe"><?php echo oc_t('PLAN.H_BUDGET2_ZEIT'); ?></div></div>
+</div>
+<label style="display:inline-flex;align-items:center;gap:8px;margin-top:8px;font-weight:600;">
+  <input data-role="none" type="checkbox" name="hysterese" <?php echo !empty($oc_cfg['hysterese']) ? 'checked' : ''; ?>>
+  <?php echo oc_t('PLAN.L_HYSTERESE'); ?>
+</label>
+<div class="sm-hilfe"><?php echo oc_t('PLAN.H_HYSTERESE'); ?></div>
+<div class="sm-row">
   <div><label><?php echo oc_t('PLAN.L_PV_QUELLE'); ?></label>
     <select data-role="none" name="pv_quelle">
 <?php foreach (array('', 'forecast_solar', 'objekt', 'liste') as $oc_q2) { ?>
@@ -809,6 +1053,50 @@ $oc_reiter = array(
     <input data-role="none" type="text" name="soc_pfad" value="<?php echo oc_e($oc_cfg['soc_pfad']); ?>" placeholder="geraete.1.soc">
     <div class="sm-hilfe"><?php echo oc_t('PLAN.H_SOC_PFAD'); ?></div></div>
 </div>
+
+<h2><?php echo oc_t('VERB.H_TITEL'); ?></h2>
+<div class="sm-hinweis"><?php echo oc_t('VERB.ERKLAERUNG'); ?></div>
+<div class="sm-row">
+  <div><label><?php echo oc_t('VERB.L_QUELLE'); ?></label>
+    <select data-role="none" name="verbrauch_quelle">
+<?php foreach (array('', 'objekt', 'liste') as $oc_q3) { ?>
+      <option value="<?php echo oc_e($oc_q3); ?>"<?php echo $oc_cfg['verbrauch_quelle'] === $oc_q3 ? ' selected' : ''; ?>><?php echo oc_e(oc_t('PLAN.QUELLE_' . ($oc_q3 === '' ? 'AUS' : strtoupper($oc_q3)))); ?></option>
+<?php } ?>
+    </select></div>
+  <div><label><?php echo oc_t('VERB.L_URL'); ?></label>
+    <input data-role="none" type="text" name="verbrauch_url" value="<?php echo oc_e($oc_cfg['verbrauch_url']); ?>" placeholder="http://loxberry/plugins/...">
+    <div class="sm-hilfe"><?php echo oc_t('VERB.H_URL'); ?></div></div>
+  <div><label><?php echo oc_t('VERB.L_EINHEIT'); ?></label>
+    <select data-role="none" name="verbrauch_einheit">
+<?php foreach (array('wh', 'w', 'kw') as $oc_e5) { ?>
+      <option value="<?php echo $oc_e5; ?>"<?php echo $oc_cfg['verbrauch_einheit'] === $oc_e5 ? ' selected' : ''; ?>><?php echo oc_e(oc_t('PLAN.EINHEIT_' . strtoupper($oc_e5))); ?></option>
+<?php } ?>
+    </select></div>
+</div>
+<div class="sm-row">
+  <div><label><?php echo oc_t('VERB.L_PFAD'); ?></label>
+    <input data-role="none" type="text" name="verbrauch_pfad" value="<?php echo oc_e($oc_cfg['verbrauch_pfad']); ?>" placeholder="werte"></div>
+  <div><label><?php echo oc_t('VERB.L_ZEITFELD'); ?></label>
+    <input data-role="none" type="text" name="verbrauch_zeitfeld" value="<?php echo oc_e($oc_cfg['verbrauch_zeitfeld']); ?>" placeholder="zeit"></div>
+  <div><label><?php echo oc_t('VERB.L_WERTFELD'); ?></label>
+    <input data-role="none" type="text" name="verbrauch_wertfeld" value="<?php echo oc_e($oc_cfg['verbrauch_wertfeld']); ?>" placeholder="wh">
+    <div class="sm-hilfe"><?php echo oc_t('VERB.H_FELDER'); ?></div></div>
+</div>
+<?php
+/* Was zuletzt geholt wurde - und der Grund, wenn nichts ankam. Ohne diese
+ * Zeile weiss niemand, ob die Adresse taugt: der Kostenvergleich saehe
+ * genauso aus wie mit dem geschaetzten Profil. */
+$oc_vb = oc_verbrauch();
+if ($oc_cfg['verbrauch_quelle'] !== '') { ?>
+<div class="sm-hinweis"><?php
+if (is_array($oc_vb['profil'])) {
+    echo str_replace('%T%', (int) $oc_vb['tage'], oc_t('VERB.STAND_OK'));
+} else {
+    echo str_replace('%M%', oc_e($oc_vb['meldung'] !== '' ? $oc_vb['meldung'] : '-'),
+        oc_t('VERB.STAND_FEHLT'));
+}
+?></div>
+<?php } ?>
 <?php $oc_umw = oc_umwelt();
 if ($oc_cfg['pv_quelle'] !== '' || $oc_cfg['soc_url'] !== '') { ?>
 <div class="sm-hinweis">
@@ -842,7 +1130,11 @@ if ($oc_cfg['pv_quelle'] !== '' || $oc_cfg['soc_url'] !== '') { ?>
       <input data-role="none" type="text" name="r_name[<?php echo $oc_i; ?>]" value="<?php echo oc_e($oc_rr['name']); ?>" placeholder="<?php echo oc_t('REGEL.P_NAME'); ?>"></div>
     <div><label><?php echo oc_t('REGEL.L_ART'); ?></label>
       <select data-role="none" name="r_art[<?php echo $oc_i; ?>]">
-<?php foreach (array('fenster', 'stunden', 'schwelle', 'mittel') as $oc_a) { ?>
+<?php /* Die Liste kommt aus oc_regel_arten(). Bis 1.0.9 stand sie hier
+         ein zweites Mal - eine neue Art waere an einer der beiden
+         Stellen vergessen worden, und das Formular haette etwas
+         angeboten, das die Konfiguration wieder verwirft. */
+foreach (oc_regel_arten() as $oc_a) { ?>
         <option value="<?php echo $oc_a; ?>"<?php echo $oc_rr['art'] === $oc_a ? ' selected' : ''; ?>><?php echo oc_e(oc_t('REGEL.ART_' . strtoupper($oc_a))); ?></option>
 <?php } ?>
       </select></div>
@@ -891,6 +1183,15 @@ if ($oc_cfg['pv_quelle'] !== '' || $oc_cfg['soc_url'] !== '') { ?>
     <div><label><?php echo oc_t('REGEL.L_SOC_MAX'); ?></label>
       <input data-role="none" type="number" name="r_soc_max[<?php echo $oc_i; ?>]" value="<?php echo (int) $oc_rr['soc_max']; ?>" min="0" max="100">
       <div class="sm-hilfe"><?php echo oc_t('REGEL.H_SOC'); ?></div></div>
+  </div>
+  <div class="sm-row">
+    <div><label><?php echo oc_t('REGEL.L_MIN_LAUF'); ?></label>
+      <input data-role="none" type="number" name="r_min_lauf[<?php echo $oc_i; ?>]" value="<?php echo (int) $oc_rr['min_lauf']; ?>" min="0" max="720">
+      <div class="sm-hilfe"><?php echo oc_t('REGEL.H_MIN_LAUF'); ?></div></div>
+    <div><label><?php echo oc_t('REGEL.L_MIN_PAUSE'); ?></label>
+      <input data-role="none" type="number" name="r_min_pause[<?php echo $oc_i; ?>]" value="<?php echo (int) $oc_rr['min_pause']; ?>" min="0" max="720">
+      <div class="sm-hilfe"><?php echo oc_t('REGEL.H_MIN_PAUSE'); ?></div></div>
+    <div></div>
   </div>
   <label style="display:inline-flex;align-items:center;gap:8px;">
     <input data-role="none" type="checkbox" name="r_neg[<?php echo $oc_i; ?>]" value="1" <?php echo !empty($oc_rr['neg']) ? 'checked' : ''; ?>>
@@ -955,6 +1256,16 @@ if ($oc_cfg['pv_quelle'] !== '' || $oc_cfg['soc_url'] !== '') { ?>
   <input data-role="none" type="checkbox" name="notify_tomorrow" <?php echo !empty($oc_cfg['notify']['tomorrow']) ? 'checked' : ''; ?>>
   <?php echo oc_t('EINST.TOMORROW'); ?>
 </label>
+<br>
+<label style="display:inline-flex;align-items:center;gap:6px;font-weight:600;margin-top:6px;">
+  <input data-role="none" type="checkbox" name="notify_lb" <?php echo !empty($oc_cfg['notify']['lb']) ? 'checked' : ''; ?>>
+  <?php echo oc_t('EINST.NOTIFY_LB'); ?>
+</label>
+<div class="sm-row" style="max-width:260px;">
+  <div><label><?php echo oc_t('EINST.NOTIFY_LB_STUNDEN'); ?></label>
+    <input data-role="none" type="number" name="notify_lb_stunden" value="<?php echo (int) $oc_cfg['notify']['lb_stunden']; ?>" min="1" max="72"></div>
+</div>
+<div class="sm-hilfe"><?php echo oc_t('EINST.NOTIFY_LB_HILFE'); ?></div>
 
 <h3><?php echo oc_t('EINST.H_TTS'); ?></h3>
 <div class="sm-reihe">
@@ -1080,21 +1391,32 @@ for ($oc_i = 0; $oc_i < 12; $oc_i++) { ?>
 <h2><?= oc_t('EINST.H_SICHERUNG') ?></h2>
 <div class="sm-hinweis"><?= oc_t('EINST.SICH_ERKLAERUNG') ?></div>
 <div class="sm-warnung"><?= oc_t('EINST.SICH_WARNUNG') ?></div>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i><?php echo oc_t('LEGENDE.LESEN'); ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i><?php echo oc_t('LEGENDE.AKTION'); ?></span>
+</div>
 <div class="sm-knopfreihe">
   <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
        exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
        Wer beides in ein Formular legt, bekommt entweder keinen Upload oder
        einen Download, der das Speichern verschluckt. -->
   <form action="index.php" method="post">
+<input data-role="none" type="hidden" name="fmt" value="<?php echo oc_e($oc_fmt); ?>">
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <label style="display:inline-flex;align-items:center;gap:6px;margin:0 10px 0 0;font-weight:600;font-size:0.9em;">
+      <input data-role="none" type="checkbox" name="mit_zugang" value="1">
+      <?= oc_t('EINST.SICH_MIT_ZUGANG') ?>
+    </label>
     <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="oc_sichern" value="1"><?= oc_t('EINST.K_SICHERN') ?></button>
   </form>
   <form action="index.php" method="post" enctype="multipart/form-data">
+<input data-role="none" type="hidden" name="fmt" value="<?php echo oc_e($oc_fmt); ?>">
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <input data-role="none" type="file" name="oc_sicherung" accept=".json">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="oc_zurueck" value="1"><?= oc_t('EINST.K_ZURUECK') ?></button>
   </form>
 </div>
+<div class="sm-hilfe"><?= oc_t('EINST.SICH_MIT_ZUGANG_HILFE') ?></div>
 </div><!-- /tab-settings -->
 
 <!-- ==================== Reiter: MQTT ==================== -->
@@ -1102,6 +1424,7 @@ for ($oc_i = 0; $oc_i < 12; $oc_i++) { ?>
 
 <h2>MQTT</h2>
 <form action="index.php" method="post">
+<input data-role="none" type="hidden" name="fmt" value="<?php echo oc_e($oc_fmt); ?>">
 <input data-role="none" type="hidden" name="save_mqtt" value="1">
 <input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
 <h2><?php echo oc_t('EINST.H_MQTT'); ?></h2>
@@ -1158,7 +1481,7 @@ for ($oc_i = 0; $oc_i < 12; $oc_i++) { ?>
     <th><?php echo oc_t('MQTT.SP_EINHEIT'); ?></th><th><?php echo oc_t('MQTT.SP_AKTUELL'); ?></th></tr>
 <?php $oc_werte = oc_werte($oc_st); foreach (oc_themen() as $oc_k => $oc_info) { ?>
 <tr><td><span class="sm-mono"><?php echo oc_e($oc_cfg['mqtt_topic'] . '/' . $oc_k); ?></span></td>
-    <td><?php echo oc_t($oc_info[0]); ?></td>
+    <td><?php echo oc_e(oc_thema_text($oc_info)); ?></td>
     <td><?php echo oc_e($oc_info[1]); ?></td>
     <td><?php echo oc_e(isset($oc_werte[$oc_k]) ? $oc_werte[$oc_k] : ''); ?></td></tr>
 <?php } ?>
@@ -1206,12 +1529,13 @@ for ($oc_i = 0; $oc_i < 12; $oc_i++) { ?>
 <tr><th><?php echo oc_t('LOX.SP_TITEL'); ?></th><th><?php echo oc_t('LOX.SP_EINHEIT'); ?></th>
     <th><?php echo oc_t('LOX.SP_BEDEUTUNG'); ?></th></tr>
 <?php foreach (oc_themen() as $oc_k => $oc_info) { ?>
-<tr><td><span class="sm-mono"><?php echo oc_e($oc_cfg['mqtt_topic'] . '_' . $oc_k); ?></span></td>
+<tr><td><span class="sm-mono"><?php echo oc_e($oc_cfg['mqtt_topic'] . '_' . oc_thema_flach($oc_k)); ?></span></td>
     <td><?php echo oc_e($oc_info[1] !== '' ? $oc_info[1] : '-'); ?></td>
-    <td><?php echo oc_t($oc_info[0]); ?></td></tr>
+    <td><?php echo oc_e(oc_thema_text($oc_info)); ?></td></tr>
 <?php } ?>
 </table>
 <form action="index.php" method="post" style="margin-top:8px;">
+<input data-role="none" type="hidden" name="fmt" value="<?php echo oc_e($oc_fmt); ?>">
 <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-lesen"></i><?php echo oc_t('LEGENDE.LESEN'); ?></span>
@@ -1346,6 +1670,24 @@ foreach (array_reverse($oc_hist) as $oc_r) { ?>
     <td><?php echo $oc_r[6] ? oc_t('KOST.Q_DEMO') : oc_t('KOST.Q_ECHT'); ?></td></tr>
 <?php } ?>
 </table>
+<div class="sm-hilfe"><?php echo oc_t('KOST.CSV_HILFE'); ?></div>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="fmt" value="<?php echo oc_e($oc_fmt); ?>">
+<input data-role="none" type="hidden" name="activetab" value="tab-costs">
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i><?php echo oc_t('LEGENDE.LESEN'); ?></span>
+</div>
+<div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="oc_csv" value="1"><?php echo oc_t('KOST.K_CSV'); ?></button>
+</div>
+</form>
+<?php
+/* Woher das Gewicht kommt, mit dem der Vergleich rechnet. Ohne diese
+ * Zeile sieht eine Schaetzung genauso aus wie eine Messung. */
+list($oc_pv2, $oc_pherkunft) = oc_profil_aktiv();
+?>
+<div class="sm-hilfe"><?php echo oc_t($oc_pherkunft === 'echt'
+    ? 'KOST.PROFIL_ECHT' : 'KOST.PROFIL_GESCHAETZT'); ?></div>
 </div><!-- /tab-costs -->
 
 <!-- ==================== Reiter: Test ==================== -->
@@ -1402,6 +1744,44 @@ $oc_budget = (float) $oc_cfg['budget_kw'];
 <p class="sm-small"><?php echo oc_t('PLAN.FAHRPLAN_BUDGET'); ?></p>
 <?php } } ?>
 
+<h3 class="sm-h3"><?php echo oc_t('PLAN.H_UEBERSICHT'); ?></h3>
+<p class="sm-small"><?php echo oc_t('PLAN.UEBERSICHT_TEXT'); ?></p>
+<table class="sm-tbl">
+<tr><th><?php echo oc_t('PLAN.U_REGEL'); ?></th><th><?php echo oc_t('PLAN.U_GRUND'); ?></th>
+    <th><?php echo oc_t('PLAN.U_NOETIG'); ?></th><th><?php echo oc_t('PLAN.U_GEPLANT'); ?></th>
+    <th><?php echo oc_t('PLAN.U_FEHLT'); ?></th><th><?php echo oc_t('PLAN.U_CT'); ?></th>
+    <th><?php echo oc_t('PLAN.U_SOFORT'); ?></th><th><?php echo oc_t('PLAN.U_SPART'); ?></th></tr>
+<?php foreach ($oc_fp['plan'] as $oc_pz) {
+    $oc_rg = isset($oc_pz['grund']) ? (string) $oc_pz['grund'] : 'aus';
+    /* Der Grund kommt als Kuerzel aus dem Planer. Ist fuer eines kein Text
+     * hinterlegt, gibt oc_t() den Schluessel zurueck - dann faellt beim
+     * Durchsehen sofort auf, was fehlt, statt dass die Zelle leer bleibt. */
+?>
+<tr><td><?php echo oc_e($oc_pz['name']); ?></td>
+    <td><?php echo oc_e(oc_t('PLANGRUND.' . strtoupper($oc_rg))); ?><?php
+      if (!empty($oc_pz['mangel'])) {
+          foreach (explode(',', (string) $oc_pz['mangel']) as $oc_mg) {
+              echo '<br><span class="sm-aus">'
+                 . oc_e(oc_t('PLANMANGEL.' . strtoupper(trim($oc_mg)))) . '</span>';
+          }
+      } ?></td>
+    <td><?php echo (int) $oc_pz['noetig']; ?></td>
+    <td><?php echo (int) $oc_pz['anzahl']; ?></td>
+    <td><?php echo ((int) $oc_pz['fehlt'] > 0)
+        ? '<span class="sm-aus">' . (int) $oc_pz['fehlt'] . '</span>' : '0'; ?></td>
+    <td><?php echo $oc_pz['anzahl'] > 0 ? oc_n($oc_pz['ct'], 2) : '&ndash;'; ?></td>
+    <td><?php echo $oc_pz['anzahl'] > 0 ? oc_n($oc_pz['ct_sofort'], 2) : '&ndash;'; ?></td>
+    <td><?php if ($oc_pz['anzahl'] > 0) {
+          echo '<b>' . oc_n($oc_pz['spart_ct'], 2) . '</b> ct/kWh';
+          if ((float) $oc_pz['kwh'] > 0) {
+              echo '<br>' . oc_n($oc_pz['spart_eur'], 2) . ' &euro; ('
+                 . oc_n($oc_pz['kwh'], 1) . ' kWh)';
+          }
+        } else { echo '&ndash;'; } ?></td></tr>
+<?php } ?>
+</table>
+<div class="sm-hilfe"><?php echo oc_t('PLAN.U_HILFE'); ?></div>
+
 <h3 class="sm-h3"><?php echo oc_t('PLAN.H_SELBSTTEST'); ?></h3>
 <p class="sm-small"><?php echo oc_t('PLAN.SELBSTTEST_TEXT'); ?></p>
 <div class="sm-legende">
@@ -1409,6 +1789,7 @@ $oc_budget = (float) $oc_cfg['budget_kw'];
 </div>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
+<input data-role="none" type="hidden" name="fmt" value="<?php echo oc_e($oc_fmt); ?>">
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
     <input data-role="none" type="hidden" name="tab" value="test">
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="plantest" value="1"><?php echo oc_t('PLAN.K_SELBSTTEST'); ?></button>
@@ -1426,13 +1807,15 @@ $oc_budget = (float) $oc_cfg['budget_kw'];
 <div class="sm-knopfreihe">
 <?php foreach (array('selbst' => 'TEST.K_SELBST', 'abruf' => 'TEST.K_ABRUF',
                      'anmeldung' => 'TEST.K_ANMELDUNG') as $oc_a => $oc_l) { ?>
-  <form action="index.php" method="post"><input data-role="none" type="hidden" name="activetab" value="tab-test">
+  <form action="index.php" method="post">
+<input data-role="none" type="hidden" name="fmt" value="<?php echo oc_e($oc_fmt); ?>"><input data-role="none" type="hidden" name="activetab" value="tab-test">
   <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="test" value="<?php echo $oc_a; ?>"><?php echo oc_t($oc_l); ?></button></form>
 <?php } ?>
 </div>
 <div class="sm-knopfreihe">
 <?php foreach (array('gateway' => 'TEST.K_GATEWAY', 'endpunkt' => 'TEST.K_ENDPUNKT') as $oc_a => $oc_l) { ?>
-  <form action="index.php" method="post"><input data-role="none" type="hidden" name="activetab" value="tab-test">
+  <form action="index.php" method="post">
+<input data-role="none" type="hidden" name="fmt" value="<?php echo oc_e($oc_fmt); ?>"><input data-role="none" type="hidden" name="activetab" value="tab-test">
   <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="test" value="<?php echo $oc_a; ?>"><?php echo oc_t($oc_l); ?></button></form>
 <?php } ?>
 </div>
@@ -1442,7 +1825,8 @@ $oc_budget = (float) $oc_cfg['budget_kw'];
 <div class="sm-knopfreihe">
 <?php foreach (array('mqtt' => 'TEST.K_MQTT', 'say' => 'TEST.K_SAY',
                      'saytomorrow' => 'TEST.K_SAYTOMORROW', 'ptest' => 'TEST.K_PTEST') as $oc_a => $oc_l) { ?>
-  <form action="index.php" method="post"><input data-role="none" type="hidden" name="activetab" value="tab-test">
+  <form action="index.php" method="post">
+<input data-role="none" type="hidden" name="fmt" value="<?php echo oc_e($oc_fmt); ?>"><input data-role="none" type="hidden" name="activetab" value="tab-test">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="<?php echo $oc_a; ?>"><?php echo oc_t($oc_l); ?></button></form>
 <?php } ?>
 </div>
@@ -1464,6 +1848,7 @@ if (class_exists('LBWeb', false) && method_exists('LBWeb', 'loglist_html')) {
 }
 ?>
 <form action="index.php" method="post">
+<input data-role="none" type="hidden" name="fmt" value="<?php echo oc_e($oc_fmt); ?>">
 <input data-role="none" type="hidden" name="activetab" value="tab-log">
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-aktion"></i><?php echo oc_t('LEGENDE.AKTION'); ?></span>

@@ -106,6 +106,37 @@ function oc_test_selbst()
             $url === null ? oc_t('TEST.TTS_AUDIOSERVER')
                 : ($url === '' ? oc_t('TEST.TTS_KEINE_IP') : oc_t('TEST.TTS_OK')));
     }
+
+    /* ---- Die Schranken gegen die Vorgaben ----
+     *
+     * oc_schranken() ist die Positivliste, an der die Sicherungspruefung
+     * jeden Wert misst. Kommt ein neues Feld in oc_vorgaben() dazu und
+     * vergisst jemand den Eintrag hier, rutscht es UNGEPRUEFT durch das
+     * Zurueckspielen - und niemand merkt es, weil alles gruen aussieht.
+     *
+     * Deshalb zaehlt diese Zeile beides gegeneinander. Sie prueft nicht,
+     * ob die Grenzen richtig GEWAEHLT sind - nur, dass es welche gibt. */
+    $ohne = array_diff(array_keys(oc_vorgaben()), array_keys(oc_schranken()));
+    $zuviel = array_diff(array_keys(oc_schranken()), array_keys(oc_vorgaben()));
+    $h .= oc_zeile(!$ohne && !$zuviel, oc_t('TEST.SCHRANKEN'),
+        (!$ohne && !$zuviel)
+            ? str_replace('%N%', count(oc_schranken()), oc_t('TEST.SCHRANKEN_OK'))
+            : oc_e(trim(($ohne ? 'ohne Schranke: ' . implode(', ', $ohne) . '  ' : '')
+                      . ($zuviel ? 'ohne Vorgabe: ' . implode(', ', $zuviel) : ''))));
+
+    /* ---- Der Rundlauf der Sicherung ----
+     *
+     * Bauen, wieder einlesen, und es muss durchgehen. Das ist der eine
+     * Fall, den die Wirkungspruefung nicht abdeckt: sie fuettert eine
+     * ERZEUGTE Liste, nicht die Datei, die der Knopf wirklich ausgibt.
+     * Ein Kopfschluessel, den die Leseseite nicht kennt, faellt genau
+     * hier auf und sonst nirgends. */
+    $rund = oc_sicherung_lesen(oc_sicherung_bauen(false));
+    $h .= oc_zeile($rund[0] !== null, oc_t('TEST.SICH_RUNDLAUF'),
+        $rund[0] !== null
+            ? str_replace('%N%', (int) $rund[2], oc_t('TEST.SICH_RUNDLAUF_OK'))
+            : oc_e(implode(' ', $rund[1])));
+
     return array(oc_t('TEST.T_SELBST'), $h);
 }
 
