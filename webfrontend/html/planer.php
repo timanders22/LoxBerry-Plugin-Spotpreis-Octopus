@@ -567,6 +567,54 @@ function plan_takt($treffer, $kand, $slotlen, $min_lauf, $min_pause)
     return $treffer;
 }
 
+/* ==================================================================
+ * Rangfolge
+ * ================================================================== */
+
+/**
+ * Zwei Regeln vergleichen: erst nach Rang, bei GLEICHEM Rang nach der
+ * Nummer. Rueckgabe wie bei usort: -1, 0 oder 1.
+ *
+ * WARUM DAS EINE EIGENE FUNKTION IST
+ *
+ * Der zweite Teil - die Nummer als Zweitschluessel - stand bis 1.1.0 in
+ * einer anonymen Funktion mitten in plan_rechnen(). Ein Mutationslauf hat
+ * gezeigt, dass ihn kein Prueffall anfasst: ersetzt man ihn durch
+ * "return 0", bleibt der Selbsttest gruen.
+ *
+ * Und das laesst sich am ERGEBNIS auch nicht aendern. Seit PHP 8.0 ist
+ * usort() STABIL: bei "return 0" bleibt die urspruengliche Reihenfolge
+ * ohnehin stehen, das Ergebnis ist dasselbe. Unter PHP 7.4 ist die
+ * Sortierung nicht stabil, dort KANN es abweichen - genau davor schuetzt
+ * der Zweitschluessel. Ein Prueffall, der das ueber das Ergebnis messen
+ * wollte, muesste sich auf die Unstetigkeit einer fremden Sortierfunktion
+ * verlassen; er waere launisch und pruefte nicht uns, sondern PHP.
+ *
+ * Deshalb steht der Vergleich hier als benannte Funktion und wird
+ * UNMITTELBAR geprueft. Der Prueffall misst die Zusage selbst - dass bei
+ * gleichem Rang die kleinere Nummer vorn liegt - und nicht ihren Schatten
+ * im Fahrplan.
+ */
+function plan_rang_vergleich($a, $b)
+{
+    if ($a['rang'] !== $b['rang']) { return $a['rang'] < $b['rang'] ? -1 : 1; }
+    return $a['i'] < $b['i'] ? -1 : ($a['i'] > $b['i'] ? 1 : 0);
+}
+
+/**
+ * In welcher Reihenfolge waehlen die Regeln?
+ * Rueckgabe: Liste von array('i' => Index, 'rang' => Rang).
+ */
+function plan_reihenfolge($regeln)
+{
+    $reihe = array();
+    foreach ($regeln as $i => $r) {
+        $reihe[] = array('i' => $i, 'rang' => isset($r['rang']) ? (int) $r['rang'] : 50);
+    }
+    usort($reihe, 'plan_rang_vergleich');
+    return $reihe;
+}
+
 /**
  * Sperrt eine Umweltbedingung diese Regel?
  * Rueckgabe: '' wenn nicht, sonst der Grund als Kuerzel.
@@ -805,19 +853,7 @@ function plan_rechnen($preise, $slotlen, $jetzt, $regeln, $umwelt, $g)
     $laufend = (isset($umwelt['laufend']) && is_array($umwelt['laufend']))
         ? $umwelt['laufend'] : array();
 
-    /* Reihenfolge: erst nach Rang, bei gleichem Rang nach der Nummer.
-     * Der zweite Teil ist wichtig - ohne ihn haengt das Ergebnis bei
-     * gleichem Rang von der Sortierfunktion ab und kann sich zwischen zwei
-     * PHP-Fassungen aendern. Ein Fahrplan, der ohne Zutun anders aussieht,
-     * ist nicht nachvollziehbar. */
-    $reihe = array();
-    foreach ($regeln as $i => $r) {
-        $reihe[] = array('i' => $i, 'rang' => isset($r['rang']) ? (int) $r['rang'] : 50);
-    }
-    usort($reihe, function ($a, $b) {
-        if ($a['rang'] !== $b['rang']) { return $a['rang'] < $b['rang'] ? -1 : 1; }
-        return $a['i'] < $b['i'] ? -1 : ($a['i'] > $b['i'] ? 1 : 0);
-    });
+    $reihe = plan_reihenfolge($regeln);
 
     $belegt = array();
     $erg = array();
@@ -1121,6 +1157,28 @@ function plan_belegung($fahrplan)
  *
  * Diese Faelle stehen jetzt unten unter "Nachgezogen". Sie sind nicht
  * schoener als die anderen - sie sind die, die gefehlt haben.
+ *
+ * ------------------------------------------------------------------
+ * UND DANN DER ZWEITE MUTATIONSLAUF
+ * ------------------------------------------------------------------
+ * Der erste Durchgang brachte 101 gruene Faelle. Das ist eine Zahl, keine
+ * Deckung - also lief der Mutationslauf ein zweites Mal, ueber den bereits
+ * erweiterten Selbsttest. Ergebnis: von achtzehn Verfaelschungen wurden
+ * dreizehn erkannt und FUENF ueberlebten weiter.
+ *
+ * Alle fuenf sassen auf einem "genau gleich":
+ *
+ *     3,7 + 3,7 gegen ein Budget von genau 7,4
+ *     eine angebrochene Stunde, die billiger ist als jede volle
+ *     eine PV-Prognose von genau 25 gegen eine Sperre von 25
+ *     ein Speicherstand von genau 20 gegen soc_min 20
+ *     zwei Regeln mit genau demselben Rang
+ *
+ * Das ist kein Zufall. Gleichstaende entstehen beim Pruefen nie von
+ * selbst - wer eine Reihe hinschreibt, waehlt unwillkuerlich Zahlen, die
+ * sich unterscheiden. Man muss sie bauen.
+ *
+ * Sie stehen unten unter "Die Gleichstaende". Danach: 18 von 18 erkannt.
  * ================================================================== */
 
 /** Eine Preisreihe: 24 Stunden ab $start, Preise aus der Liste. */
@@ -1696,6 +1754,225 @@ function plan_selbsttest()
     $bel3 = plan_belegung($fp);
     $pruefe('Negativpreis: die Belegung zeigt die 8 kW, nicht nichts',
         array(count($bel3), array_values($bel3)), array(1, array(8.0)));
+
+    /* ==================================================================
+     * Die Gleichstaende
+     * ==================================================================
+     *
+     * Nachgetragen, nachdem ein zweiter Mutationslauf ueber den bereits
+     * erweiterten Selbsttest lief: von achtzehn absichtlichen
+     * Verfaelschungen ueberlebten noch fuenf, und alle fuenf sassen auf
+     * einem "genau gleich". Das ist kein Zufall - Gleichstaende entstehen
+     * beim Pruefen nie von selbst, man muss sie bauen.
+     *
+     * Jeder Fall hier ist so gerechnet, dass die Zahl EXAKT auf der Kante
+     * liegt: 3,7 + 3,7 gegen ein Budget von genau 7,4; eine Prognose von
+     * genau 25 gegen eine Sperre von 25; ein Speicherstand von genau 20
+     * gegen soc_min 20.
+     */
+
+    /* ---- Budget: die Summe trifft die Grenze GENAU ----
+     * "> Budget" laesst 7,4 gegen 7,4 durch, ">= Budget" nicht. Beide
+     * Regeln muessen also dieselbe billige Stunde bekommen. */
+    $g74 = array('budget_kw' => 7.4, 'pv_bonus' => 0.0, 'pv_schwelle' => 500);
+    $regeln_kante = array(
+        plan_test_regel(array('art' => 'fenster', 'n' => 1, 'leistung' => 3.7, 'rang' => 1)),
+        plan_test_regel(array('art' => 'fenster', 'n' => 1, 'leistung' => 3.7, 'rang' => 2)),
+    );
+    $fp = plan_rechnen($preise2, 3600, $t0, $regeln_kante, $u0, $g74);
+    $pruefe('Budget genau ausgeschoepft: 3,7 + 3,7 passen in 7,4',
+        array($fp[0]['start'], $fp[1]['start'], $fp[1]['verdraengt']), array(2, 2, 0));
+    /* Und ein Haar darunter passt es nicht mehr. */
+    $g739 = array('budget_kw' => 7.39, 'pv_bonus' => 0.0, 'pv_schwelle' => 500);
+    $fp = plan_rechnen($preise2, 3600, $t0, $regeln_kante, $u0, $g739);
+    $pruefe('Budget 7,39: die zweite Regel muss ausweichen',
+        array($fp[0]['start'], $fp[1]['start']), array(2, 3));
+
+    /* ---- Angebrochene Stunde: sie darf nicht gewinnen ----
+     * Viertelstunden. Stunde 0 ist die billigste (10), aber ab 00:15 fehlt
+     * ihr eine Scheibe - sie ist angebrochen und wird nicht bewertet. Die
+     * guenstigste VOLLE Stunde ist Stunde 2 mit 20. Wer angebrochene
+     * Stunden mitzaehlt, landet bei Stunde 0 mit drei Scheiben. */
+    $vs_teil = plan_test_reihe($t0, array(10, 10, 10, 10, 30, 30, 30, 30,
+                                          20, 20, 20, 20, 30, 30, 30, 30), 900);
+    $fp = plan_rechnen($vs_teil, 900, $t0 + 900,
+        array(plan_test_regel(array('art' => 'stunden', 'n' => 1))), $u0, $g0);
+    $pruefe('Angebrochene Stunde gewinnt nicht - die volle Stunde 02:00 gewinnt',
+        array($fp[0]['start'], $fp[0]['anzahl']), array(2, 4));
+
+    /* ---- PV-Sperre: Prognose GENAU auf der Schwelle ----
+     * ">= Schwelle" sperrt, "> Schwelle" nicht. */
+    $u_kante = array_merge($u0, array('pv_summe' => 25.0));
+    $fp = plan_rechnen($preise, 3600, $t0,
+        array(plan_test_regel(array('art' => 'schwelle', 'schwelle' => 99, 'pv_sperre' => 25.0))),
+        $u_kante, $g0);
+    $pruefe('PV-Sperre greift, wenn die Prognose die Schwelle genau trifft',
+        array($fp[0]['aktiv'], $fp[0]['gesperrt']), array(0, 'pv'));
+    $u_knapp = array_merge($u0, array('pv_summe' => 24.999));
+    $fp = plan_rechnen($preise, 3600, $t0,
+        array(plan_test_regel(array('art' => 'schwelle', 'schwelle' => 99, 'pv_sperre' => 25.0))),
+        $u_knapp, $g0);
+    $pruefe('Ein Tausendstel darunter sperrt sie nicht', $fp[0]['gesperrt'], '');
+
+    /* ---- Speicherstand GENAU auf der Grenze ----
+     * soc_min sperrt UNTERHALB, nicht auf der Grenze: wer "erst ab 20 %"
+     * sagt, meint bei 20 % lauft es. Dasselbe oben.
+     *
+     * Hier sind die beiden Grenzen bewusst NICHT gleich behandelt wie die
+     * PV-Sperre - und das ist eine Entscheidung, keine Unachtsamkeit: die
+     * PV-Sperre ist ein Verbot ("ab dieser Prognose nicht mehr"), die
+     * Speichergrenzen sind ein Bereich ("von 20 bis 80"), und die Raender
+     * eines Bereichs gehoeren dazu. */
+    $u_soc_kante = array_merge($u0, array('soc' => 20.0));
+    $fp = plan_rechnen($preise, 3600, $t0,
+        array(plan_test_regel(array('art' => 'schwelle', 'schwelle' => 99, 'soc_min' => 20))),
+        $u_soc_kante, $g0);
+    $pruefe('soc_min 20 bei Stand 20: laeuft, sperrt nicht', $fp[0]['gesperrt'], '');
+    $u_soc_unter = array_merge($u0, array('soc' => 19.9));
+    $fp = plan_rechnen($preise, 3600, $t0,
+        array(plan_test_regel(array('art' => 'schwelle', 'schwelle' => 99, 'soc_min' => 20))),
+        $u_soc_unter, $g0);
+    $pruefe('Ein Zehntel darunter sperrt', $fp[0]['gesperrt'], 'soc_min');
+    $u_soc_oben = array_merge($u0, array('soc' => 80.0));
+    $fp = plan_rechnen($preise, 3600, $t0,
+        array(plan_test_regel(array('art' => 'schwelle', 'schwelle' => 99, 'soc_max' => 80))),
+        $u_soc_oben, $g0);
+    $pruefe('soc_max 80 bei Stand 80: laeuft, sperrt nicht', $fp[0]['gesperrt'], '');
+
+    /* ---- Rangfolge: die Zusage selbst, nicht ihr Schatten ----
+     * Warum unmittelbar und nicht ueber den Fahrplan, steht im Kopf von
+     * plan_rang_vergleich(). */
+    $pruefe('Kleinerer Rang kommt zuerst',
+        plan_rang_vergleich(array('i' => 5, 'rang' => 1), array('i' => 0, 'rang' => 2)), -1);
+    $pruefe('Groesserer Rang kommt spaeter',
+        plan_rang_vergleich(array('i' => 0, 'rang' => 9), array('i' => 5, 'rang' => 2)), 1);
+    $pruefe('Gleicher Rang: die kleinere Nummer kommt zuerst',
+        plan_rang_vergleich(array('i' => 2, 'rang' => 5), array('i' => 7, 'rang' => 5)), -1);
+    $pruefe('Gleicher Rang: die groessere Nummer kommt spaeter',
+        plan_rang_vergleich(array('i' => 7, 'rang' => 5), array('i' => 2, 'rang' => 5)), 1);
+    $pruefe('Dieselbe Regel mit sich selbst ergibt null',
+        plan_rang_vergleich(array('i' => 3, 'rang' => 5), array('i' => 3, 'rang' => 5)), 0);
+    /* Und die Reihenfolge, die daraus entsteht - vier Regeln, zwei Raenge. */
+    $pruefe('Reihenfolge aus vier Regeln mit zwei Raengen',
+        array_map(function ($z) { return $z['i']; }, plan_reihenfolge(array(
+            array('rang' => 5), array('rang' => 1), array('rang' => 5), array('rang' => 1)))),
+        array(1, 3, 0, 2));
+
+    /* ================================================================
+     * Luecken, die eine Deckungsmessung am 27.08.2026 gefunden hat
+     * ================================================================
+     *
+     * Die 115 Faelle darueber waren gruen, und achtzehn Mutationen wurden
+     * alle erkannt. Beides sagt nichts ueber Stellen, an die niemand
+     * gedacht hat. Gemessen wurde deshalb zweierlei: welche Rueckgabefelder
+     * ueberhaupt geprueft werden (zwei von achtzehn nicht), und welche
+     * Bedingung im Produktivteil man auf true oder false zwingen kann, ohne
+     * dass ein Fall rot wird (45 von 176).
+     *
+     * Die folgenden Faelle schliessen die Luecken, die dabei echte waren.
+     * Jeder ist geeicht: die zugehoerige Stelle wurde zurueckgebaut, und
+     * der Fall wurde rot. */
+
+    /* ---- rest: wie lange laeuft es noch ----
+     * Geht als R<n>REST nach Loxone. Eine falsche Zahl steht dort als
+     * "laeuft noch X Stunden" in der Visualisierung - und niemand merkt es,
+     * weil sie plausibel aussieht. */
+    $p_rest = plan_test_reihe($t0, array(10, 10, 10, 50, 50, 50));
+    $fp = plan_rechnen($p_rest, 3600, $t0,
+        array(plan_test_regel(array('art' => 'schwelle', 'schwelle' => 20))), $u0, $g0);
+    $pruefe('rest: drei zusammenhaengende Stunden ab jetzt sind 180 Minuten',
+        array($fp[0]['aktiv'], $fp[0]['rest']), array(1, 180));
+    /* Und der Gegenfall: wer jetzt nicht laeuft, hat keine Restlaufzeit.
+     * Ohne diesen Fall wuerde ein rest, das immer gerechnet wird, nicht
+     * auffallen. */
+    $p_spaet = plan_test_reihe($t0, array(50, 50, 10, 10));
+    $fp = plan_rechnen($p_spaet, 3600, $t0,
+        array(plan_test_regel(array('art' => 'schwelle', 'schwelle' => 20))), $u0, $g0);
+    $pruefe('rest bleibt 0, solange die Regel nicht laeuft',
+        array($fp[0]['aktiv'], $fp[0]['rest']), array(0, 0));
+
+    /* ---- startmin: die Minute des Beginns ----
+     * Bei Stundenscheiben immer 0 - erst bei Viertelstunden traegt das Feld
+     * eine Aussage. Genau deshalb war es ungeprueft: die Faelle rechnen
+     * ueberwiegend in Stunden.
+     *
+     * n ist in STUNDEN gezaehlt, nicht in Scheiben: n=1 sind bei 900 s vier
+     * Scheiben (siehe plan_slots_noetig weiter oben). Beim Schreiben dieses
+     * Falls stand hier zuerst n=2 - das sind acht Scheiben und damit die
+     * ganze Reihe, und startmin kam erwartungsgemaess als 0 heraus. Der
+     * Fall war rot, und er hatte recht. */
+    $p_min = plan_test_reihe($t0, array(50, 50, 10, 10, 10, 10, 50, 50), 900);
+    $fp = plan_rechnen($p_min, 900, $t0,
+        array(plan_test_regel(array('art' => 'fenster', 'n' => 1))), $u0, $g0);
+    $pruefe('startmin: das guenstigste Viertelstundenfenster beginnt um :30',
+        array($fp[0]['start'], $fp[0]['startmin'], $fp[0]['anzahl']), array(0, 30, 4));
+
+    /* ---- grund = 'wartet' ----
+     * Es ist etwas geplant, aber nicht jetzt. Der Unterschied zu 'keine'
+     * ist der ganze Sinn des Feldes. */
+    $pruefe('grund wartet, wenn erst spaeter etwas geplant ist',
+        $fp[0]['grund'], 'wartet');
+
+    /* ---- grund = 'budget' ----
+     * Nichts gefunden, aber es waere etwas dagewesen - das Budget war
+     * schuld. Zu unterscheiden von 'keine', sonst sucht der Anwender den
+     * Fehler bei den Preisen statt bei seiner Leistungsgrenze. */
+    $p_budget = plan_test_reihe($t0, array(10, 50, 50));
+    $fp = plan_rechnen($p_budget, 3600, $t0, array(
+        plan_test_regel(array('art' => 'schwelle', 'schwelle' => 20,
+                              'leistung' => 3.7, 'rang' => 1)),
+        plan_test_regel(array('art' => 'schwelle', 'schwelle' => 20,
+                              'leistung' => 3.7, 'rang' => 2)),
+    ), $u0, array('budget_kw' => 3.7, 'pv_bonus' => 0.0, 'pv_schwelle' => 500));
+    $pruefe('Die zweite Regel bekommt nichts, und der Grund heisst budget',
+        array($fp[0]['aktiv'], $fp[1]['anzahl'], $fp[1]['verdraengt'] > 0, $fp[1]['grund']),
+        array(1, 0, true, 'budget'));
+
+    /* ---- plan_nach_wh mit 'w' ----
+     * 'w' ist eine mittlere LEISTUNG, keine Energie. Wer das verwechselt,
+     * bekommt bei Viertelstunden den vierfachen Wert. Die Einheit kam in
+     * der ganzen Datei kein einziges Mal vor. */
+    $pruefe('2000 W ueber eine Viertelstunde sind 500 Wh',
+        plan_nach_wh(2000, 'w', 900), 500.0);
+    $pruefe('2000 W ueber eine Stunde sind 2000 Wh',
+        plan_nach_wh(2000, 'w', 3600), 2000.0);
+    $pruefe('Grossgeschriebenes W faellt nicht auf wh zurueck',
+        plan_nach_wh(2000, 'W', 900), 500.0);
+
+    /* ---- plan_pfad ----
+     * Loest den Punktpfad in einer fremden JSON-Antwort auf. Fuenfmal
+     * benutzt, nie unmittelbar geprueft. */
+    $tief = array('a' => array('b' => array('c' => 42)));
+    $pruefe('Punktpfad in die Tiefe', plan_pfad($tief, 'a.b.c'), 42);
+    $pruefe('Leerer Pfad gibt alles zurueck', plan_pfad($tief, ''), $tief);
+    $pruefe('Ein fehlender Zwischenschritt gibt null', plan_pfad($tief, 'a.x.c'), null);
+    $pruefe('Ein Pfad in einen Skalar gibt null', plan_pfad($tief, 'a.b.c.d'), null);
+
+    /* ---- Taktschutz ----
+     * Sechs der ueberlebenden Mutationen sassen in plan_takt(), bei zwei
+     * Faellen insgesamt. Geprueft wird die Funktion unmittelbar: sie ist
+     * reine Listenarbeit und braucht keinen Fahrplan drumherum. */
+    $pruefe('Ohne Vorgaben bleibt die Trefferliste unveraendert',
+        plan_takt(array($t0, $t0 + 7200), array(), 3600, 0, 0),
+        array($t0, $t0 + 7200));
+    $pruefe('Eine Luecke unter der Mindestpause wird zugemacht',
+        plan_takt(array($t0, $t0 + 7200), array(), 3600, 0, 120),
+        array($t0, $t0 + 3600, $t0 + 7200));
+    $pruefe('Eine Luecke ueber der Mindestpause bleibt offen',
+        plan_takt(array($t0, $t0 + 7200), array(), 3600, 0, 30),
+        array($t0, $t0 + 7200));
+    $pruefe('Ein zu kurzer Block wird aus den Kandidaten verlaengert',
+        plan_takt(array($t0), array($t0 => 1.0, $t0 + 3600 => 1.0), 3600, 120, 0),
+        array($t0, $t0 + 3600));
+    $pruefe('Reicht der Kandidat nicht, faellt der ganze Block weg',
+        plan_takt(array($t0), array(), 3600, 120, 0),
+        array());
+    /* Und die Reihenfolge, auf die der Kommentar von plan_takt() sich
+     * beruft: erst zumachen, dann verlaengern. Umgekehrt waere der Block
+     * verworfen, den das Zumachen gerettet hat. */
+    $pruefe('Erst zumachen, dann verlaengern - der Block ueberlebt',
+        plan_takt(array($t0, $t0 + 7200), array(), 3600, 180, 120),
+        array($t0, $t0 + 3600, $t0 + 7200));
 
     array_unshift($z, sprintf('Planer %s: %d Faelle geprueft, %d Fehlschlaege.',
         PLAN_FASSUNG, $anzahl, $fehl), '');

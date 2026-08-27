@@ -889,11 +889,36 @@ $oc_reiter = array(
     'tab-log'      => oc_t('REITER.LOG'),
 );
 ?>
+<?php
+/* DIE REITERLEISTE STEHT AUSGESCHRIEBEN - das ist Absicht.
+ *
+ * Bis 1.1.1 entstand sie aus einer foreach-Schleife. Das sieht sauberer aus
+ * und hat einen Preis, den man nicht sieht: hausstandard_pruefen.py findet
+ * die Reiter dann nicht mehr und meldet in der Spalte "tab" einen Strich -
+ * seit jeher, ohne dass es jemandem aufgefallen waere. Eine Bauweise, die
+ * eine Pruefung blind macht, kostet mehr, als sie spart.
+ *
+ * Die Aufloesung ist nicht "Schleife oder Hand", sondern beides:
+ * ausschreiben UND die Uebereinstimmung nachrechnen lassen. Die Prueffzeile
+ * im Reiter Test haelt die DREI Stellen gegeneinander - die Positivliste
+ * $oc_muster, dieses Feld $oc_reiter und die ids der Flaechen. Wer einen
+ * Reiter ergaenzt und eine der drei vergisst, bekommt dort ein Kreuz statt
+ * einer Seite, die nach jedem Absenden auf Einstellungen zurueckspringt.
+ */
+?>
 <div class="sm-tabs">
-<?php foreach ($oc_reiter as $oc_id => $oc_bez) { ?>
-    <a class="sm-tab<?php echo $oc_tab === $oc_id ? ' sm-active' : ''; ?>" data-ziel="<?php echo oc_e($oc_id); ?>"
-       href="index.php?form=<?php echo oc_e(substr($oc_id, 4)); ?>"><?php echo $oc_bez; ?></a>
-<?php } ?>
+    <a class="sm-tab<?php echo $oc_tab === 'tab-settings' ? ' sm-active' : ''; ?>" data-ziel="tab-settings"
+       href="index.php?form=settings"><?php echo $oc_reiter['tab-settings']; ?></a>
+    <a class="sm-tab<?php echo $oc_tab === 'tab-mqtt' ? ' sm-active' : ''; ?>" data-ziel="tab-mqtt"
+       href="index.php?form=mqtt"><?php echo $oc_reiter['tab-mqtt']; ?></a>
+    <a class="sm-tab<?php echo $oc_tab === 'tab-loxone' ? ' sm-active' : ''; ?>" data-ziel="tab-loxone"
+       href="index.php?form=loxone"><?php echo $oc_reiter['tab-loxone']; ?></a>
+    <a class="sm-tab<?php echo $oc_tab === 'tab-costs' ? ' sm-active' : ''; ?>" data-ziel="tab-costs"
+       href="index.php?form=costs"><?php echo $oc_reiter['tab-costs']; ?></a>
+    <a class="sm-tab<?php echo $oc_tab === 'tab-test' ? ' sm-active' : ''; ?>" data-ziel="tab-test"
+       href="index.php?form=test"><?php echo $oc_reiter['tab-test']; ?></a>
+    <a class="sm-tab<?php echo $oc_tab === 'tab-log' ? ' sm-active' : ''; ?>" data-ziel="tab-log"
+       href="index.php?form=log"><?php echo $oc_reiter['tab-log']; ?></a>
 </div>
 
 <!-- ==================== Reiter: Einstellungen ==================== -->
@@ -1781,6 +1806,65 @@ $oc_budget = (float) $oc_cfg['budget_kw'];
 <?php } ?>
 </table>
 <div class="sm-hilfe"><?php echo oc_t('PLAN.U_HILFE'); ?></div>
+
+<?php
+/* ===================================================================
+ * Reiterleiste, Positivliste und Flaechen gegeneinander halten
+ * ===================================================================
+ *
+ * Drei Stellen muessen deckungsgleich sein, und keine von ihnen meldet
+ * sich, wenn sie es nicht mehr ist:
+ *
+ *   $oc_muster    die Positivliste - fehlt ein Reiter darin, springt die
+ *                 Seite nach jedem Absenden zurueck auf Einstellungen
+ *   $oc_reiter    die Beschriftungen, aus denen die Leiste entsteht
+ *   id="tab-..."  die Flaechen
+ *
+ * Gezaehlt wird an der eigenen Datei, und die Zahl der ANGESEHENEN Stellen
+ * steht dabei: eine Null ist kein "in Ordnung", sondern der Hinweis, dass
+ * nichts gemessen wurde. Findet sich die Datei nicht, gibt es einen Strich
+ * und keinen Haken.
+ */
+$oc_rp_datei = '';
+foreach (array(
+    (string) (getenv('LBHOMEDIR') ?: '') . '/webfrontend/htmlauth/plugins/'
+        . basename(dirname(__DIR__, 2)) . '/index.php',
+    __FILE__,
+) as $oc_rp_k) {
+    if ($oc_rp_k !== '' && is_file($oc_rp_k)) { $oc_rp_datei = $oc_rp_k; break; }
+}
+$oc_rp_ok = 2;
+$oc_rp_text = oc_t('TEST.REITER_UNKLAR');
+if ($oc_rp_datei !== '') {
+    $oc_rp_q = (string) @file_get_contents($oc_rp_datei);
+    $oc_rp_liste = preg_match('/\$oc_muster\s*=\s*.\/\^tab-\(([a-z0-9_|]+)\)\$/', $oc_rp_q, $oc_rp_m)
+        ? explode('|', $oc_rp_m[1]) : array();
+    $oc_rp_leiste = preg_match_all('/data-ziel="tab-([a-z0-9_]+)"/', $oc_rp_q, $oc_rp_l)
+        ? $oc_rp_l[1] : array();
+    $oc_rp_flaechen = preg_match_all('/id="tab-([a-z0-9_]+)"/', $oc_rp_q, $oc_rp_f)
+        ? $oc_rp_f[1] : array();
+    if (!$oc_rp_liste) {
+        $oc_rp_text = oc_t('TEST.REITER_UNKLAR');
+    } else {
+        $oc_rp_fehlt = array_unique(array_merge(
+            array_diff($oc_rp_liste, $oc_rp_leiste), array_diff($oc_rp_liste, $oc_rp_flaechen)));
+        $oc_rp_zuviel = array_unique(array_merge(
+            array_diff($oc_rp_leiste, $oc_rp_liste), array_diff($oc_rp_flaechen, $oc_rp_liste)));
+        $oc_rp_ok = (!$oc_rp_fehlt && !$oc_rp_zuviel) ? 1 : 0;
+        $oc_rp_text = $oc_rp_ok
+            ? sprintf(oc_t('TEST.REITER_OK'), count($oc_rp_liste),
+                      count($oc_rp_leiste), count($oc_rp_flaechen))
+            : sprintf(oc_t('TEST.REITER_FEHLT'),
+                      $oc_rp_fehlt ? implode(', ', $oc_rp_fehlt) : '-',
+                      $oc_rp_zuviel ? implode(', ', $oc_rp_zuviel) : '-');
+    }
+}
+?>
+<h3 class="sm-h3"><?php echo oc_t('TEST.H_REITER'); ?></h3>
+<div class="sm-alert <?php echo $oc_rp_ok === 1 ? 'sm-ok' : ($oc_rp_ok === 0 ? 'sm-err' : 'sm-warn'); ?>">
+<b><?php echo $oc_rp_ok === 1 ? '&#10003;' : ($oc_rp_ok === 0 ? '&#10007;' : '&ndash;'); ?></b>
+<?php echo oc_e($oc_rp_text); ?>
+</div>
 
 <h3 class="sm-h3"><?php echo oc_t('PLAN.H_SELBSTTEST'); ?></h3>
 <p class="sm-small"><?php echo oc_t('PLAN.SELBSTTEST_TEXT'); ?></p>

@@ -84,7 +84,7 @@ Vorlagen-Knopf benutzt, und den hatte kein Prüfstand je gedrückt.
 * **Ein Tag Historie ging verloren**, wenn der LoxBerry zwischen 23:50 und
   23:59 aus war — und die Historie ist die Grundlage des Kostenvergleichs.
 
-### Der Selbsttest des Planers: von 53 auf 101 Fälle
+### Der Selbsttest des Planers: von 53 über 101 auf 133 Fälle
 
 Der alte Selbsttest meldete 53 grüne Fälle — der Kommentar daneben sprach
 von „dreißig". Ein Mutationslauf (28 absichtliche Verfälschungen im
@@ -95,6 +95,48 @@ Preisreihe — und die beiden Sommerzeit-Umstellungstage, wo der Fehler saß.
 
 Jetzt: **101 Fälle, 0 Fehlschläge**, unter beiden PHP-Fassungen. Die Zahl
 steht nicht mehr im Fließtext, sondern wird gezählt.
+
+**Nachtrag 27.08.2026 — und er zeigt, warum eine Zahl allein nichts sagt.**
+Der Selbsttest stand inzwischen bei 115 Fällen, der Mutationslauf meldete
+18 von 18 erkannt. Beides beruhigt. Nachgemessen wurde zweierlei:
+
+* **Alle 18 Mutationsanker standen schon in der Vorfassung.** Die zwei
+  Funktionen, die mit 1.1.0 dazugekommen sind, rührte keine einzige an —
+  eine Liste, die nicht mitwächst, wird mit jeder Erweiterung beruhigender
+  und aussageärmer.
+* **Zwei von achtzehn Rückgabefeldern prüfte kein Fall**: `rest` und
+  `startmin`. `rest` geht als Restlaufzeit nach Loxone. Dazu 45 von 176
+  Verzweigungen, die sich auf `true` oder `false` zwingen ließen, ohne dass
+  ein Fall rot wurde.
+
+Geschlossen mit **18 neuen Fällen** (jetzt 133) und **8 neuen Mutationen**
+(jetzt 26, alle erkannt). Jeder neue Fall ist einzeln geeicht: die Stelle,
+die er prüfen soll, wurde zurückgebaut, und er wurde rot. Ein Fall, der das
+nicht tut, hebt nur die Fallzahl.
+
+### Die Reiterleiste steht jetzt ausgeschrieben
+
+Sie entstand aus einer `foreach`-Schleife. Das liest sich besser und hatte
+einen Preis, den man nicht sieht: `hausstandard_pruefen.py` findet die
+Reiter dann nicht mehr und meldete in der Spalte `tab` **seit jeher einen
+Strich** — niemandem war es aufgefallen, weil ein Strich wie eine
+Kleinigkeit aussieht.
+
+Drei Stellen müssen deckungsgleich bleiben, und keine meldet sich, wenn sie
+es nicht mehr ist: die Positivliste `$oc_muster`, die Leiste selbst und die
+`id` der Flächen. Fehlt ein Reiter in der Positivliste, ist er anklickbar —
+aber nach jedem Absenden springt die Seite zurück auf Einstellungen, und
+man sucht den Grund an der falschen Stelle.
+
+Die Auflösung ist nicht „Schleife oder Hand", sondern beides: **ausschreiben
+und nachrechnen lassen.** Der Reiter Test hat dafür eine neue Zeile, die die
+drei Stellen an der eigenen Datei gegeneinander zählt und die Zahl der
+angesehenen Stellen mitnennt — eine Null ist dort kein „in Ordnung".
+
+Geeicht in beide Richtungen: unverändert grün, und jede der drei Stellen
+einzeln zerbrochen (Reiter aus der Positivliste, aus der Leiste, Fläche
+umbenannt) macht die Zeile **rot** — unter PHP 7.4 und 8.4. Die Spalte `tab`
+steht damit auf `TAB` statt auf einem Strich.
 
 ---
 
@@ -617,10 +659,15 @@ Kopien derselben Rechnung wären schlimmer als ein zweites Kürzel.
 
 Sie ist reine Rechnung — kein Netz, keine Dateien, keine Uhr außer dem
 übergebenen Zeitpunkt. Deshalb lässt sie sich vollständig durchprüfen:
-**53 Fälle, jeder von Hand nachgerechnet**, unter PHP 7.4 und 8.2 alle grün.
-Darunter die Verdrängung durch das Budget, die Frist über Mitternacht, die
+**133 Fälle, jeder von Hand nachgerechnet**, unter PHP 7.4 und 8.4 alle grün
+(53 waren es bei 1.2.0, 101 bei Planerfassung 1.1.0). Darunter die
+Verdrängung durch das Budget, die Frist über Mitternacht, die
 Einheitenumrechnung Wh/W/kW und der Fall „PV-Gutschrift lässt die
 Sonnenstunde gegen die billigste Stunde gewinnen".
+
+Dazu ein Mutationslauf mit **26 absichtlichen Verfälschungen**, alle
+erkannt. Die Zahl der Fälle allein sagt nichts darüber, ob sie die
+Rechnung anfassen — erst der Mutationslauf tut das.
 
 **Was das nicht beweist:** dass die Prognosequelle so antwortet, wie sie
 soll. Das entscheidet der Dienst am anderen Ende. Der Reiter Einstellungen
