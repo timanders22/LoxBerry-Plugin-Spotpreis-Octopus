@@ -95,7 +95,7 @@ function oc_paths()
             'config'  => $home . '/config/plugins/' . $ordner . '/octopus.json',
             'backup'  => $home . '/config/plugins/' . $ordner . '.backup.json',
             'zugang'  => $home . '/config/plugins/' . $ordner . '/zugang.json',
-            'data'    => $home . '/data/plugins/' . $ordner,
+            'datadir'    => $home . '/data/plugins/' . $ordner,
             'log'     => $home . '/log/plugins/' . $ordner . '/octopus.log',
             'general' => $home . '/config/system/general.json',
             'tmp'     => '/tmp/' . $ordner,
@@ -111,7 +111,7 @@ function oc_paths()
         'config'  => $tmp . '/octopus.json',
         'backup'  => $tmp . '/octopus.backup.json',
         'zugang'  => $tmp . '/zugang.json',
-        'data'    => $tmp . '/data',
+        'datadir'    => $tmp . '/data',
         'log'     => $tmp . '/octopus.log',
         'general' => $wurzel . '/general.json',
         'tmp'     => $tmp,
@@ -128,7 +128,7 @@ function oc_tmpdir()
 
 function oc_datadir()
 {
-    $d = oc_paths()['data'];
+    $d = oc_paths()['datadir'];
     if (!is_dir($d)) { @mkdir($d, 0775, true); }
     return $d;
 }

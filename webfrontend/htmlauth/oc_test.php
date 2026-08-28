@@ -48,8 +48,8 @@ function oc_test_selbst()
         function_exists('socket_create') ? '' : oc_t('TEST.SOCKETS_NEIN'));
     $h .= oc_zeile(is_writable(dirname($p['config'])) || is_writable($p['config']),
         oc_t('TEST.CONFIG_SCHREIBBAR'), oc_e($p['config']));
-    $h .= oc_zeile(is_dir($p['data']) || @mkdir($p['data'], 0775, true),
-        oc_t('TEST.DATENORDNER'), oc_e($p['data']));
+    $h .= oc_zeile(is_dir($p['datadir']) || @mkdir($p['datadir'], 0775, true),
+        oc_t('TEST.DATENORDNER'), oc_e($p['datadir']));
 
     $demo = !empty($cfg['demo']);
     if ($demo) {
