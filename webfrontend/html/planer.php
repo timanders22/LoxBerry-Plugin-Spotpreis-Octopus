@@ -90,7 +90,7 @@
  * 1.1.1: Aufrundung gegen Gleitkommarauschen in plan_slots_noetig(), und
  *        der Lueckenschluss in plan_takt() haelt sich jetzt an die
  *        Kandidatenliste - beides mit eigenen Prueffaellen unten. */
-define('PLAN_FASSUNG', '1.1.1');
+define('PLAN_FASSUNG', '1.1.2');
 
 /* ==================================================================
  * Vorgaben
@@ -434,7 +434,14 @@ function plan_waehlen($r, $kand, $slotlen, $anzahl, $mittel)
         foreach ($bloecke as $h => $v) {
             // Angebrochene Stunden nicht bewerten - sie waeren kuenstlich
             // guenstig oder teuer, je nachdem welche Viertel fehlen.
-            if ($v[1] === $pro) { $mittelwerte[$h] = $v[0] / $pro; }
+            /* GERUNDET, sonst greift der Zweitschluessel unten nie: zwei
+             * rechnerisch gleiche Stundenmittel sind in Gleitkomma fast
+             * nie identisch. Gemessen mit Viertelstunden 0,1/0,2/0,1/0,2
+             * gegen 0,15/0,15/0,15/0,15 - beide Mittel 0,15, verglichen
+             * 0.15000000000000002 gegen 0.14999999999999999, und der
+             * Planer nahm die SPAETERE Stunde. Dieselbe Vorkehrung wie
+             * das Epsilon in plan_slots_noetig(). */
+            if ($v[1] === $pro) { $mittelwerte[$h] = round($v[0] / $pro, 6); }
         }
         /* Stabile Reihenfolge bei gleichem Stundenmittel: asort() ist zwar
          * seit PHP 8.0 stabil, unter 7.4 aber nicht. Ohne den Zweitschluessel
@@ -993,10 +1000,21 @@ function plan_rechnen($preise, $slotlen, $jetzt, $regeln, $umwelt, $g)
          * Blocks - und nur dann sagt 'laeuft' mehr als der Name der
          * Regelart. Die Frage laesst sich hinterher nicht mehr stellen. */
         $lief_ohnehin = in_array($jetzt, $treffer, true);
+        /* NUR Scheiben, die ohnehin Kandidaten sind - wie in plan_takt().
+         * Bis 1.1.1 stand hier $preise, also JEDE Scheibe mit einem Preis.
+         * Gemessen an zwei Regeln zu je 3,0 kW mit budget_kw 3,0 und einem
+         * laufenden Block: in der Belegung standen 6 kW - das
+         * Leistungsbudget war gerissen, und mit derselben Anordnung auch
+         * das zweite Budget des Paragrafen 14a EnWG. Ebenso lief eine
+         * Regel mit Fenster 02-03 Uhr drei Stunden vor ihrem Fenster.
+         * Das ist dieselbe Klasse wie der Lueckenschluss in plan_takt(),
+         * die dort in 1.1.3 behoben wurde und hier stehenblieb.
+         * Eine gerissene Budgetgrenze ist teurer als eine verlorene
+         * Hysterese: der Hausanschluss ist eine harte Grenze. */
         if ($bis > $jetzt) {
             $vorhanden = array_flip($treffer);
             for ($ts = $jetzt; $ts < $bis; $ts += $slotlen) {
-                if (isset($preise[$ts])) { $vorhanden[$ts] = 1; }
+                if (isset($mit[$ts])) { $vorhanden[$ts] = 1; }
             }
             $treffer = array_keys($vorhanden);
             sort($treffer);

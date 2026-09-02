@@ -7,6 +7,56 @@ HTTP-Endpunkt als Rückfallebene.
 
 ---
 
+## Was 1.1.5 behebt
+
+**Eine einzige Datei, und sie stand hier eine Fassung zu alt.**
+
+`webfrontend/html/planer.php` ist in diesem Plugin und in *Spotpreis aWATTar*
+dieselbe Datei — die Kopfzeile der Datei sagt das selbst: „Wer sie ändert,
+ändert sie in beiden." Bei der Durchsicht von 1.1.4 wurden zwei Fehler darin
+gefunden und in aWATTar behoben; in dieser Linie sind sie **nicht**
+mitgekommen. Das aWATTar-README behauptete danach, beide Linien trügen
+dieselbe Prüfsumme. Nachgemessen am 02.09.2026, kurz nach der
+Veröffentlichung von 1.1.4:
+
+| | aWATTar 1.2.19 | Octopus 1.1.4 |
+|---|---|---|
+| `PLAN_FASSUNG` | 1.1.2 | 1.1.1 |
+| SHA256 von `planer.php` | `116102c6…` | `252cc917…` |
+
+21 Zeilen standen nur dort, 3 nur hier — und diese drei waren die alten
+Fassungen genau der geänderten Stellen. 1.1.5 übernimmt die Datei
+unverändert; die Prüfsumme stimmt jetzt wirklich überein, und das ist
+nachgerechnet, nicht behauptet.
+
+### Die Hysterese riss das Leistungsbudget und das Zeitfenster
+
+Sie füllte ihre Trefferliste aus *allen* Preisen auf statt aus den
+**Kandidaten** — der einzigen Liste, die Budget, Fenster, Frist und Horizont
+schon geprüft hat. Gemessen mit zwei Regeln zu je 3,0 kW bei `budget_kw` 3,0
+und einem laufenden Block: in der Belegung standen **6 kW**, und mit
+derselben Anordnung war auch das zweite Budget nach § 14a EnWG gerissen. Eine
+Regel mit Fenster 02–03 Uhr lief drei Stunden vor ihrem Fenster.
+
+Das ist dieselbe Klasse wie der Lückenschluss in `plan_takt()`, die in 1.1.3
+behoben wurde und an dieser Stelle stehenblieb. **Eine gerissene
+Budgetgrenze ist teurer als eine verlorene Hysterese: der Hausanschluss ist
+eine harte Grenze.**
+
+### Der Zweitschlüssel bei gleichem Stundenmittel griff nie
+
+Verglichen wurde die ungerundete Summe mit `!==`; zwei rechnerisch gleiche
+Mittel sind in Gleitkomma fast nie identisch. Gemessen mit Viertelstunden
+0,1/0,2/0,1/0,2 gegen 0,15/0,15/0,15/0,15 — beide Mittel 0,15, verglichen
+`0.15000000000000002` gegen `0.14999999999999999` — nahm der Planer die
+**spätere** Stunde. Über die Reihenfolge entschied die siebzehnte
+Nachkommastelle statt der frühere Zeitpunkt.
+
+**Sonst ändert sich nichts.** Kein anderer Teil des Plugins ist angefasst;
+gegenüber 1.1.4 unterscheidet sich genau eine Datei und die Fassungsnummer.
+
+---
+
 ## Was 1.1.4 behebt
 
 Eine zweite Zeile-für-Zeile-Durchsicht, nachdem die Werkzeugkette zu 1.1.3
