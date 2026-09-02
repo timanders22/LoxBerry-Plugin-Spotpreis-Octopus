@@ -7,6 +7,42 @@ HTTP-Endpunkt als Rückfallebene.
 
 ---
 
+## Was 1.1.6 behebt
+
+**Wieder nur eine Datei — und wieder dieselbe.**
+
+`webfrontend/html/planer.php` ist in diesem Plugin und in *Spotpreis aWATTar*
+byteweise dieselbe Datei. Sie steht jetzt auf **1.1.3**. Gemessen wurde in der
+aWATTar-Linie; hier steht, was die fünf Befunde für **Viertelstundenpreise**
+bedeuten — und zwei davon treffen diese Linie härter.
+
+| Befund | Wirkung hier |
+|---|---|
+| **Runden fassungsabhängig** | Die Schaltschwelle der Regelart „mittel" ergab unter PHP 7.4.33 den Wert 4,293 und unter 8.4.24 den Wert 4,292 ct. LoxBerry fährt heute 7.4, mit Debian 13 kommt 8.x — der Wechsel hätte die Schwelle von selbst verstellt. `plan_runde()` bildet die 7.4-Antwort nach, die Zahl aber fest verdrahtet statt aus der ini-Einstellung. Geeicht über 72 042 Werte. |
+| **Frist an den Umstellungstagen** | Die doppelte Stunde am 25.10. wurde fassungsabhängig aufgelöst: 7.4 nahm 02:00 CET, 8.4 nahm 02:00 CEST. Eine Stunde Unterschied bei der Frist, allein durch den Interpreter. |
+| **Taktschutz riss Lücken auf** | **Trifft hier härter.** Bei Stundenpreisen ist eine Mindestpause unter 60 Minuten ohnehin selten; bei Viertelstunden ist sie der Normalfall. Ein Streifzug über 3815 Fälle — mit Viertelstundenscheiben gerechnet — fand **171 Ergebnisse**, die die Mindestpause nicht einhielten. Jetzt wird nach dem Verlängern ein zweites Mal zugemacht. |
+| **Gleichstand beim Fenster** | **Trifft hier härter.** Bei Viertelstunden gibt es viermal so viele Fenster, und rechnerisch gleich teure Fenster sind in Gleitkomma fast nie identisch — der Planer nahm das **spätere**. Gemessen an 0,1/0,2/0,1/0,2 gegen viermal 0,15: beide Mittel 0,15, verglichen wurden 0.15000000000000002 gegen 0.14999999999999999. |
+| **Kennzahlen nach dem Negativpreis** | Eine Regel zu 4 kW, die allein wegen des Negativpreises lief, meldete `kwh=0` und „es fehlen noch zwei Scheiben" statt `kwh=4,0` und einer. |
+
+Dazu zwei Prüffälle **für eine alte Korrektur**: dass die Hysterese sich an
+die Kandidatenliste hält, stand seit 1.1.1 im Quelltext begründet, war aber
+von keinem Fall gedeckt — der Rückbau blieb grün. Jetzt geht er rot.
+
+Der Selbsttest des Planers zählt **170 Fälle** statt 137, alle grün unter PHP
+7.4.33 **und** 8.4.24. Die Mutationsdeckung steht bei **34 von 34**. Jede
+Korrektur ist in beide Richtungen geeicht: gemessen, dass der Fehler auftritt,
+und gemessen, dass die zugehörige Prüfung rot wird, wenn man die Korrektur
+zurückbaut.
+
+Am Plugin selbst ändert sich nichts weiter. Prüfsumme nach dem Wechsel in
+beiden Linien gleich:
+
+```
+sha256  76622f0940e7a41ed16099c6dad0f808b8ef44433335e200030ab5fa3ad80544
+```
+
+---
+
 ## Was 1.1.5 behebt
 
 **Eine einzige Datei, und sie stand hier eine Fassung zu alt.**
