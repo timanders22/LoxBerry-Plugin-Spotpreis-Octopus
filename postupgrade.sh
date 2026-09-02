@@ -1,8 +1,20 @@
 #!/bin/bash
 # Octopus Dynamic - postupgrade: Gesichertes zurueckspielen
-# Aufruf: command <TEMPFOLDER> <NAME> <FOLDER> <VERSION> <BASEFOLDER>
+# Aufruf: command <TEMPFOLDER-KENNUNG> <NAME> <FOLDER> <VERSION> <BASEFOLDER> <WORKDIR>
+#
+# $1 ist eine ZUFALLSKENNUNG, kein Pfad - die ausfuehrliche Begruendung
+# steht in preupgrade.sh. Gesucht wird in dieser Reihenfolge:
+#   1. der Arbeitsordner aus dem sechsten Argument
+#   2. der bisherige Weg ueber die Kennung (relativ zum cwd des Installers)
+#
+# Ein dritter Weg - ein Merker .upgrade_pfad im Konfigurationsordner - stand
+# hier an erster Stelle und ist ausgebaut: purge_installation entfernt genau
+# dieses Verzeichnis, bevor dieses Skript laeuft. Der Merker konnte nie
+# ankommen, der Zweig war tot, und das rm -f darauf ebenfalls. Beide Skripte
+# rechnen den Pfad aus DEMSELBEN sechsten Argument aus.
 
 ARGV1=$1
+ARGV6=$6
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-octopus}"
@@ -19,10 +31,16 @@ DATADIR="$BASE/data/plugins/$PFOLDER"
 LOGDIR="$BASE/log/plugins/$PFOLDER"
 mkdir -p "$CFGDIR" "$DATADIR" "$LOGDIR" 2>/dev/null
 
-[ -f "$ARGV1/octopus.json" ] && cp -p "$ARGV1/octopus.json" "$CFGDIR/octopus.json"
-[ -f "$ARGV1/zugang.json" ]  && cp -p "$ARGV1/zugang.json"  "$CFGDIR/zugang.json"
-[ -f "$ARGV1/history.csv" ]  && cp -p "$ARGV1/history.csv"  "$DATADIR/history.csv"
-[ -f "$ARGV1/octopus.log" ]  && cp -p "$ARGV1/octopus.log"  "$LOGDIR/octopus.log"
+if [ -n "$ARGV6" ] && [ -d "$ARGV6/octopus_upgrade" ]; then
+    SICHERUNG="$ARGV6/octopus_upgrade"
+else
+    SICHERUNG="${ARGV1:-octopus}_upgrade"
+fi
+echo "<INFO> Sicherungsordner: $SICHERUNG"
+
+[ -f "$SICHERUNG/octopus.json" ] && cp -p "$SICHERUNG/octopus.json" "$CFGDIR/octopus.json"
+[ -f "$SICHERUNG/zugang.json" ]  && cp -p "$SICHERUNG/zugang.json"  "$CFGDIR/zugang.json"
+[ -f "$SICHERUNG/history.csv" ]  && cp -p "$SICHERUNG/history.csv"  "$DATADIR/history.csv"
 
 # Selbstheilung wie in postinstall.sh
 BK="$BASE/config/plugins/$PFOLDER.backup.json"

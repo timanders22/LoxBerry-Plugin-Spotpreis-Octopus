@@ -23,9 +23,25 @@ lb_wurzel_suchen() {
 #
 # Die Zugangsdaten werden hier ABSICHTLICH geloescht: sie sind ein Geheimnis
 # und haben auf einem System, auf dem das Plugin nicht mehr laeuft, nichts
-# verloren. Konfiguration und Historie bleiben stehen, damit eine
-# Neuinstallation nicht bei null anfaengt - LoxBerry raeumt config, data und
-# log ohnehin selbst auf, wenn der Nutzer das waehlt.
+# verloren.
+#
+# DAZU DIE ZWEITSCHRIFT NEBEN DEM ORDNER - der Grund, warum diese Datei
+# bis 1.1.3 unvollstaendig war.
+#
+# oc_config_write() legt bei JEDEM Speichern eine Sicherung unter
+# config/plugins/<ordner>.backup.json ab, damit die Einstellungen ein
+# Update ueberstehen. Sie liegt NEBEN dem Ordner, und die Deinstallation
+# entfernt nur den Ordner selbst. Die Datei enthaelt das AKTIONSTOKEN im
+# Klartext und blieb bisher liegen; die Selbstheilung in oc_config() holt
+# sie danach von selbst zurueck, sodass eine 'saubere' Neuinstallation das
+# alte Token wieder scharf schaltet. Die Meldung unten war damit nur halb
+# wahr.
+#
+# Und der Satz, der hier bis 1.1.3 stand - Konfiguration und Historie
+# blieben stehen, LoxBerry raeume das ohnehin auf, wenn der Nutzer es
+# waehlt -, beschrieb eine Wahl, die es nicht gibt: purge_installation
+# loescht config/plugins/<ordner>/ und data/plugins/<ordner>/ ohne jede
+# Abfrage. Liegen bleibt genau die Datei, die hier gefehlt hat.
 
 ARGV3=$3
 ARGV5=$5
@@ -38,6 +54,14 @@ fi
 rm -f "$BASE/config/plugins/$PFOLDER/zugang.json" 2>/dev/null
 rm -rf "/tmp/$PFOLDER" 2>/dev/null
 rm -f "$BASE/data/plugins/$PFOLDER/token.json" 2>/dev/null
+
+# Die Zweitschrift NEBEN dem Ordner - siehe oben.
+BK="$BASE/config/plugins/$PFOLDER.backup.json"
+if [ -f "$BK" ]; then
+    rm -f "$BK" && echo "<OK> Sicherung der Einstellungen entfernt: $PFOLDER.backup.json"
+else
+    echo "<INFO> Keine Sicherung ausserhalb des Plugin-Ordners vorhanden."
+fi
 
 echo "<OK> Zugangsdaten und Zwischenspeicher entfernt."
 exit 0

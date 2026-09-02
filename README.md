@@ -7,6 +7,154 @@ HTTP-Endpunkt als Rückfallebene.
 
 ---
 
+## Was 1.1.4 behebt
+
+Eine zweite Zeile-für-Zeile-Durchsicht, nachdem die Werkzeugkette zu 1.1.3
+nichts mehr zu sagen hatte (14 Prüfungen, 0 Beanstandungen). Alles unten ist
+unter PHP 7.4.33 **und** 8.4.24 gemessen, jeweils mit Gegenprobe.
+
+### Sicherheit und Datenverlust
+
+* **Der unangemeldete Endpunkt schrieb die Konfiguration, bevor er das Token
+  prüfte.** `oc_config()` holt eine fehlende oder leere Konfiguration aus der
+  Zweitschrift zurück, und `webfrontend/html/index.php` rief die Funktion vor
+  der Tokenprüfung. Gemessen: ein einziger Aufruf **ohne Token**, korrekt mit
+  403 beantwortet, legte `octopus.json` neu an — mit dem *alten* Aktionstoken
+  aus der Sicherung. Damit wären alle Adressen im Miniserver ungültig
+  geworden. Der Endpunkt schaltet jetzt für den ganzen Aufruf auf Nur-Lesen
+  (`oc_nur_lesen()`); ein Schalter nur an der ersten von 19 Aufrufstellen
+  hätte wie eine Lösung ausgesehen und keine gewesen.
+* **Ein Speichervorgang konnte Konfiguration *und* Zweitschrift auf 0 Byte
+  setzen und „gespeichert" melden.** `json_encode()` gibt bei ungültigem UTF-8
+  `false` zurück, `file_put_contents(false)` schreibt einen Leerstring und
+  liefert **0**, nicht `false` — die Prüfung auf `=== false` griff nie.
+  Danach war das Aktionstoken weg und die Selbstheilung hatte nichts mehr zu
+  holen. Gleiches Bild bei den Zugangsdaten. Beide Funktionen prüfen jetzt
+  das Ergebnis der Kodierung, bevor sie schreiben.
+* **Die Deinstallation ließ das Aktionstoken im Klartext liegen.** Die
+  Zweitschrift `config/plugins/octopus.backup.json` liegt bewusst *neben* dem
+  Ordner, und die Deinstallation entfernt nur den Ordner. `uninstall/uninstall`
+  räumt sie jetzt mit ab.
+* **Die Zugangsdaten lagen für die Dauer des Schreibens offen.** Rechte
+  wurden erst nach dem Inhalt gesetzt. Jetzt `fopen` → `chmod 0600` →
+  füllen, mit Prozessnummer in der Nebendatei; dasselbe beim Kraken-Token.
+* **Ein Tippfehler in einer Adresse löschte die funktionierende.** Wer sich
+  bei der PV-, Speicher- oder Verbrauchsadresse vertippte, bekam eine
+  Beanstandung *und* verlor still seinen alten Wert. Der bisherige Stand
+  bleibt jetzt stehen — so, wie es zwei Blöcke weiter unten für die
+  Preisschwellen seit jeher gemacht wird.
+* **Ein Apostroph in der E-Mail-Adresse wurde stillschweigend entfernt.** Das
+  Ergebnis war eine *gültige*, aber falsche Adresse; sie bestand die Prüfung,
+  wurde gespeichert, und die Anmeldung scheiterte danach dauerhaft, während
+  im Reiter Test ein Haken bei „E-Mail hinterlegt" stand.
+
+### Rechenfehler
+
+* **Der Fahrplaner buchte bei glatten kWh/kW-Paaren eine Zeitscheibe zu
+  viel.** 6,9 kWh bei 2,3 kW sind rechnerisch genau drei Stunden, in
+  Gleitkomma aber 3,00000000000000044409 — `ceil()` machte vier daraus. Ein
+  Drittel zu viel gebuchte Energie und eine Stunde Leistung, die den anderen
+  Regeln im Budget fehlt. 4,2 / 1,4 verhält sich genauso.
+* **Der Taktschutz riss das Leistungsbudget.** Beim Schließen einer Lücke
+  unterhalb der Mindestpause setzte er Zeitscheiben, die gar keine
+  Kandidaten waren. Gemessen mit zwei Regeln zu je 2,0 kW bei `budget_kw`
+  2,0 und `min_pause` 30: in der Belegung standen 4 kW — und mit derselben
+  Anordnung war auch das zweite Budget nach § 14a EnWG gerissen. Eine Regel
+  mit Fenster 20–10 Uhr lief zehn Stunden außerhalb ihres Fensters.
+  Zugemacht wird jetzt nur noch alles oder nichts, und nur aus Kandidaten.
+* **Der Monatsbericht nannte den vorvorigen Monat.** Er warf den ersten
+  Eintrag der Liste weg, „weil dort der laufende Monat steht" — der steht
+  dort aber nicht: die Historie bekommt eine Zeile erst um 23:50 für den
+  abgelaufenen Tag. Am Monatsersten um 8 Uhr ist der jüngste Eintrag der
+  letzte Tag des Vormonats, und genau der wurde weggeworfen. Nebenbei
+  behoben: mit nur einem Monat in der Historie fiel der Bericht still ganz
+  aus.
+* **Das Stundenprofil war an den beiden Zeitumstellungstagen verschoben.**
+  `Mitternacht + h × 3600` trifft an 363 Tagen die Ortsstunde und an zwei
+  nicht: am 29.03.2026 zeigten 22 von 24 Feldern eine andere Stunde (eines
+  sogar den Folgetag), am 25.10.2026 21 von 24, und 23:00 Uhr wurde gar
+  nicht veröffentlicht. Der Spot Price Optimizer plante an diesen Tagen um
+  eine Stunde daneben.
+
+### Falschaussagen
+
+* **Der Demo-Modus meldete jeden Vormittag einen Fehler, den es nicht gab.**
+  Solange die Börse den Folgetag noch nicht veröffentlicht hat, fehlten die
+  Preise für morgen — und das setzte `FEHLER_DEMO`, obwohl der ganze heutige
+  Tag vorlag.
+* **Ein beliebig alter CO₂-Wert ging als aktueller hinaus.** Der Rückfall auf
+  den Zwischenspeicher hatte keine Altersgrenze. Gemessen mit einem 48
+  Stunden alten Stand: `ok=1`, 111 g/kWh, ohne jedes Kennzeichen — und das
+  Schaltsignal `co2_clean` hing daran. Jetzt sechs Stunden; was älter ist,
+  gilt als unbekannt.
+* **`ptest` meldete `OK=1`, auch wenn der Merker nicht geschrieben wurde**,
+  und die **Wiederholsperre fiel offen aus**, wenn sich ihre Datei nicht
+  anlegen ließ — der Schutz gegen den schleifenden virtuellen Ausgang war
+  dann vollständig weg, ohne ein Wort. Beide werten jetzt ihr Ergebnis aus.
+* **Der Endpunkt antwortete auf jede Anfrage mit „Plugin abgeschaltet"**,
+  wenn es abgeschaltet war — auch ohne Token, auch mit falschem. Wer sich
+  vertippt hatte, suchte an der falschen Stelle, und der Betriebszustand
+  ging unangemeldet nach außen. Die Dienstprüfung steht jetzt hinter der
+  Anfrageprüfung.
+* **Fehlte die Bibliothek, kam ein leerer HTTP 500.** Jetzt eine lesbare
+  Zeile mit dem gesuchten Pfad.
+* **`oc_holen()` sah den HTTP-Status nicht.** Ein 500er mit JSON-Rumpf ging
+  als PV-Prognose durch, ein 404 wurde als „nicht erreichbar" gemeldet.
+* **Zwei Zeilen der Selbstprüfung konnten nicht rot werden**: „Datenordner
+  vorhanden" legte den Ordner an, den sie prüfte, und die Zeile zur
+  Test-Pushnachricht war ein Literal. Die Endpunktprüfung ließ den Anwender
+  außerdem 40 Sekunden vor einer leeren Seite warten, wenn niemand
+  antwortete, und meldete danach vier rote Kreuze bei den *Sicherheitszeilen*.
+
+### Hausstandard
+
+* Die Loxone-Vorlage kannte weder `<Info templateType="2">` noch `Unit` noch
+  `HintText`, und alle 90 Eingänge trugen `MinVal="-2147483647"`. Jetzt der
+  geprüfte Nachbau mit Einheit je Thema und Grenzen, die aus den Schranken
+  des Plugins selbst stammen — nachzulesen an `oc_thema_grenzen()`, wo für
+  jede Zahl steht, ob sie gemessen oder gewählt ist.
+* Der Dateiname der Vorlage trägt jetzt `VI_` und steht in Anführungszeichen.
+* Der Satz *„Loxone Config legt beim Import neu an und überschreibt nichts"*
+  fehlte ganz und steht jetzt sichtbar im Reiter.
+* Vier CSS-Klassen (`sm-alert`, `sm-ok`, `sm-err`, `sm-warn`) wurden benutzt
+  und waren nirgends definiert — die einzige Selbstprüfzeile zu den Reitern
+  stand als nackter Fließtext da. Dazu `sm-breit` für die beiden Tabellen mit
+  sieben und acht Spalten und die Pfeil-Auszeichnung für 14 Auswahlfelder.
+* Ein lesender und ein schaltender Knopf standen in derselben Reihe —
+  ausgerechnet „Sichern" und „Zurückspielen". Getrennt.
+* Je Reiter jetzt **eine** gesammelte Legende statt zweier.
+* Der MQTT-Weg benutzt dieselbe Formatierung wie die HTTP-Zeile. Vorher
+  wichen 105 von 162 Werten in der Schreibweise ab (`20.230` gegen `20.23`).
+* `preupgrade.sh` und `postupgrade.sh` benutzten `$1` als Verzeichnis. Das
+  ist eine Zufallskennung, kein Pfad — es lief nur, weil der Installer
+  vorher in seinen Arbeitsordner wechselt. Gegenprobe mit einem anderen
+  Arbeitsverzeichnis: Konfiguration, Zugangsdaten und Historie waren
+  **weg**, und das Skript meldete trotzdem „wurden übernommen". Jetzt über
+  das sechste Argument, mit Rückfall.
+  Ein Merker `.upgrade_pfad` im Konfigurationsordner, der beiden Skripten
+  denselben Ort zusichern sollte, ist beim Veröffentlichen wieder ausgebaut
+  worden: `purge_installation` entfernt genau dieses Verzeichnis, bevor
+  `postupgrade.sh` läuft — der Merker konnte nie ankommen, der Zweig war tot,
+  und der Kommentar darüber sagte das Gegenteil dessen, was der Code tut.
+  Nachgestellt: nach `preupgrade` da, nach dem Abräumen weg. Die
+  Schwesterlinie *Smartmeter classic* hat denselben Merker in 2.3.14 aus
+  demselben Grund entfernt. Beide Skripte rechnen den Pfad ohnehin aus
+  **demselben** sechsten Argument aus, und das ist die eine Stelle, an der
+  sie nicht auseinanderlaufen können.
+* Falsche Angaben in der eigenen Beschreibung berichtigt: der Absatz „die
+  Fassung bleibt bewusst unter 1.0.0" in `plugin.cfg` und README, „den Tag
+  v0.9.1" in `release.cfg`, „drei Stellen" statt sechs beim Release, „alle
+  150 Werte" (gemessen: 90 ab Werk, höchstens 162), der Satz, der Cron leite
+  die Ausgabe in die Logdatei um (er leitet nach `/dev/null`), und die
+  Behauptung im `uninstall`, LoxBerry räume Konfiguration und Historie nur
+  auf Wunsch ab.
+
+**`webfrontend/html/planer.php` ist mit der Datei im Plugin
+Spotpreis-aWATTar byteweise identisch geblieben.** Die beiden Rechenfehler
+oben sind in beiden Linien behoben; aWATTar trägt dieselbe Datei als 1.2.18.
+
+---
+
 ## Was 1.1.0 bringt — und was es behebt
 
 Diese Fassung ist aus einer Zeile-für-Zeile-Durchsicht des ganzen Plugins
@@ -583,18 +731,20 @@ erfassten Tag belastbarer. Die Anzahl der zugrunde liegenden Monate steht
 Das Auto-Update ist eingeschaltet und zeigt auf **dieses** Repository — nicht
 auf einen fremden Stand, denn sonst böte LoxBerry irgendwann ein Downgrade an.
 
-Die Fassung bleibt bewusst **unter 1.0.0**, solange die beiden Cloud-Abfragen
-nicht an einem echten Vertrag erprobt sind. Wer 0.9.0 installiert hat, bekommt
-0.9.1 angeboten; sobald `1.0.0` erscheint, greift die Aktualisierung ebenso.
+Bei jedem Release müssen **sechs Stellen** zusammenpassen, sonst greift das
+Auto-Update nicht oder lädt ein Archiv, das es nicht gibt:
 
-Bei jedem Release müssen **drei Stellen** zusammenpassen, sonst greift das
-Auto-Update nicht:
+1. der **Ordnername** (`LoxBerry-Plugin-Spotpreis-Octopus-X.Y.Z`)
+2. `plugin.cfg` → `VERSION`
+3. `release.cfg` → `VERSION` **und beide Adressen** auf den neuen Tag
+4. `prerelease.cfg` → dieselbe Fassung und dieselben Adressen
+5. auf GitHub ein Release mit genau diesem Tag (`vX.Y.Z`)
+6. ein **neues Archiv**, byteweise gegen den Ordner geprüft
 
-1. `plugin.cfg` → `VERSION`
-2. `release.cfg` → `VERSION` **und beide Adressen** auf den neuen Tag
-3. auf GitHub ein Release mit genau diesem Tag (`vX.Y.Z`)
-
-Die `prerelease.cfg` wird mitgezogen.
+Hier standen bis 1.1.3 nur drei davon, und darüber ein Absatz, die Fassung
+bleibe „bewusst unter 1.0.0" — während die `plugin.cfg` längst 1.1.x führte.
+Was am Kraken-Zugang wirklich ungeprüft ist, steht dort, wo es hingehört:
+im Abschnitt *Was noch nicht geprüft ist*.
 
 ---
 

@@ -375,12 +375,58 @@ function oc_mqtt_thema_saeubern($v, $vorgabe = 'octopus')
     return $s === '' ? $vorgabe : substr($s, 0, 64);
 }
 
-function oc_config()
+/**
+ * Nur-Lesen-Betrieb fuer den ganzen Aufruf.
+ *
+ * EIN SCHALTER AM EINZELNEN AUFRUF HAETTE NICHT GEREICHT. oc_config() wird
+ * an 19 Stellen dieser Datei gerufen - aus oc_state(), oc_preise(),
+ * oc_themen(), oc_werte() und weiteren. Der Endpunkt ruft oc_state(), und
+ * darueber waere die Selbstheilung trotzdem gelaufen; ein oc_config(false)
+ * allein in webfrontend/html/index.php haette nur die erste von vielen
+ * Stellen geschlossen und dabei ausgesehen, als sei die Sache erledigt.
+ *
+ * Der Endpunkt setzt den Schalter deshalb EINMAL ganz oben, und oc_config()
+ * fragt ihn. Wer den Schalter nicht setzt - Oberflaeche und Cron -, merkt
+ * von alldem nichts.
+ */
+function oc_nur_lesen($setzen = null)
 {
+    static $an = false;
+    if ($setzen !== null) { $an = (bool) $setzen; }
+    return $an;
+}
+
+/**
+ * Konfiguration lesen.
+ *
+ * $heilen = false liest NUR; ohne Angabe entscheidet oc_nur_lesen(). Das
+ * ist die Betriebsart des unangemeldeten Endpunkts, und sie ist
+ * Hausstandard ("Der unangemeldete Endpunkt darf nichts anlegen" /
+ * "Die Selbstheilung gehoert hinter die Tokenpruefung").
+ *
+ * Bis 1.1.3 gab es den Schalter nicht, und webfrontend/html/index.php rief
+ * diese Funktion in Zeile 77 - VOR der Tokenpruefung. Gemessen an der
+ * LoxBerry-Attrappe, ein einziger Aufruf ohne jedes Token:
+ *
+ *   a) Konfigurationsordner geloescht, Sicherung vorhanden
+ *      -> Antwort OCTOPUS;OK=0;ERR=TOKEN, und danach lag
+ *         config/plugins/octopus/octopus.json wieder da.
+ *   b) octopus.json auf "{}", Sicherung mit einem ANDEREN Aktionstoken
+ *      -> Antwort OCTOPUS;OK=0;ERR=TOKEN, und danach stand das alte Token
+ *         wieder in der Datei. Alle Adressen im Miniserver waeren damit
+ *         ungueltig geworden.
+ *   Gegenprobe mit heiler Konfiguration: keine Datei angefasst.
+ *
+ * Wer sich nicht ausweisen kann, loest keinen Schreibvorgang aus - auch
+ * keinen, der harmlos aussieht.
+ */
+function oc_config($heilen = null)
+{
+    if ($heilen === null) { $heilen = !oc_nur_lesen(); }
     $p = oc_paths();
     // Selbstheilung: fehlende oder leere Konfiguration aus der Sicherung holen
     $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
-    if (($roh === '' || $roh === '{}') && is_file($p['backup'])) {
+    if ($heilen && ($roh === '' || $roh === '{}') && is_file($p['backup'])) {
         /* is_dir() VOR mkdir(). Das @ genuegt nicht: ist ein eigener
          * Fehlerbehandler gesetzt - der Hauspruefstand tut das -, wird er
          * unabhaengig von error_reporting gerufen, und "mkdir(): File
@@ -390,6 +436,12 @@ function oc_config()
         }
         @copy($p['backup'], $p['config']);
         $roh = trim((string) @file_get_contents($p['config']));
+    } elseif (!$heilen && ($roh === '' || $roh === '{}') && is_file($p['backup'])) {
+        /* Nur lesen: die Sicherung wird verwendet, aber NICHT zurueck-
+         * geschrieben. Sonst antwortete der Endpunkt einem berechtigten
+         * Aufrufer mit Vorgabewerten, obwohl eine gueltige Sicherung
+         * daneben liegt. */
+        $roh = trim((string) @file_get_contents($p['backup']));
     }
     $cfg = $roh !== '' ? json_decode($roh, true) : array();
     if (!is_array($cfg)) { $cfg = array(); }
@@ -642,12 +694,36 @@ function oc_config_write($cfg)
     if (!is_dir(dirname($p['config']))) {
         @mkdir(dirname($p['config']), 0775, true);
     }
+    /* ERST KODIEREN, DANN DEN RUECKGABEWERT ANSEHEN, DANN SCHREIBEN.
+     *
+     * json_encode() gibt bei ungueltigem UTF-8 false zurueck, und
+     * file_put_contents(false) schreibt einen Leerstring und liefert 0 -
+     * nicht false. Die Pruefung "=== false" griff also nicht. Gemessen mit
+     * einem Regelnamen, der ein einzelnes Latin-1-Byte trug (das Formular
+     * filtert nur Steuerzeichen und Anfuehrungszeichen, es kommt durch):
+     *
+     *     json_encode      -> bool(false), "Malformed UTF-8 characters"
+     *     file_put_contents-> int(0), Datei 0 Byte
+     *     oc_config_write  -> bool(true)      <- meldete Erfolg
+     *
+     * Danach war die Konfiguration leer UND - weil Zeile darunter kopiert -
+     * die Zweitschrift ebenfalls. Das Aktionstoken war weg, die
+     * Selbstheilung hatte nichts mehr zu holen, und die Oberflaeche sagte
+     * "gespeichert". Unter 7.4 wie unter 8.4 gleich. */
     $json = json_encode($cfg, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if (!is_string($json) || $json === '') {
+        oc_log('Konfiguration NICHT geschrieben: json_encode ist gescheitert ('
+            . json_last_error_msg() . ') - der bisherige Stand bleibt unangetastet');
+        return false;
+    }
     $vor = $p['config'] . '.neu';
     if (@file_put_contents($vor, $json) === false) { return false; }
     @chmod($vor, 0640);
     if (!@rename($vor, $p['config'])) { return false; }
+    /* Die Zweitschrift traegt dasselbe Geheimnis wie die Konfiguration -
+     * also auch dieselben Rechte. copy() nimmt sie nicht mit. */
     @copy($p['config'], $p['backup']);
+    @chmod($p['backup'], 0640);
     oc_weg(oc_tmpdir() . '/state.json');   // Zustand mit neuen Schwellen neu rechnen
     return true;
 }
@@ -682,12 +758,31 @@ function oc_zugang_write($email, $passwort, $konto)
     if (!is_dir(dirname($f))) { @mkdir(dirname($f), 0775, true); }
     $z = array('email' => (string) $email, 'passwort' => (string) $passwort,
                'konto' => (string) $konto, 'ts' => time());
-    $vor = $f . '.neu';
-    if (@file_put_contents($vor, json_encode($z, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)) === false) {
+    /* Dieselbe Falle wie in oc_config_write(), nur ohne Zweitschrift
+     * dahinter: ein Passwort mit einem Latin-1-Byte liess json_encode()
+     * scheitern, file_put_contents schrieb 0 Byte und meldete 0 statt
+     * false - und das Protokoll schrieb "Zugangsdaten gespeichert
+     * (Passwortlaenge 7 Zeichen)", waehrend die Datei leer war. Danach nur
+     * noch FEHLER_KEIN_ZUGANG, ohne dass irgendetwas darauf hinwies. */
+    $json = json_encode($z, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if (!is_string($json) || $json === '') {
+        oc_log('Zugangsdaten NICHT geschrieben: json_encode ist gescheitert ('
+            . json_last_error_msg() . ') - der bisherige Stand bleibt unangetastet');
         return false;
     }
+    /* RECHTE VOR INHALT. Ein Klartextpasswort darf nicht einmal fuer die
+     * Dauer eines Schreibvorgangs mit den umask-Vorgaben dastehen. Die
+     * Nebendatei traegt dazu die Prozessnummer, damit zwei gleichzeitige
+     * Schreibvorgaenge sich nicht ins Gehege kommen (Hausstandard
+     * "Rechte vor Inhalt, und die Nebendatei traegt die Prozessnummer"). */
+    $vor = $f . '.tmp.' . getmypid();
+    $fh = @fopen($vor, 'wb');
+    if (!$fh) { return false; }
     @chmod($vor, 0600);
-    if (!@rename($vor, $f)) { return false; }
+    $ok = (@fwrite($fh, $json) !== false);
+    @fclose($fh);
+    if (!$ok) { @unlink($vor); return false; }
+    if (!@rename($vor, $f)) { @unlink($vor); return false; }
     @chmod($f, 0600);
     oc_weg(oc_datadir() . '/token.json');   // neue Zugangsdaten, altes Token verwerfen
     oc_weg(oc_tmpdir() . '/state.json');
@@ -875,11 +970,17 @@ function oc_kraken_token($force = false, &$fehler = null)
         oc_log_if_changed('anmeldung', 'Antwort enthielt kein Token');
         return '';
     }
-    $vor = $f . '.neu';
-    @file_put_contents($vor, json_encode(array('token' => $token, 'exp' => time() + 3300)));
-    @chmod($vor, 0600);
-    @rename($vor, $f);
-    @chmod($f, 0600);
+    /* Rechte vor Inhalt, Nebendatei mit Prozessnummer - wie bei den
+     * Zugangsdaten. Ein Kraken-Token ist ein Ausweis: wer es hat, kommt an
+     * die Vertragsdaten, ohne Passwort. */
+    $vor = $f . '.tmp.' . getmypid();
+    $fh = @fopen($vor, 'wb');
+    if ($fh) {
+        @chmod($vor, 0600);
+        @fwrite($fh, json_encode(array('token' => $token, 'exp' => time() + 3300)));
+        @fclose($fh);
+        if (@rename($vor, $f)) { @chmod($f, 0600); } else { @unlink($vor); }
+    }
     oc_log_if_changed('anmeldung', 'Token geholt, gueltig bis ' . date('H:i', time() + 3300));
     return $token;
 }
@@ -1012,7 +1113,8 @@ function oc_demo_preise($force = false)
     $auf = max(0.0, (float) $cfg['demo_aufschlag']);
     $vat = 1 + max(0.0, (float) $cfg['demo_vat']) / 100.0;
 
-    foreach (array(strtotime('today 00:00'), strtotime('tomorrow 00:00')) as $tag) {
+    $heute0 = strtotime('today 00:00');
+    foreach (array($heute0, strtotime('tomorrow 00:00')) as $tag) {
         $cache = oc_datadir() . '/demo_' . date('Ymd', $tag) . '.json';
         $js = false;
         if (!$force && is_file($cache) && time() - filemtime($cache) < 900) {
@@ -1026,7 +1128,23 @@ function oc_demo_preise($force = false)
             } elseif (is_file($cache)) {
                 $js = (string) @file_get_contents($cache);
             } else {
-                if ($out['fehler'] === '') { $out['fehler'] = $r['fehler'] !== '' ? $r['fehler'] : 'FEHLER_DEMO'; }
+                /* FEHLENDE PREISE FUER MORGEN SIND KEIN FEHLER.
+                 *
+                 * Die Boerse veroeffentlicht den Folgetag erst am Nachmittag.
+                 * Bis 1.1.3 setzte dieser Zweig auch fuer 'morgen' einen
+                 * Fehler, und weil er nur beim ERSTEN Mal gesetzt wird,
+                 * blieb er stehen, obwohl der heutige Tag vollstaendig
+                 * vorlag. Gemessen mit der echten Antwort von aWATTar fuer
+                 * einen Tag ohne Daten ({"object":"list","data":[]}):
+                 * 96 Viertelstunden geholt, Fehler 'FEHLER_DEMO' - und die
+                 * Oberflaeche meldete jeden Vormittag einen Fehler, den es
+                 * nicht gab.
+                 *
+                 * Gemeldet wird deshalb nur, wenn HEUTE fehlt. Ob morgen
+                 * schon da ist, sagt ohnehin 'morgen_ok'. */
+                if ($tag === $heute0 && $out['fehler'] === '') {
+                    $out['fehler'] = $r['fehler'] !== '' ? $r['fehler'] : 'FEHLER_DEMO';
+                }
                 continue;
             }
         }
@@ -1333,9 +1451,12 @@ function oc_umwelt($force = false)
     $jetzt = time() - (time() % 900);
 
     if ($cfg['pv_quelle'] !== '' && trim((string) $cfg['pv_url']) !== '') {
-        $roh = oc_holen($cfg['pv_url']);
+        $roh = oc_holen($cfg['pv_url'], $hf);
         if ($roh === null) {
-            $erg['pv_meldung'] = 'NICHT_ERREICHBAR';
+            // Den GRUND weiterreichen, nicht pauschal "nicht erreichbar":
+            // ein 404 und ein toter Port sind zwei verschiedene Fehler, und
+            // der Anwender sucht sonst am falschen Ende.
+            $erg['pv_meldung'] = $hf !== '' ? $hf : 'NICHT_ERREICHBAR';
         } else {
             list($pv, $m) = plan_pv_lesen($roh, $cfg['pv_quelle'], $cfg['pv_pfad'],
                 $cfg['pv_zeitfeld'], $cfg['pv_wertfeld'], $cfg['pv_einheit'], 900);
@@ -1348,9 +1469,9 @@ function oc_umwelt($force = false)
     }
 
     if (trim((string) $cfg['soc_url']) !== '') {
-        $roh = oc_holen($cfg['soc_url']);
+        $roh = oc_holen($cfg['soc_url'], $hf);
         if ($roh === null) {
-            $erg['soc_meldung'] = 'NICHT_ERREICHBAR';
+            $erg['soc_meldung'] = $hf !== '' ? $hf : 'NICHT_ERREICHBAR';
         } else {
             list($soc, $m) = plan_soc_lesen($roh, $cfg['soc_pfad']);
             $erg['soc_meldung'] = $m;
@@ -1363,16 +1484,73 @@ function oc_umwelt($force = false)
 }
 
 /** Eine JSON-Adresse holen. Rueckgabe: Feld oder null. */
-function oc_holen($url)
+/**
+ * Eine fremde JSON-Auskunft holen (PV-Prognose, Speicherstand, Verbrauch).
+ *
+ * DEN STATUS ANSEHEN, NICHT NUR DEN RUMPF. 'ignore_errors' => true liefert
+ * den Rumpf auch bei 404 und 500 - bis 1.1.3 wurde er dann ungeprueft als
+ * Nutzdaten weitergereicht. Gemessen gegen einen oertlichen Webserver:
+ *
+ *     /ok        200 + JSON   -> Feld            (richtig)
+ *     /html      404 + HTML   -> null            (Ursache: "nicht erreichbar",
+ *                                                 dabei war es sehr wohl da)
+ *     /json500   500 + JSON   -> Feld            <- Fehlerrumpf als Prognose
+ *     Port zu                 -> null            (richtig)
+ *
+ * Ein JSON-Fehlerrumpf wanderte damit in plan_pv_lesen(), und der
+ * Fahrplaner rechnete mit einer Prognose, die keine war.
+ *
+ * Die Kopfzeilen sind dieselben wie in oc_http() - die Regel dazu steht
+ * im Kopf jener Funktion und galt fuer diese hier bisher nicht.
+ */
+function oc_holen($url, &$fehler = null)
 {
+    /* $fehler traegt einen Schluessel aus [PLANMELD] der Sprachdatei -
+     * nicht einen erfundenen Text und keine Zahl. Die Oberflaeche setzt
+     * 'PLANMELD.' davor und schlaegt ihn nach; ein Schluessel, den es dort
+     * nicht gibt, stuende woertlich auf dem Bildschirm. */
+    $fehler = '';
     $url = trim((string) $url);
-    if ($url === '' || !preg_match('#^https?://#i', $url)) { return null; }
+    if ($url === '' || !preg_match('#^https?://#i', $url)) {
+        $fehler = 'ADRESSE';
+        return null;
+    }
     $ctx = stream_context_create(array('http' => array(
-        'timeout' => 12, 'user_agent' => 'LoxBerry Octopus', 'ignore_errors' => true)));
+        'timeout' => 12,
+        'header' => "User-Agent: LoxBerry Octopus\r\n"
+                  . "Accept: application/json\r\n"
+                  . "Accept-Language: de,en;q=0.8\r\n"
+                  . "Accept-Encoding: identity\r\n",
+        'follow_location' => 0,
+        'max_redirects' => 1,
+        'ignore_errors' => true)));
     $r = @file_get_contents($url, false, $ctx);
-    if ($r === false) { return null; }
+    if ($r === false) {
+        $fehler = 'NICHT_ERREICHBAR';
+        return null;
+    }
+    /* $http_response_header legt PHP im aufrufenden Bereich an. Genommen
+     * wird die LETZTE Statuszeile - bei einer Umleitung stehen mehrere
+     * darin, und nur die letzte gehoert zum Rumpf. */
+    $code = 0;
+    if (isset($http_response_header) && is_array($http_response_header)) {
+        foreach ($http_response_header as $z) {
+            if (preg_match('#^HTTP/\S+\s+(\d{3})#', (string) $z, $m)) { $code = (int) $m[1]; }
+        }
+    }
+    if ($code >= 400 || ($code > 0 && $code < 200)) {
+        /* Die Zahl gehoert ins Protokoll, nicht in die Beschriftung: eine
+         * Meldung je Statuscode waere eine Sprachdatei voller Zahlen. */
+        oc_log_if_changed('holen', 'Abruf beantwortet mit HTTP ' . $code . ' (' . $url . ')');
+        $fehler = 'HTTP_FEHLER';
+        return null;
+    }
     $d = json_decode($r, true);
-    return is_array($d) ? $d : null;
+    if (!is_array($d)) {
+        $fehler = 'KEINE_ANTWORT';
+        return null;
+    }
+    return $d;
 }
 
 /**
@@ -1703,11 +1881,38 @@ function oc_state($force = false)
     $st['profil_heute'] = array();
     $st['profil_morgen'] = array();
     $st['profil_relativ'] = array();
+    /* PH/PM MEINEN ORTSSTUNDEN, NICHT "MITTERNACHT PLUS h STUNDEN".
+     *
+     * Bis 1.1.3 stand hier $t0 + $h * 3600. Das trifft an 363 Tagen im Jahr
+     * zu und an zweien nicht. Gemessen in Europe/Berlin:
+     *
+     *   29.03.2026 (23 Stunden): 22 von 24 Feldern zeigten eine andere
+     *     Ortsstunde als ihre Beschriftung, eines sogar den Folgetag.
+     *   25.10.2026 (25 Stunden): 21 von 24 Feldern verschoben, und 23:00
+     *     wurde ueberhaupt nicht veroeffentlicht.
+     *   02.09.2026 (normaler Tag): 0 Abweichungen.
+     *
+     * Der Spot Price Optimizer plante an diesen Tagen also mit dem Preis
+     * der Nachbarstunde. mktime() rechnet mit Ortszeit und trifft die
+     * Stunde, die auf dem Etikett steht.
+     *
+     * PR bleibt bei der Addition: es ist als "in %d Stunden" beschriftet
+     * und meint genau das - eine rollende Reihe ab der laufenden Stunde,
+     * keine Ortsstunde.
+     *
+     * Der Baustein hat 24 Eingaenge. Am 25-Stunden-Tag laesst sich die
+     * doppelte Stunde damit nicht abbilden; PH02 zeigt dann die erste der
+     * beiden. Das ist eine Grenze des Bausteins, keine Wahl - und immer
+     * noch richtiger, als alle 24 Felder zu verschieben. */
     $t0 = strtotime('today 00:00');
     $m0 = strtotime('tomorrow 00:00');
+    $dh = getdate($t0);
+    $dm = getdate($m0);
     for ($h = 0; $h < 24; $h++) {
-        $st['profil_heute'][$h] = isset($stdh[$t0 + $h * 3600]) ? $stdh[$t0 + $h * 3600] : 0.0;
-        $st['profil_morgen'][$h] = isset($stdh[$m0 + $h * 3600]) ? $stdh[$m0 + $h * 3600] : 0.0;
+        $kh = mktime($h, 0, 0, $dh['mon'], $dh['mday'], $dh['year']);
+        $km = mktime($h, 0, 0, $dm['mon'], $dm['mday'], $dm['year']);
+        $st['profil_heute'][$h] = isset($stdh[$kh]) ? $stdh[$kh] : 0.0;
+        $st['profil_morgen'][$h] = isset($stdh[$km]) ? $stdh[$km] : 0.0;
         $st['profil_relativ'][$h] = isset($stdh[$hstart + $h * 3600]) ? $stdh[$hstart + $h * 3600] : 0.0;
     }
     /* Fremde Auskuenfte vor den Regeln - der Planer braucht sie. Ein
@@ -1766,9 +1971,31 @@ function oc_co2($force = false)
     $r = oc_http('https://api.energy-charts.info/co2eq?country=de', null, array(), 15);
     $d = $r['ok'] ? json_decode($r['body'], true) : null;
     if (!isset($d['unix_seconds']) || !is_array($d['unix_seconds'])) {
-        if (is_file($cache)) {
+        /* EINE ALTERSGRENZE GILT AUCH HIER.
+         *
+         * Der Zwischenspeicher oben laeuft nach 1800 s ab; dieser
+         * Rueckfallweg hatte bis 1.1.3 gar keine Grenze. Gemessen mit einem
+         * 48 Stunden alten co2.json und einem Abruf, der scheitert:
+         * oc_co2() lieferte ok=1 und now=111 g/kWh, als waere es eben
+         * gemessen worden - und es gibt kein Thema, das das Alter verraet.
+         * Damit trug auch das Schaltsignal octopus/co2_clean einen
+         * beliebig alten Wert.
+         *
+         * Sechs Stunden sind grosszuegig: die Quelle liefert stuendlich,
+         * und ein paar fehlgeschlagene Abrufe hintereinander sollen die
+         * Anzeige nicht loeschen. Was aelter ist, gilt als unbekannt -
+         * ok=0, und co2_clean faellt auf 0. Das ist die sichere Richtung:
+         * "nicht sauber" schaltet nichts ein.
+         *
+         * Bei den Preisen macht das Plugin es seit jeher richtig
+         * ('veraltet', 'alter', 'stand'); hier fehlte das Gegenstueck. */
+        if (is_file($cache) && time() - (int) filemtime($cache) < 6 * 3600) {
             $c = json_decode((string) @file_get_contents($cache), true);
             if (is_array($c)) { return $c; }
+        }
+        if (is_file($cache)) {
+            oc_log_if_changed('co2alt', 'Zwischenspeicher ist aelter als sechs Stunden - '
+                . 'CO2 gilt als unbekannt, statt einen alten Wert als aktuellen auszugeben');
         }
         oc_log_if_changed('co2', 'Abruf fehlgeschlagen (api.energy-charts.info, '
             . ($r['fehler'] !== '' ? $r['fehler'] : 'unlesbare Antwort') . ')');
@@ -2367,8 +2594,26 @@ function oc_mqtt_publish($st = null, $nur_lebenszeichen = false)
     } else {
         $werte = oc_werte($st);
     }
+    /* DIESELBE FORMATIERUNG WIE DIE HTTP-ZEILE.
+     *
+     * oc_wert_formatieren() entscheidet an der EINHEIT, nicht am
+     * PHP-Typ - der Kommentar dort begruendet das damit, dass derselbe
+     * Preis sonst einmal als 12.000 und einmal als 12 herauskommt, je
+     * nachdem ob frisch gerechnet oder aus dem Zwischenspeicher gelesen.
+     * Bis 1.1.3 benutzte nur die HTTP-Zeile sie; der MQTT-Weg schickte
+     * den rohen Wert. Gemessen ueber alle 162 Themen: gleiche Namen,
+     * gleiche Anzahl, aber 105 Werte in anderer Schreibweise
+     * (HTTP 20.230 gegen MQTT 20.23). Fuer Loxone ist beides dieselbe
+     * Zahl - fuer den Menschen, der beide Wege nebeneinanderlegt, und
+     * fuer ein Werkzeug, das sie vergleicht, ist es das nicht. Und die
+     * Hausregel verlangt EINE Quelle fuer beide Wege.
+     *
+     * Die Themenliste wird dafuer einmal geholt, nicht je Wert. */
+    $info_alle = oc_themen();
     foreach ($werte as $k => $v) {
-        $msg = 'publish ' . $praefix . '/' . $k . ' ' . oc_mqtt_wert_saeubern($v);
+        $wert = oc_wert_formatieren($k, $v,
+            isset($info_alle[$k]) ? $info_alle[$k] : null);
+        $msg = 'publish ' . $praefix . '/' . $k . ' ' . oc_mqtt_wert_saeubern($wert);
         @socket_sendto($s, $msg, strlen($msg), 0, '127.0.0.1', $g['udpport']);
     }
     socket_close($s);
@@ -2576,18 +2821,89 @@ function oc_x($s)
     return htmlspecialchars((string) $s, ENT_QUOTES | ENT_XML1, 'UTF-8');
 }
 
+/**
+ * Grenzen fuer den virtuellen Eingang: array(MinVal, MaxVal).
+ *
+ * WARUM UEBERHAUPT. Bis 1.1.3 trugen alle 90 Eingaenge MinVal="-2147483647"
+ * und MaxVal="2147483647". Loxone zieht daraus die Reglergrenzen UND die
+ * Plausibilitaetspruefung; wer alles offen laesst, verschenkt beides.
+ *
+ * WOHER DIE ZAHLEN KOMMEN - jede einzeln, damit niemand sie fuer gemessen
+ * haelt, wo sie eine Wahl ist:
+ *
+ *   ct/kWh  -100..200   die Schranke, die das Plugin fuer 'schwelle' und
+ *                       'cheap'/'expensive' selbst fuehrt (oc_schranken()
+ *                       und webfrontend/htmlauth/index.php). Negativpreise
+ *                       gibt es wirklich, deshalb kein 0.
+ *   kW      0..200      die Schranke von budget_kw, ebendort.
+ *   h       -1..23      Stunde des Tages. -1 heisst "nicht bekannt";
+ *                       gemessen an einem Zustand ohne Preise senden
+ *                       fenster_start und co2_minh genau das.
+ *   min     -1..1440    Minuten; -1 ebenso gemessen an fenster_in und
+ *                       regelN_in.
+ *   %       -1..100     plan_soc sendet -1, wenn kein Speicherstand
+ *                       vorliegt - gemessen.
+ *   s       0..2147483647   status/ts ist eine Unix-Zeit. Hier ist die
+ *                       weite Grenze richtig und keine Bequemlichkeit.
+ *   ''      0..999      Merker, Raenge, Zaehler. Die 999 ist gemessen:
+ *                       oc_zaehler() rechnet modulo 1000.
+ *   g/kWh   0..1000     CO2-Intensitaet. GEWAEHLT, nicht gemessen - die
+ *                       deutsche Erzeugung lag nie darueber, aber eine
+ *                       Obergrenze hat mir niemand bestaetigt.
+ *   EUR     -10000..10000  GEWAEHLT. Monats- und Jahresdifferenzen eines
+ *                       Haushalts liegen weit darunter; die Grenze soll
+ *                       nur den Regler brauchbar machen.
+ *   kWh     0..1000     GEWAEHLT, dieselbe Ueberlegung (Tagessumme PV).
+ *
+ * Die Grenze steht damit an EINER Stelle - nicht je Vorlagenart neu.
+ */
+function oc_thema_grenzen($einheit)
+{
+    switch ((string) $einheit) {
+        case 'ct/kWh': return array(-100, 200);
+        case 'kW':     return array(0, 200);
+        case 'kWh':    return array(0, 1000);
+        case 'EUR':    return array(-10000, 10000);
+        case '%':      return array(-1, 100);
+        case 'h':      return array(-1, 23);
+        case 'min':    return array(-1, 1440);
+        case 'g/kWh':  return array(0, 1000);
+        case 's':      return array(0, 2147483647);
+    }
+    return array(0, 999);
+}
+
 function oc_xml_virtual_in_http($kopf, $cmds)
 {
     $crlf = "\r\n";
     $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
+    /* HintText steht VORN, und das erste Kindelement ist <Info>. Beides
+     * fehlte bis 1.1.3, ebenso Unit und HintText je Befehl. Gemessen an
+     * der erzeugten Datei: templateType kam 0x vor, HintText 0x, Unit= 0x,
+     * und MinVal="-2147483647" 90x. Reihenfolge und Werte stammen aus den
+     * Original-Ausfuhren von Loxone Config; uebernommen ist der gepruefte
+     * Nachbau ap_xml_virtual_in_http() aus APC-UPS, nicht eine eigene
+     * Erfindung. Die Schwesterlinie aWATTar traegt ihn schon. */
     $o .= '<VirtualInHttp ';
+    $o .= 'HintText="' . oc_x(isset($kopf['hint']) ? $kopf['hint'] : '') . '" ';
     $o .= 'Title="' . oc_x($kopf['title']) . '" ';
     $o .= 'Comment="' . oc_x(isset($kopf['comment']) ? $kopf['comment'] : '') . '" ';
     $o .= 'Address="' . oc_x(isset($kopf['address']) ? $kopf['address'] : '') . '" ';
     $o .= 'PollingTime="' . oc_x(isset($kopf['polling']) ? $kopf['polling'] : '60') . '"';
     $o .= '>' . $crlf;
+    $o .= "	" . '<Info templateType="2" minVersion="17010727"/>' . $crlf;
     foreach ($cmds as $c) {
-        $o .= "\t" . '<VirtualInHttpCmd ';
+        /* Ohne Unit steht am virtuellen Eingang eine nackte Zahl, und die
+         * Einheit findet nur, wer den Kommentar aufklappt. Sie liegt in
+         * oc_themen() je Thema bereit und wurde bisher nur an den Kommentar
+         * gehaengt. Loxone Config legt sie beim Import als Kindelement
+         * <Display Unit="..."/> ab, nicht als Attribut des Befehls -
+         * ankommen tut sie trotzdem. */
+        $einheit = isset($c['einheit']) ? trim((string) $c['einheit']) : '';
+        $unit = $einheit === '' ? '<v.1>' : '<v.1> ' . $einheit;
+        $min = isset($c['min']) && $c['min'] !== null ? $c['min'] : 0;
+        $max = isset($c['max']) && $c['max'] !== null ? $c['max'] : 100;
+        $o .= "	" . '<VirtualInHttpCmd ';
         $o .= 'Title="' . oc_x($c['title']) . '" ';
         $o .= 'Comment="' . oc_x(isset($c['comment']) ? $c['comment'] : '') . '" ';
         $o .= 'Check="' . oc_x(isset($c['check']) ? $c['check'] : ' ') . '" ';
@@ -2598,8 +2914,10 @@ function oc_xml_virtual_in_http($kopf, $cmds)
         $o .= 'SourceValHigh="100" ';
         $o .= 'DestValHigh="100" ';
         $o .= 'DefVal="0" ';
-        $o .= 'MinVal="-2147483647" ';
-        $o .= 'MaxVal="2147483647"';
+        $o .= 'MinVal="' . oc_x($min) . '" ';
+        $o .= 'MaxVal="' . oc_x($max) . '" ';
+        $o .= 'Unit="' . oc_x($unit) . '" ';
+        $o .= 'HintText=""';
         $o .= '/>' . $crlf;
     }
     $o .= '</VirtualInHttp>' . $crlf;
@@ -2624,11 +2942,14 @@ function oc_vorlage($art = 'mqtt_in')
         $cmds = array();
         foreach (oc_themen() as $k => $info) {
             $flach = strtoupper(oc_thema_flach($k));
+            $g = oc_thema_grenzen(isset($info[1]) ? $info[1] : '');
             $cmds[] = array('title' => 'OCTOPUS_' . $flach,
                             'comment' => oc_thema_text($info),
+                            'einheit' => isset($info[1]) ? $info[1] : '',
+                            'min' => $g[0], 'max' => $g[1],
                             'check' => $flach . '=\v;');
         }
-        return array('octopus_http.xml', oc_xml_virtual_in_http(array(
+        return array('VI_octopus_http.xml', oc_xml_virtual_in_http(array(
             'title'   => 'Octopus Dynamic (HTTP)',
             'address' => 'http://' . $host . '/plugins/' . oc_paths()['plugin']
                        . '/index.php?token=' . (string) $cfg['aktionstoken'] . '&aktion=status',
@@ -2639,15 +2960,18 @@ function oc_vorlage($art = 'mqtt_in')
 
     $cmds = array();
     foreach (oc_themen() as $k => $info) {
+        $g = oc_thema_grenzen(isset($info[1]) ? $info[1] : '');
         $cmds[] = array(
             // Der Gateway bildet den Titel aus dem Thema und ersetzt dabei
             // den Schraegstrich - siehe oc_thema_flach().
             'title'   => $praefix . '_' . oc_thema_flach($k),
+            'einheit' => isset($info[1]) ? $info[1] : '',
+            'min'     => $g[0], 'max' => $g[1],
             'comment' => oc_thema_text($info) . ($info[1] !== '' ? ' [' . $info[1] . ']' : ''),
             'check'   => ' ',
         );
     }
-    return array('octopus_eingaenge.xml', oc_xml_virtual_in_http(array(
+    return array('VI_octopus_eingaenge.xml', oc_xml_virtual_in_http(array(
         'title'   => 'Octopus Dynamic',
         'address' => 'http://localhost',
         'polling' => '604800',
@@ -2690,12 +3014,40 @@ function oc_eigene_ip()
 function oc_version()
 {
     $f = oc_paths()['home'] . '/data/system/plugindatabase.json';
-    if (!is_file($f)) { return ''; }
+    if (!is_file($f)) { return oc_version_aus_cfg(); }
     $d = json_decode((string) @file_get_contents($f), true);
-    if (!isset($d['plugins']) || !is_array($d['plugins'])) { return ''; }
+    if (!isset($d['plugins']) || !is_array($d['plugins'])) { return oc_version_aus_cfg(); }
     foreach ($d['plugins'] as $e) {
         if (isset($e['folder']) && $e['folder'] === oc_paths()['plugin']) {
-            return isset($e['version']) ? (string) $e['version'] : '';
+            $v = isset($e['version']) ? (string) $e['version'] : '';
+            if ($v !== '') { return $v; }
+        }
+    }
+    return oc_version_aus_cfg();
+}
+
+/**
+ * Die Fassung aus der plugin.cfg - der Rueckfall fuer den Fall, dass es
+ * keine Plugin-Datenbank gibt.
+ *
+ * WOZU. data/system/plugindatabase.json ist die Auskunft des LoxBerry
+ * selbst und die einzige, die im INSTALLIERTEN Zustand vorliegt - die
+ * plugin.cfg wandert bei der Installation nicht mit. Im entpackten
+ * Archiv ist es genau umgekehrt, und das ist der Prueffall: der
+ * Endpunkt beantwortete ?selftest=1 dort mit FASSUNG=-, waehrend die
+ * Schwesterlinie Tibber ihre Nummer nennt. Gemessen am Hauspruefstand.
+ *
+ * parse_ini_file() taugt fuer die plugin.cfg NICHT: sie kommentiert mit
+ * '#', PHPs INI-Zerleger kennt nur ';' und bricht an der ersten
+ * Kommentarzeile ab. Deshalb wird die eine Zeile selbst gesucht.
+ */
+function oc_version_aus_cfg()
+{
+    $cfg = dirname(dirname(dirname(__FILE__))) . '/plugin.cfg';
+    if (!is_file($cfg)) { return ''; }
+    foreach (file($cfg, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: array() as $z) {
+        if (preg_match('/^\s*VERSION\s*=\s*(\S+)\s*$/', (string) $z, $m)) {
+            return (string) $m[1];
         }
     }
     return '';
@@ -2838,14 +3190,23 @@ function oc_abo_text()
  * Unbekannte Schluessel sind eine Beanstandung, kein stiller Verlust: sie
  * stammen aus einer anderen Fassung oder einem anderen Plugin.
  *
- * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene Werte).
+ * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene Werte,
+ * Zugangsdaten|null) - VIER Felder, an jeder Rueckgabestelle.
  */
 function oc_sicherung_lesen($roh)
 {
     $mangel = array();
     $daten = json_decode((string) $roh, true);
     if (!is_array($daten)) {
-        return array(null, array(oc_t('EINST.SICH_KEIN_JSON')), 0);
+        /* VIER Felder, wie an der anderen Rueckgabestelle. Bis 1.1.3
+         * standen hier drei, und die Aufrufstelle zerlegt in vier
+         * (webfrontend/htmlauth/index.php). Unter PHP 7.4 blieb das
+         * still, unter PHP 8.4 steht dann
+         * 'Warning: Undefined array key 3' ueber der Oberflaeche -
+         * gemessen an beiden Fassungen. E_WARNING ist von
+         * error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE) NICHT
+         * gedeckt, und display_errors steht in der Oberflaeche auf 1. */
+        return array(null, array(oc_t('EINST.SICH_KEIN_JSON')), 0, null);
     }
     $neu = oc_vorgaben();
     $bekannt = array_keys($neu);
@@ -3331,9 +3692,9 @@ function oc_verbrauch($force = false)
     }
     $erg = $leer;
     $erg['ts'] = time();
-    $roh = oc_holen($cfg['verbrauch_url']);
+    $roh = oc_holen($cfg['verbrauch_url'], $hf);
     if ($roh === null) {
-        $erg['meldung'] = 'NICHT_ERREICHBAR';
+        $erg['meldung'] = $hf !== '' ? $hf : 'NICHT_ERREICHBAR';
         @file_put_contents($cache, json_encode($erg));
         return $erg;
     }

@@ -50,7 +50,30 @@ header('Cache-Control: no-store');
 header('X-Content-Type-Options: nosniff');
 header('X-Robots-Tag: noindex, nofollow');
 
-require_once __DIR__ . '/oc_lib.php';
+/* Erst fragen, dann laden - und wenn die Bibliothek fehlt, eine LESBARE
+ * Antwort geben.
+ *
+ * Bis 1.1.3 stand hier ein blankes require_once. Gemessen gegen einen
+ * laufenden Webserver in installierter Lage: fehlt oc_lib.php oder
+ * planer.php, antwortet der Endpunkt mit HTTP 500 und einem Rumpf von
+ * 0 Byte. Das trifft nach einem abgebrochenen Upgrade zu, und der
+ * Miniserver behaelt dann still seinen letzten Wert - in der App sieht
+ * alles normal aus. Die durchsuchten Pfade gehoeren in die Antwort, sonst
+ * sucht man sie am Geraet zusammen. */
+$oc_lib = __DIR__ . '/oc_lib.php';
+if (!is_file($oc_lib)) {
+    http_response_code(500);
+    header('Content-Type: text/plain; charset=utf-8');
+    echo 'OCTOPUS;OK=0;ERR=BIBLIOTHEK_FEHLT;PFAD=' . $oc_lib . "\n";
+    exit;
+}
+require_once $oc_lib;
+if (!function_exists('oc_config')) {
+    http_response_code(500);
+    header('Content-Type: text/plain; charset=utf-8');
+    echo 'OCTOPUS;OK=0;ERR=BIBLIOTHEK_UNVOLLSTAENDIG;PFAD=' . $oc_lib . "\n";
+    exit;
+}
 
 function oc_ende($code, $text)
 {
@@ -65,15 +88,45 @@ function oc_ende($code, $text)
  *
  * Kein Zaehler, kein Verlauf - eine Datei mit einem Zeitstempel. Wer sie
  * innerhalb der Sperrzeit wieder anfasst, bekommt false.
+ *
+ * EIN SCHUTZ, DER OFFEN AUSFAELLT, IST KEINER. Bis 1.1.3 wurde der
+ * Rueckgabewert von file_put_contents verworfen. Gemessen mit einem
+ * /tmp/octopus, das sich nicht anlegen liess: dreimal hintereinander
+ * PTEST;OK=1;GESPERRT=0, weil die Sperrdatei nie entstand - der Schutz
+ * gegen den schleifenden virtuellen Ausgang (sekuendliche Ansage,
+ * sekuendliche Kraken-Anmeldung bei 'refresh') war vollstaendig weg, und
+ * nichts sagte es. Mit beschreibbarem Ordner: 0 / 1 / 1.
+ *
+ * Laesst sich die Sperre nicht schreiben, gilt der Aufruf als GESPERRT und
+ * es wird protokolliert. Fail closed: lieber eine Ansage zu wenig als eine
+ * Schleife, die den Music Server sekuendlich sprechen laesst.
  */
 function oc_sperre_frei($name, $sekunden)
 {
     $f = oc_tmpdir() . '/sperre_' . preg_replace('/[^a-z0-9_]/i', '', (string) $name);
     if (is_file($f) && time() - (int) filemtime($f) < (int) $sekunden) { return false; }
-    @file_put_contents($f, (string) time());
+    if (!is_dir(dirname($f))) { @mkdir(dirname($f), 0775, true); }
+    if (@file_put_contents($f, (string) time()) === false) {
+        oc_log_if_changed('sperre', 'Wiederholsperre nicht schreibbar (' . $f
+            . ') - der Aufruf wird abgewiesen, damit der Schutz nicht offen ausfaellt');
+        return false;
+    }
     return true;
 }
 
+/* NUR LESEN, fuer den ganzen Aufruf.
+ *
+ * Bis 1.1.3 rief diese Datei oc_config(), und die Funktion holt eine
+ * fehlende oder leere Konfiguration aus der Zweitschrift zurueck. Gemessen
+ * an der LoxBerry-Attrappe: ein einziger Aufruf OHNE Token, korrekt mit
+ * 403 beantwortet, hat config/plugins/octopus/octopus.json neu geschrieben
+ * - mit dem Aktionstoken aus der Sicherung. Stand dort ein aelteres Token,
+ * waren danach alle Adressen im Miniserver ungueltig.
+ *
+ * Der Schalter steht hier ganz oben und gilt fuer den ganzen Aufruf, nicht
+ * nur fuer diese eine Zeile: oc_state() und die Themenbildung rufen
+ * oc_config() ihrerseits weiter. Naeheres an oc_nur_lesen(). */
+oc_nur_lesen(true);
 $cfg = oc_config();
 
 /* ---------- Selbsttest ----------
@@ -85,7 +138,11 @@ $cfg = oc_config();
  * Er steht VOR der Abschaltpruefung: gerade wenn das Plugin abgeschaltet
  * ist, will man wissen, ob wenigstens die Adresse und das Token stimmen.
  */
-if (isset($_GET['selftest']) && (string) $_GET['selftest'] === '1') {
+/* is_string vor der Umwandlung: ?selftest[]=1 erzeugte bis 1.1.3 die
+ * Zeichenkette "Array" und dazu eine Warnung im Protokoll des Webservers -
+ * und zwar VOR jeder Tokenpruefung, ein unangemeldeter Aufrufer konnte das
+ * Protokoll also beliebig fuellen. */
+if (isset($_GET['selftest']) && is_string($_GET['selftest']) && $_GET['selftest'] === '1') {
     $s = (string) $cfg['aktionstoken'];
     if ($s === '') {
         oc_ende(403, 'SELFTEST;OK=0;ERR=KEIN_TOKEN_EINGERICHTET');
@@ -111,10 +168,21 @@ if (isset($_GET['selftest']) && (string) $_GET['selftest'] === '1') {
  *
  * Der erklaerende Satz steht dahinter, durch Semikolon getrennt - fuer
  * den Menschen, der die Adresse in den Browser tippt. */
-if (empty($cfg['enabled'])) {
-    oc_ende(503, 'OCTOPUS;OK=0;ERR=AUS;TEXT=Das Plugin ist in den Einstellungen abgeschaltet.');
-}
-
+/* DIE ANFRAGE VOR DEM DIENST.
+ *
+ * Die Abschaltpruefung stand bis 1.1.3 hier, VOR der Tokenpruefung.
+ * Gemessen mit enabled=0: jeder Aufruf bekam HTTP 503 ERR=AUS - auch der
+ * ohne Token, auch der mit falschem Token, auch der mit unbekannter
+ * Aktion. Zwei Folgen, beide unerwuenscht: wer sich vertippt hatte, suchte
+ * den Fehler bei der Abschaltung statt beim Token, und der Betriebszustand
+ * der Anlage ging unangemeldet nach aussen. Im Reiter Test standen dadurch
+ * vier rote Kreuze bei den Sicherheitszeilen, obwohl die Abweisung ohne
+ * Token tadellos funktionierte.
+ *
+ * Sie steht jetzt hinter Token und Aktionsliste, unmittelbar vor der
+ * Wirkung - Hausstandard "Der Endpunkt prueft die Anfrage, bevor er den
+ * Dienst prueft". Der Selbsttest oben bleibt davor: gerade wenn das
+ * Plugin aus ist, will man wissen, ob Adresse und Token stimmen. */
 $soll = (string) $cfg['aktionstoken'];
 if ($soll === '') {
     oc_ende(403, 'OCTOPUS;OK=0;ERR=KEIN_TOKEN_EINGERICHTET;TEXT=Reiter Einstellungen '
@@ -129,8 +197,15 @@ if ($ist === '' || !hash_equals($soll, $ist)) {
 }
 
 $erlaubt = array('status', 'json', 'debug', 'refresh', 'say', 'saytomorrow', 'ptest');
-$aktion = (isset($_GET['aktion']) && !is_array($_GET['aktion']))
-    ? (string) $_GET['aktion'] : 'status';
+/* is_string, nicht !is_array: ?aktion[]=x wurde bis 1.1.3 stillschweigend
+ * zu 'status' zurechtgebogen, statt abgewiesen zu werden. Was nicht ins
+ * Muster passt, wird gemeldet - Hausstandard "Eingaben abweisen, nicht
+ * stillschweigend zurechtbiegen". Fehlt der Parameter ganz, bleibt es bei
+ * der Vorgabe 'status'; das ist keine falsche Eingabe, sondern keine. */
+if (isset($_GET['aktion']) && !is_string($_GET['aktion'])) {
+    oc_ende(400, 'OCTOPUS;OK=0;ERR=AKTION;ERLAUBT=' . implode(',', $erlaubt));
+}
+$aktion = isset($_GET['aktion']) ? (string) $_GET['aktion'] : 'status';
 
 /* Die Kurzform ?ptest=1 als Zweitschreibweise.
  *
@@ -142,11 +217,18 @@ $aktion = (isset($_GET['aktion']) && !is_array($_GET['aktion']))
  *
  * Die ausfuehrliche Form bleibt die dokumentierte; hier steht nur eine
  * zweite Schreibweise fuer dieselbe Sache, keine zweite Wirkung. */
-if (isset($_GET['ptest']) && (string) $_GET['ptest'] === '1' && !isset($_GET['aktion'])) {
+if (isset($_GET['ptest']) && is_string($_GET['ptest'])
+    && $_GET['ptest'] === '1' && !isset($_GET['aktion'])) {
     $aktion = 'ptest';
 }
 if (!in_array($aktion, $erlaubt, true)) {
     oc_ende(400, 'OCTOPUS;OK=0;ERR=AKTION;ERLAUBT=' . implode(',', $erlaubt));
+}
+
+/* ---------- Erst jetzt: laeuft der Dienst ueberhaupt? ----------
+ * Die Begruendung fuer diese Stelle steht oben ueber der Tokenpruefung. */
+if (empty($cfg['enabled'])) {
+    oc_ende(503, 'OCTOPUS;OK=0;ERR=AUS;TEXT=Das Plugin ist in den Einstellungen abgeschaltet.');
 }
 
 /* ---------- Test-Pushnachricht ---------- */
@@ -154,7 +236,15 @@ if ($aktion === 'ptest') {
     if (!oc_sperre_frei('ptest', 10)) {
         oc_ende(200, 'PTEST;OK=1;DAUER=300;GESPERRT=1');
     }
-    @file_put_contents(oc_tmpdir() . '/ptest', '1');
+    /* Den Rueckgabewert ansehen: bis 1.1.3 meldete diese Aktion OK=1, auch
+     * wenn der Merker gar nicht geschrieben werden konnte. Loxone bekam
+     * dann eine Erfolgsmeldung fuer eine Pushnachricht, die nie kommt, und
+     * der Anwender suchte den Fehler im Benachrichtigungs-Baustein. */
+    if (@file_put_contents(oc_tmpdir() . '/ptest', '1') === false) {
+        oc_log('Test-Pushnachricht angefordert, aber der Merker liess sich nicht schreiben ('
+            . oc_tmpdir() . '/ptest)');
+        oc_ende(500, 'PTEST;OK=0;ERR=MERKER;TEXT=Der Merker liess sich nicht schreiben.');
+    }
     /* SOFORT senden, nicht erst beim naechsten Cron-Lauf.
      *
      * Das Fenster des Merkers ist fuenf Minuten breit. Wer bis zum

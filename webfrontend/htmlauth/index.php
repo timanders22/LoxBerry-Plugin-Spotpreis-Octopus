@@ -160,7 +160,12 @@ if ($oc_ist_post && isset($_POST['download'])) {
     $oc_art = ((string) $_POST['download'] === 'http_in') ? 'http_in' : 'mqtt_in';
     list($oc_name, $oc_inhalt) = oc_vorlage($oc_art);
     header('Content-Type: application/x-download');
-    header('Content-Disposition: attachment; filename=' . $oc_name);
+    /* Die Anfuehrungszeichen um den Dateinamen sind Pflicht: ohne sie
+     * bricht jeder Name, der ein Leerzeichen enthaelt. Die beiden
+     * anderen Downloads dieser Datei setzen sie seit jeher, nur dieser
+     * nicht - heute faellt es nicht auf, weil kein erzeugter Name ein
+     * Leerzeichen hat. Es ist die Falle fuer den naechsten Namen. */
+    header('Content-Disposition: attachment; filename="' . $oc_name . '"');
     header('Content-Length: ' . strlen($oc_inhalt));
     echo $oc_inhalt;
     exit;
@@ -186,8 +191,22 @@ if ($oc_ist_post && isset($_POST['test'])) {
 if ($oc_ist_post && isset($_POST['save_zugang'])) {
     // Nur Steuerzeichen und Anfuehrungszeichen entfernen. Ein Filter, der
     // alles ausser einer Positivliste wegwirft, zerstoert gueltige Eingaben.
+    /* NUR STEUERZEICHEN RAUS - keine gueltigen Zeichen.
+     *
+     * Bis 1.1.3 strich diese Funktion auch den Apostroph, und sie lief
+     * ueber die E-Mail-Adresse. Gemessen an einer Adresse mit Apostroph
+     * im lokalen Teil: das Zeichen fiel weg, und weil das Ergebnis eine
+     * GUELTIGE Adresse ist, bestand sie danach die Pruefung und wurde
+     * gespeichert - ohne ein Wort. Die Kraken-Anmeldung scheiterte
+     * danach dauerhaft, und im Reiter Test stand trotzdem ein Haken bei
+     * der Zeile 'E-Mail hinterlegt'. Der Apostroph ist im lokalen Teil
+     * einer Adresse zulaessig; was nicht ins Muster passt, wird
+     * abgewiesen und gemeldet, nicht stillschweigend beschnitten.
+     *
+     * Das Anfuehrungszeichen bleibt draussen: es hat in keiner der drei
+     * Angaben etwas verloren und wuerde die JSON-Ablage belasten. */
     $oc_saeubern = function ($s) {
-        return trim(preg_replace('/[\x00-\x1F\x7F"\']+/u', '', (string) $s));
+        return trim(preg_replace('/[\x00-\x1F\x7F"]+/u', '', (string) $s));
     };
     $oc_mail  = $oc_saeubern(isset($_POST['z_email']) ? $_POST['z_email'] : '');
     $oc_konto = $oc_saeubern(isset($_POST['z_konto']) ? $_POST['z_konto'] : '');
@@ -314,13 +333,24 @@ if ($oc_ist_post && isset($_POST['save'])) {
         $oc_neu[$oc_f2] = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '',
             (string) (isset($_POST[$oc_f2]) ? $_POST[$oc_f2] : '')));
     }
-    foreach (array('pv_url', 'soc_url') as $oc_f2) {
-        if ($oc_neu[$oc_f2] !== '' && !preg_match('#^https?://#i', $oc_neu[$oc_f2])) {
-            $oc_fehler[] = sprintf(oc_t('PLAN.FEHLER_URL'), oc_t('PLAN.L_' . strtoupper($oc_f2)));
-        }
-    }
-    if ($oc_neu['verbrauch_url'] !== '' && !preg_match('#^https?://#i', $oc_neu['verbrauch_url'])) {
-        $oc_fehler[] = sprintf(oc_t('PLAN.FEHLER_URL'), oc_t('VERB.L_URL'));
+    /* EINE BEANSTANDETE ADRESSE WIRD ZURUECKGESETZT, NICHT UEBERNOMMEN.
+     *
+     * Bis 1.1.3 wurde der unbrauchbare Wert gespeichert und nur
+     * beanstandet. Gemessen in drei Absendungen: eine gueltige Adresse
+     * eingetragen, dann 'htp://...' geschickt - die Seite zeigte
+     * gleichzeitig 'Einstellungen gespeichert' UND die Beanstandung, und
+     * in der Konfiguration stand danach 'htp://...'; beim naechsten
+     * Lesen leerte oc_config() das Feld. Wer sich vertippt, verlor also
+     * still seine funktionierende Adresse, und der Fahrplaner rechnete
+     * ohne PV-Prognose weiter.
+     *
+     * Zwei Bloecke weiter unten macht es cheap/expensive seit jeher
+     * richtig - dieselbe Datei, dieselbe Lage, andere Behandlung. */
+    foreach (array('pv_url', 'soc_url', 'verbrauch_url') as $oc_f2) {
+        if ($oc_neu[$oc_f2] === '' || preg_match('#^https?://#i', $oc_neu[$oc_f2])) { continue; }
+        $oc_fehler[] = sprintf(oc_t('PLAN.FEHLER_URL'), $oc_f2 === 'verbrauch_url'
+            ? oc_t('VERB.L_URL') : oc_t('PLAN.L_' . strtoupper($oc_f2)));
+        $oc_neu[$oc_f2] = $oc_cfg[$oc_f2];   // den bisherigen Stand behalten
     }
     if ($oc_neu['verbrauch_quelle'] === 'liste'
         && ($oc_neu['verbrauch_zeitfeld'] === '' || $oc_neu['verbrauch_wertfeld'] === '')) {
@@ -743,6 +773,17 @@ if ($oc_rahmen) {
 .sm-warnung { border: 1px solid #f0c9a0; background: #fdf4ec; border-radius: 6px;
     padding: 10px 12px; margin: 12px 0; font-size: 0.9em; }
 .sm-an  { color: #1a7f1a; font-weight: 700; }
+/* Die vier Klassen des Meldekastens. Sie wurden im Reiter Test seit
+ * jeher BENUTZT und waren nirgends definiert - hausstandard_pruefen.py
+ * meldete '.sm-alert benutzt, aber nirgends definiert'. Die einzige
+ * Selbstpruefzeile, die Reiterleiste, Positivliste und Flaechen
+ * gegeneinander haelt, stand deshalb als nackter Fliesstext da: Haken
+ * und Kreuz sahen gleich aus. Wortgleich aus der Schwesterlinie
+ * Spotpreis-aWATTar uebernommen. */
+.sm-alert { border-radius: 8px; padding: 10px 14px; margin: 12px 0; }
+.sm-ok   { background: #e8f5e9; border: 1px solid #a5d6a7; }
+.sm-err  { background: #ffebee; border: 1px solid #ef9a9a; }
+.sm-warn { background: #fff8e1; border: 1px solid #ffe082; }
 .sm-aus { color: #b00000; font-weight: 700; }
 /* Ergaenzungen dieses Plugins */
 .sm-reihe { display: flex; gap: 12px; flex-wrap: wrap; }
@@ -754,6 +795,26 @@ if ($oc_rahmen) {
     width: 100%; padding: 8px 10px; border: 1px solid #ccc; border-radius: 6px;
     font-size: 0.95em; box-sizing: border-box; }
 .sm-wrap input[type=checkbox] { width: 17px; height: 17px; margin: 0; vertical-align: middle; }
+/* Eine Tabelle, die breiter ist als das Fenster, braucht ihre eigene
+ * Rollleiste: .sm-tbl hat width:100%, .sm-wrap hat max-width ohne
+ * Ueberlauf - die letzte Spalte ist sonst UNERREICHBAR, nicht bloss
+ * unbequem. Gemessen am gerenderten HTML: zwei Tabellen mit sieben und
+ * acht Spalten, und .sm-breit kam im ganzen Plugin nicht vor.
+ * Wortgleich aus VORLAGE_hausstandard.css.html. */
+.sm-breit { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 10px 0; }
+.sm-breit .sm-tbl { margin: 0; min-width: 760px; }
+/* Ein Auswahlfeld muss man als Auswahlfeld erkennen. Ueber die volle
+ * Breite und mit data-role="none" sieht ein <select> aus wie ein
+ * Textfeld; der eingebaute Pfeil sitzt am rechten Rand und faellt dort
+ * nicht auf. Am Geraet gemeldet. Hier sind es 14 Auswahlfelder.
+ * Die Raute im SVG wird als %23 geschrieben: eine rohe Raute beendet
+ * in einer CSS-Adresse den Wert. */
+.sm-wrap select {
+    appearance: none; -webkit-appearance: none; -moz-appearance: none;
+    background-image: url("data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='9' viewBox='0 0 14 9'%3E%3Cpath d='M1 1l6 6 6-6' fill='none' stroke='%234f7d17' stroke-width='2'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 10px center;
+    padding-right: 32px; cursor: pointer; }
+.sm-tbl select { padding-right: 28px; background-position: right 7px center; }
 .sm-stunden { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; }
 .sm-stunden label { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap;
     background: #f5f5f5; border: 1px solid #ddd; border-radius: 6px; padding: 5px 9px;
@@ -1338,7 +1399,7 @@ foreach (oc_regel_arten() as $oc_a) { ?>
 <h2><?php echo oc_t('EINST.H_TOKEN'); ?></h2>
 <div class="sm-hilfe"><?php echo oc_t('EINST.TOKEN_HILFE'); ?></div>
 <div class="sm-pre"><?php echo oc_e($oc_endpunkt); ?>?token=<?php
-    echo oc_e($oc_cfg['aktionstoken'] !== '' ? $oc_cfg['aktionstoken'] : '(wird beim Speichern erzeugt)');
+    echo oc_e($oc_cfg['aktionstoken'] !== '' ? $oc_cfg['aktionstoken'] : oc_t('EINST.TOKEN_LEER'));
 ?>&amp;aktion=status</div>
 <label style="display:inline-flex;align-items:center;gap:6px;font-weight:600;">
   <input data-role="none" type="checkbox" name="token_neu" value="1">
@@ -1416,10 +1477,6 @@ for ($oc_i = 0; $oc_i < 12; $oc_i++) { ?>
 <h2><?= oc_t('EINST.H_SICHERUNG') ?></h2>
 <div class="sm-hinweis"><?= oc_t('EINST.SICH_ERKLAERUNG') ?></div>
 <div class="sm-warnung"><?= oc_t('EINST.SICH_WARNUNG') ?></div>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-lesen"></i><?php echo oc_t('LEGENDE.LESEN'); ?></span>
-<span><i class="sm-punkt sm-b-aktion"></i><?php echo oc_t('LEGENDE.AKTION'); ?></span>
-</div>
 <div class="sm-knopfreihe">
   <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
        exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
@@ -1434,6 +1491,14 @@ for ($oc_i = 0; $oc_i < 12; $oc_i++) { ?>
     </label>
     <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="oc_sichern" value="1"><?= oc_t('EINST.K_SICHERN') ?></button>
   </form>
+</div>
+<!-- ZWEITE REIHE, und das ist Absicht.
+     Lesende und schaltende Knoepfe kommen nie in dieselbe Reihe.
+     Hier waren 'Einstellungen sichern' (gruen, liest nur) und
+     'Zurueckspielen' (orange, ueberschreibt die komplette
+     Konfiguration samt Aktionstoken) nebeneinander - ausgerechnet
+     dort, wo der Fehlgriff am teuersten ist. -->
+<div class="sm-knopfreihe">
   <form action="index.php" method="post" enctype="multipart/form-data">
 <input data-role="none" type="hidden" name="fmt" value="<?php echo oc_e($oc_fmt); ?>">
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
@@ -1572,6 +1637,10 @@ for ($oc_i = 0; $oc_i < 12; $oc_i++) { ?>
 </div>
 </form>
 <div class="sm-hilfe"><?php echo oc_t('LOX.DL_HILFE'); ?></div>
+<!-- Hausstandard: der Satz zum zweimaligen Import gehoert SICHTBAR in
+     den Reiter, nicht nur in die Hilfe. Er fehlte bis 1.1.3 ganz -
+     gemessen mit einer Suche ueber Sprachdateien und Hilfetext. -->
+<div class="sm-warnung"><?php echo oc_t('LOX.DL_DOPPELT'); ?></div>
 </div>
 
 <div class="sm-step"><b><?php echo oc_t('LOX.S4_T'); ?></b><br><?php echo oc_t('LOX.S4'); ?>
@@ -1682,6 +1751,7 @@ foreach ($oc_bausteine as $oc_b) { ?>
     oc_t('KOST.SHIFT_TEXT')); ?></div>
 
 <h2><?php echo oc_t('KOST.H_HISTORIE'); ?></h2>
+<div class="sm-breit">
 <table class="sm-tbl">
 <tr><th><?php echo oc_t('KOST.SP_TAG'); ?></th><th><?php echo oc_t('KOST.SP_AVG'); ?></th>
     <th><?php echo oc_t('KOST.SP_MIN'); ?></th><th><?php echo oc_t('KOST.SP_MAX'); ?></th>
@@ -1695,6 +1765,7 @@ foreach (array_reverse($oc_hist) as $oc_r) { ?>
     <td><?php echo $oc_r[6] ? oc_t('KOST.Q_DEMO') : oc_t('KOST.Q_ECHT'); ?></td></tr>
 <?php } ?>
 </table>
+</div>
 <div class="sm-hilfe"><?php echo oc_t('KOST.CSV_HILFE'); ?></div>
 <form action="index.php" method="post">
 <input data-role="none" type="hidden" name="fmt" value="<?php echo oc_e($oc_fmt); ?>">
@@ -1718,6 +1789,16 @@ list($oc_pv2, $oc_pherkunft) = oc_profil_aktiv();
 <!-- ==================== Reiter: Test ==================== -->
 <div class="sm-seite<?php echo $oc_tab === 'tab-test' ? ' sm-active' : ''; ?>" id="tab-test">
 <h2><?php echo oc_t('TEST.H_PRUEFUNG'); ?></h2>
+<!-- EINE gesammelte Legende oben im Reiter, nicht je Knopfreihe eine
+     eigene: dieselbe Zeile mehrfach untereinander stiftet mehr Unruhe
+     als Nutzen (Hausstandard, Beschluss 01.08.2026). Hier standen bis
+     1.1.3 zwei Legenden in diesem Reiter. -->
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i> <?php echo oc_t('LEGENDE.LESEN'); ?></span>
+<span><i class="sm-punkt sm-b-technik"></i> <?php echo oc_t('LEGENDE.TECHNIK'); ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?php echo oc_t('LEGENDE.AKTION'); ?></span>
+</div>
+
 
 <h3 class="sm-h3"><?php echo oc_t('PLAN.H_FAHRPLAN'); ?></h3>
 <p class="sm-small"><?php echo oc_t('PLAN.FAHRPLAN_TEXT'); ?></p>
@@ -1771,6 +1852,7 @@ $oc_budget = (float) $oc_cfg['budget_kw'];
 
 <h3 class="sm-h3"><?php echo oc_t('PLAN.H_UEBERSICHT'); ?></h3>
 <p class="sm-small"><?php echo oc_t('PLAN.UEBERSICHT_TEXT'); ?></p>
+<div class="sm-breit">
 <table class="sm-tbl">
 <tr><th><?php echo oc_t('PLAN.U_REGEL'); ?></th><th><?php echo oc_t('PLAN.U_GRUND'); ?></th>
     <th><?php echo oc_t('PLAN.U_NOETIG'); ?></th><th><?php echo oc_t('PLAN.U_GEPLANT'); ?></th>
@@ -1805,6 +1887,7 @@ $oc_budget = (float) $oc_cfg['budget_kw'];
         } else { echo '&ndash;'; } ?></td></tr>
 <?php } ?>
 </table>
+</div>
 <div class="sm-hilfe"><?php echo oc_t('PLAN.U_HILFE'); ?></div>
 
 <?php
@@ -1868,9 +1951,6 @@ if ($oc_rp_datei !== '') {
 
 <h3 class="sm-h3"><?php echo oc_t('PLAN.H_SELBSTTEST'); ?></h3>
 <p class="sm-small"><?php echo oc_t('PLAN.SELBSTTEST_TEXT'); ?></p>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-technik"></i> <?php echo oc_t('PLAN.LEGENDE_TECHNIK'); ?></span>
-</div>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
 <input data-role="none" type="hidden" name="fmt" value="<?php echo oc_e($oc_fmt); ?>">
@@ -1882,11 +1962,6 @@ if ($oc_rp_datei !== '') {
 <?php if (!empty($oc_plantest)) { ?>
 <div class="sm-pre"><?php echo oc_e($oc_plantest); ?></div>
 <?php } ?>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-lesen"></i> <?php echo oc_t('LEGENDE.LESEN'); ?></span>
-<span><i class="sm-punkt sm-b-technik"></i> <?php echo oc_t('LEGENDE.TECHNIK'); ?></span>
-<span><i class="sm-punkt sm-b-aktion"></i> <?php echo oc_t('LEGENDE.AKTION'); ?></span>
-</div>
 
 <div class="sm-knopfreihe">
 <?php foreach (array('selbst' => 'TEST.K_SELBST', 'abruf' => 'TEST.K_ABRUF',

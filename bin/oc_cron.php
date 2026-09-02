@@ -8,8 +8,15 @@
  * 4. Tageswerte kurz vor Mitternacht fortschreiben
  * 5. Monatsbericht am Monatsersten
  *
- * Laeuft ueber die Kommandozeile. Die Ausgabe leitet der Cron in die
- * Logdatei um - deshalb steht hier nur eine Zeile auf stdout.
+ * Laeuft ueber die Kommandozeile. cron/cron.01min leitet die Ausgabe nach
+ * /dev/null - hier steht deshalb nur eine Zeile auf stdout, und alles,
+ * was jemand spaeter lesen soll, geht ueber oc_log() in die Logdatei.
+ *
+ * Bis 1.1.3 stand hier, der Cron leite die Ausgabe in die Logdatei um.
+ * Das war falsch, und zwanzig Zeilen weiter unten stand in derselben
+ * Datei das Richtige. Ein Widerspruch in der eigenen Beschreibung ist
+ * eine Fehlerquelle: der einzige Abbruch, der gar nichts tut, schrieb
+ * seine Begruendung nach STDERR und damit ins Nichts.
  */
 
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
@@ -168,16 +175,52 @@ if ((int) date('j') === 1 && (int) date('G') >= 8 && !is_file($oc_marke)) {
     // Marker VOR dem Bericht setzen. Bricht die Auswertung ab, ist der
     // Bericht fuer diesen Monat verloren - eine Endlosschleife aus
     // Fehlversuchen mit Sprachansage waere schlimmer.
-    @touch($oc_marke);
+    /* Den Rueckgabewert ansehen: laesst sich der Marker nicht schreiben,
+     * bleibt !is_file($oc_marke) bis Mitternacht wahr, und der Bericht
+     * liefe bei JEDEM Minutenlauf erneut - samt Sprachansage. Genau die
+     * Endlosschleife, die der Kommentar darueber verhindern will. Dann
+     * lieber einmal melden und den Monatsbericht auslassen; er ist eine
+     * Zusammenfassung, kein Messwert, der verloren ginge. */
+    $oc_marke_ok = @touch($oc_marke);
+    if (!$oc_marke_ok) {
+        oc_log('Monatsbericht ausgelassen: der Erledigt-Marker liess sich nicht schreiben ('
+            . $oc_marke . ') - sonst liefe er jede Minute erneut, samt Ansage');
+    }
     // Marker der Vormonate wegraeumen, damit der Ordner nicht zulaeuft.
     foreach (glob(oc_datadir() . '/monatsbericht_*.done') ?: array() as $oc_alt) {
         if ($oc_alt !== $oc_marke && time() - (int) filemtime($oc_alt) > 40 * 86400) {
             @unlink($oc_alt);
         }
     }
-    $mc = oc_month_compare(2);
-    array_shift($mc);                 // laufender Monat raus, wir wollen den Vormonat
-    $vm = $mc ? reset($mc) : null;
+    /* DEN VORMONAT AM SCHLUESSEL SUCHEN, NICHT DEN ERSTEN WEGWERFEN.
+     *
+     * Bis 1.1.3 stand hier array_shift() mit dem Kommentar "laufender
+     * Monat raus". Der laufende Monat steht aber gar nicht in der Liste:
+     * oc_month_compare() baut sie aus history.csv, und dort entsteht eine
+     * Zeile erst um 23:50 fuer den abgelaufenen Tag (oder um 00:05 als
+     * Nachtrag fuer den Vortag). Am 1. um 8 Uhr ist die juengste Zeile
+     * also der LETZTE TAG DES VORMONATS - array_shift() warf damit genau
+     * den Monat weg, um den es geht. Gemessen mit 31 Juli- und 31
+     * Augustzeilen und ohne Septemberzeile: gewaehlt wurde 202607.
+     *
+     * Nebenbei behoben: stand nur ein einziger Monat in der Historie,
+     * leerte array_shift() die Liste, $vm wurde null - der erste
+     * Monatsbericht ueberhaupt fiel still aus, und der Marker war schon
+     * gesetzt. */
+    $oc_soll = date('Ym', strtotime('first day of last month'));
+    $vm = null;
+    if ($oc_marke_ok) {
+        foreach (oc_month_compare(3) as $oc_m => $oc_e) {
+            if ((string) $oc_m === $oc_soll) { $vm = $oc_e; break; }
+        }
+    }
+    /* Nur melden, wenn wirklich die Tageswerte fehlen - nicht auch dann,
+     * wenn der Marker schon gescheitert ist. Sonst stuenden zwei
+     * Begruendungen fuer denselben Ausfall im Protokoll, und die zweite
+     * waere falsch. */
+    if ($oc_marke_ok && $vm === null) {
+        oc_log('Monatsbericht: fuer ' . $oc_soll . ' liegen keine Tageswerte vor - nichts zu melden');
+    }
     if ($vm) {
         oc_log('MONATSBERICHT ' . $vm['monat'] . ': dynamisch (gewichtet) ' . $vm['dynp']
             . ' ct, fest ' . $vm['fix'] . ' ct -> '
@@ -202,7 +245,10 @@ if ((int) date('j') === 1 && (int) date('G') >= 8 && !is_file($oc_marke)) {
    DIE LEBENSZEICHEN GEHOEREN NICHT IN DIE SIGNATUR. status/ts traegt die
    Uhrzeit und status/zaehler eine laufende Nummer - beide aendern sich bei
    JEDEM Lauf. Stuenden sie in der Signatur, waere die Bremse wirkungslos
-   und das Plugin schickte jede Minute alle 150 Werte. Sie gehen statt
+   und das Plugin schickte jede Minute ALLE Werte. Das sind ab Werk 90
+   und mit eingeschaltetem Stundenprofil bis zu 162 - nachgezaehlt an
+   oc_werte(), nicht geschaetzt. Hier stand bis 1.1.3 die Zahl 150, die
+   in keiner Einstellung herauskommt. Sie gehen statt
    dessen eigens hinaus, und zwar immer. */
 /* Den Zaehler VOR oc_werte() weiterdrehen: oc_werte() liest den Stand,
  * es dreht ihn nicht selbst. Sonst stuende in der Meldung die Nummer des

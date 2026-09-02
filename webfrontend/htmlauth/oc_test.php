@@ -48,8 +48,14 @@ function oc_test_selbst()
         function_exists('socket_create') ? '' : oc_t('TEST.SOCKETS_NEIN'));
     $h .= oc_zeile(is_writable(dirname($p['config'])) || is_writable($p['config']),
         oc_t('TEST.CONFIG_SCHREIBBAR'), oc_e($p['config']));
-    $h .= oc_zeile(is_dir($p['datadir']) || @mkdir($p['datadir'], 0775, true),
-        oc_t('TEST.DATENORDNER'), oc_e($p['datadir']));
+    /* NUR FRAGEN, NICHT ANLEGEN. Bis 1.1.3 stand hier ein @mkdir im
+     * ODER-Zweig: die Zeile meldete 'Datenordner vorhanden' ueber einen
+     * Ordner, den sie eine Millisekunde vorher selbst erzeugt hatte -
+     * gemessen mit geloeschtem Ordner. Rot wurde sie nur, wenn schon
+     * das Anlegen scheiterte. Eine Pruefung, die ihren Gegenstand
+     * herstellt, prueft nichts; das Anlegen ist Sache von
+     * postinstall.sh und des Dienstes. */
+    $h .= oc_zeile(is_dir($p['datadir']), oc_t('TEST.DATENORDNER'), oc_e($p['datadir']));
 
     $demo = !empty($cfg['demo']);
     if ($demo) {
@@ -121,8 +127,11 @@ function oc_test_selbst()
     $h .= oc_zeile(!$ohne && !$zuviel, oc_t('TEST.SCHRANKEN'),
         (!$ohne && !$zuviel)
             ? str_replace('%N%', count(oc_schranken()), oc_t('TEST.SCHRANKEN_OK'))
-            : oc_e(trim(($ohne ? 'ohne Schranke: ' . implode(', ', $ohne) . '  ' : '')
-                      . ($zuviel ? 'ohne Vorgabe: ' . implode(', ', $zuviel) : ''))));
+            : oc_e(trim(
+                ($ohne ? str_replace('%S%', implode(', ', $ohne),
+                    oc_t('TEST.SCHRANKEN_OHNE')) . '  ' : '')
+                . ($zuviel ? str_replace('%S%', implode(', ', $zuviel),
+                    oc_t('TEST.SCHRANKEN_ZUVIEL')) : ''))));
 
     /* ---- Der Rundlauf der Sicherung ----
      *
@@ -254,21 +263,39 @@ function oc_test_endpunkt()
     $basis = 'http://' . oc_eigene_ip() . '/plugins/' . oc_paths()['plugin'] . '/index.php';
     $h = '';
 
+    /* ERST FRAGEN, OB UEBERHAUPT JEMAND ANTWORTET.
+     *
+     * Bis 1.1.3 liefen vier Aufrufe mit 10, 10, 10 und 15 Sekunden
+     * Zeitschranke hintereinander. Antwortete die Adresse gar nicht - ein
+     * falsch geratener Rechnername, ein anderer Webserver-Port -, sah der
+     * Anwender 40 Sekunden lang eine leere Seite und danach vier rote
+     * Kreuze bei den SICHERHEITSZEILEN, als sei der Endpunkt ungeschuetzt.
+     * Gemessen: gesunder Endpunkt 87 ms, kaputter 103 ms, nicht
+     * erreichbarer 40 055 ms.
+     *
+     * "Antwortet nicht" ist etwas anderes als "weist nicht ab" - und wird
+     * jetzt auch anders gesagt, nach vier statt vierzig Sekunden. */
+    $r = oc_http($basis . '?aktion=status', null, array(), 4);
+    if ((int) $r['code'] === 0) {
+        return array(oc_t('TEST.T_ENDPUNKT'),
+            '<div class="sm-warnung">' . str_replace('%U%',
+                '<span class="sm-mono">' . oc_e($basis) . '</span>',
+                oc_t('TEST.E_KEINE_ANTWORT')) . '</div>');
+    }
     // 1) ohne Token - muss abgewiesen werden
-    $r = oc_http($basis . '?aktion=status', null, array(), 10);
     $h .= oc_zeile($r['code'] === 403, oc_t('TEST.E_OHNE_TOKEN'),
         'HTTP ' . ($r['code'] ?: '-'));
     // 2) mit falschem Token - muss abgewiesen werden
-    $r = oc_http($basis . '?token=falsch&aktion=status', null, array(), 10);
+    $r = oc_http($basis . '?token=falsch&aktion=status', null, array(), 4);
     $h .= oc_zeile($r['code'] === 403, oc_t('TEST.E_FALSCHES_TOKEN'),
         'HTTP ' . ($r['code'] ?: '-'));
     // 3) unbekannte Aktion - muss abgewiesen werden
     $r = oc_http($basis . '?token=' . rawurlencode($cfg['aktionstoken']) . '&aktion=loeschen',
-                 null, array(), 10);
+                 null, array(), 4);
     $h .= oc_zeile($r['code'] === 400, oc_t('TEST.E_UNBEKANNT'), 'HTTP ' . ($r['code'] ?: '-'));
     // 4) richtiger Aufruf
     $r = oc_http($basis . '?token=' . rawurlencode($cfg['aktionstoken']) . '&aktion=status',
-                 null, array(), 15);
+                 null, array(), 8);
     $ok = $r['ok'] && strpos($r['body'], 'OCTOPUS;') === 0;
     $h .= oc_zeile($ok, oc_t('TEST.E_RICHTIG'), 'HTTP ' . ($r['code'] ?: '-'));
     if ($r['body'] !== '') {
@@ -304,9 +331,29 @@ function oc_test_say($morgen)
 
 function oc_test_ptest()
 {
-    @file_put_contents(oc_tmpdir() . '/ptest', '1');
-    oc_log('Test-Pushnachricht ueber die Oberflaeche angefordert');
+    /* DAS ERGEBNIS MELDEN, NICHT DIE ABSICHT.
+     *
+     * Bis 1.1.3 stand hier oc_zeile(TRUE, ...) - ein Literal. Es gab
+     * keinen Zustand, der diese Zeile rot macht; gemessen mit einem
+     * nicht beschreibbaren /tmp/octopus meldete sie 'Merker gesetzt,
+     * 5 Minuten gueltig', waehrend die Datei nie entstand.
+     *
+     * Und wie der Endpunkt meldet die Oberflaeche jetzt SOFORT ueber
+     * MQTT. Vorher wirkte der Knopf auf dem Regelweg erst beim
+     * naechsten Cron-Lauf, also bis zu eine Minute spaeter - und ein
+     * Test, der erst spaeter wirkt, sieht aus wie einer, der nicht
+     * wirkt. Die Signaturdatei wird dafuer verworfen, damit der
+     * naechste Lauf den Merker auch wieder auf 0 meldet. */
+    $ok = (@file_put_contents(oc_tmpdir() . '/ptest', '1') !== false);
+    if ($ok) {
+        oc_weg(oc_tmpdir() . '/mqtt_sig.txt');
+        oc_mqtt_publish();
+        oc_log('Test-Pushnachricht ueber die Oberflaeche angefordert, sofort per MQTT gemeldet');
+    } else {
+        oc_log('Test-Pushnachricht ueber die Oberflaeche angefordert, aber der Merker '
+            . 'liess sich nicht schreiben (' . oc_tmpdir() . '/ptest)');
+    }
     return array(oc_t('TEST.T_PTEST'),
-        oc_zeile(true, oc_t('TEST.PTEST_GESETZT'))
+        oc_zeile($ok, $ok ? oc_t('TEST.PTEST_GESETZT') : oc_t('TEST.PTEST_FEHLER'))
         . '<div class="sm-hilfe">' . oc_t('TEST.PTEST_HINWEIS') . '</div>');
 }
