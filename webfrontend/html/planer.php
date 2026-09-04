@@ -3,10 +3,17 @@
  * Fahrplaner fuer preisgesteuerte Verbraucher
  *
  * DIESE DATEI IST IN MEHREREN PLUGINS BYTEWEISE GLEICH.
- * Sie liegt derzeit in LoxBerry-Plugin-Spotpreis-aWATTar und in
- * LoxBerry-Plugin-Spotpreis-Octopus. Wer sie aendert, aendert sie in beiden -
- * und prueft danach mit sha256sum ueber beide Ablageorte, dass die Pruefsumme
- * wieder uebereinstimmt. Der Reiter Test zeigt sie an.
+ * Sie liegt in LoxBerry-Plugin-Spotpreis-aWATTar, in
+ * LoxBerry-Plugin-Spotpreis-Octopus und seit dem 04.09.2026 auch in
+ * LoxBerry-Plugin-Spotpreis-Tibber. Wer sie aendert, aendert sie in ALLEN
+ * DREIEN - und prueft danach mit sha256sum ueber alle drei Ablageorte, dass
+ * die Pruefsumme wieder uebereinstimmt.
+ *
+ * Dieselbe Frage beantwortet jede der drei Linien im Reiter Test von sich
+ * aus: sie nennt PLAN_FASSUNG und haelt die Pruefsumme dieser Datei gegen
+ * die der Schwesterlinien, soweit sie auf demselben LoxBerry installiert
+ * sind. Drei Ausgaenge - gleich, verschieden, nicht installiert. Damit hat
+ * die Regel 'drei Kopien byteweise gleich' ein Werkzeug, das sie findet.
  *
  * Der Ordnername stand hier bis 1.1.0 falsch ("LoxBerry-Plugin-Octopus"). Wer
  * danach gesucht hat, fand nichts - deshalb steht er jetzt vollstaendig da.
@@ -15,14 +22,14 @@
  * Das ist die einzige Ausnahme von der Regel "Funktionen tragen das Kuerzel
  * der Bibliothek", und sie ist bewusst gemacht: zwei auseinanderlaufende
  * Kopien derselben Rechnung waeren schlimmer als ein zweites Kuerzel. Die
- * beiden Plugins laufen nie im selben Prozess; Namenskollisionen kann es
+ * drei Plugins laufen nie im selben Prozess; Namenskollisionen kann es
  * also nicht geben.
  *
  * ------------------------------------------------------------------
  * Was der Planer kann - und warum
  * ------------------------------------------------------------------
  *
- * Die Schaltregeln der beiden Plugins beantworteten bisher jede fuer sich
+ * Die Schaltregeln der Plugins beantworteten bis dahin jede fuer sich
  * die Frage "laeuft es gerade guenstig?". Drei Dinge fehlten, und alle drei
  * treten erst auf, wenn mehr als ein Geraet mitspielt:
  *
@@ -85,7 +92,7 @@
  * Kompatibel mit PHP 7.4 und PHP 8.x.
  */
 
-/** Fassung dieser Datei. Steht in beiden Plugins im Reiter Test.
+/** Fassung dieser Datei. Der Reiter Test jeder der drei Linien zeigt sie an.
  *
  * 1.1.1: Aufrundung gegen Gleitkommarauschen in plan_slots_noetig(), und
  *        der Lueckenschluss in plan_takt() haelt sich jetzt an die
@@ -119,8 +126,67 @@
  *        Dazu zwei Prueffaelle FUER EINE ALTE KORREKTUR: dass die
  *        Hysterese sich an die Kandidatenliste haelt, stand seit 1.1.1 im
  *        Kommentar, war aber von keinem Fall gedeckt - der Rueckbau blieb
- *        gruen. Jetzt geht er rot. */
-define('PLAN_FASSUNG', '1.1.3');
+ *        gruen. Jetzt geht er rot.
+ *
+ * 1.1.4: Nur der Kopf und eine Zusicherung - an der Rechnung aendert sich
+ *        nichts, plan_selbsttest() rechnet unveraendert dieselben Faelle
+ *        nach.
+ *
+ *        Zwei Berichtigungen. Erstens liegt die Datei seit dem 04.09.2026
+ *        in DREI Linien, der Kopf nannte zwei. Zweitens war die Zusicherung
+ *        "Steht in beiden Plugins im Reiter Test" gemessen falsch:
+ *        PLAN_FASSUNG kam in aWATTar 1.2.20 ausserhalb dieser Datei
+ *        ueberhaupt nicht vor, und in Octopus 1.1.6 stand sie in der
+ *        Antwortzeile des Loxone-Endpunkts, nicht im Reiter Test. Genau
+ *        die Fehlerklasse, vor der spot_lib.php warnt: ein Kommentar, der
+ *        eine Benutzung behauptet, ist kein Beleg fuer sie. Jetzt zeigen
+ *        alle drei Linien die Fassung im Reiter Test an.
+ *
+ * 1.1.7: plan_pruefsummen() sucht die Schwesterlinien, statt sie
+ *        aufzuzaehlen.
+ *
+ *        Die Liste aus 1.1.6 nannte 'spotpreisawattar' und
+ *        'spotpreisoctopus'. Installiert wird aber nach FOLDER, und das
+ *        heisst 'spotpreis' und 'octopus' - die Pruefung meldete auf jeder
+ *        Anlage zweimal 'fehlt' und verglich nie etwas. Genau die
+ *        Divergenz, wegen der es sie gibt, haette sie nicht gefunden.
+ *
+ *        Gemessen am 04.09.2026 an den drei plugin.cfg. Umbenennen war kein
+ *        Weg: FOLDER geht in die Plugin-Kennung ein.
+ *
+ * 1.1.6: plan_pruefsummen() kommt dazu - die Pruefung zu der Regel, die
+ *        ganz oben in diesem Kopf steht.
+ *
+ *        Sie lag zuerst in tb_lib.php, also in EINER der drei Linien. Damit
+ *        haetten die beiden anderen entweder keine Pruefung bekommen oder
+ *        eine zweite Kopie davon. Eine Pruefung, die Kopien vergleicht, in
+ *        drei Kopien zu fuehren waere der Witz gewesen - also steht sie
+ *        hier, in der Datei, um die es geht.
+ *
+ *        Sie liest Dateien und gehoert deshalb NICHT in plan_selbsttest():
+ *        der rechnet nur, ohne Netz und ohne Platte, und genau das ist seine
+ *        Zusage.
+ *
+ * 1.1.5: Der Selbsttest misst in einer FESTEN Zeitzone.
+ *
+ *        Sieben seiner Faelle pruefen die Zeitumstellung und stehen als
+ *        feste Unix-Zeitpunkte da - der 25.10. mit seiner doppelten
+ *        Stunde, der 29.03. mit seiner uebersprungenen, der Silvester-
+ *        abend. Auf einem Geraet ohne Sommerzeit ergeben dieselben
+ *        Zeitpunkte andere Ortszeiten, und die sieben Zeilen gehen rot,
+ *        ohne dass am Plugin etwas falsch waere.
+ *
+ *        Gemessen am 04.09.2026 unter PHP 8.4.21, derselbe Quelltext:
+ *
+ *            date.timezone=UTC            7 Fehlschlaege von 170
+ *            date.timezone=Europe/Berlin  0 Fehlschlaege von 170
+ *
+ *        Ein Selbsttest, dessen Ergebnis an der Einstellung des Geraets
+ *        haengt, misst das Geraet und nicht die Rechnung. Er setzt die
+ *        Zeitzone jetzt selbst und stellt sie am Ende zurueck; die
+ *        Kopfzeile nennt beide, damit niemand seinen LoxBerry fuer
+ *        umgestellt haelt. An der Rechnung aendert sich nichts. */
+define('PLAN_FASSUNG', '1.1.7');
 
 /* ==================================================================
  * Runden, das in jeder PHP-Fassung dasselbe ergibt
@@ -1474,6 +1540,90 @@ function plan_test_regel($feld = array())
     ), plan_regel_vorgabe(), $feld);
 }
 
+/**
+ * Liegen in den Schwesterlinien dieselben Kopien dieser Datei?
+ *
+ * Die Regel steht ganz oben im Kopf: wer diese Datei aendert, aendert sie in
+ * allen drei Linien. Bis 1.1.5 stand sie dort als Bitte an den Menschen. Hier
+ * ist das Werkzeug dazu, und es misst am INSTALLIERTEN Zustand - nicht am
+ * Arbeitsordner, denn auf dem Geraet liegt, was zaehlt.
+ *
+ *   $home    die LoxBerry-Wurzel (LBHOMEDIR)
+ *   $eigen   der volle Pfad der eigenen planer.php. Ueblicherweise NICHT
+ *            angeben: __FILE__ ist diese Datei, und das ist immer richtig.
+ *
+ * Der Vorgabewert ist kein Bequemlichkeitsdienst, sondern eine Vorkehrung.
+ * Der erste Entwurf verlangte den Pfad vom Aufrufer, und die erste
+ * Aufrufstelle gab ihn falsch an: aus webfrontend/htmlauth/index.php ergab
+ * dirname(__DIR__) . '/html/planer.php' den Pfad
+ * .../htmlauth/plugins/html/planer.php. Auf dem installierten LoxBerry
+ * liegen html/ und htmlauth/ in GETRENNTEN Baeumen - einen relativen Weg
+ * vom einen in den anderen gibt es nicht. Die Tabelle im Reiter Test zeigte
+ * daraufhin eine einzige Zeile mit dem Ordnernamen "html".
+ *
+ * Drei Aufrufer, drei Gelegenheiten fuer denselben Fehler - also nimmt die
+ * Datei die Frage an sich.
+ *
+ * Rueckgabe: Liste aus array('ordner', 'lage', 'sha'), Lage ist eines von
+ *
+ *   'eigen'        die eigene Datei; ihre Pruefsumme ist der Massstab
+ *   'gleich'       die Schwesterlinie traegt dieselbe Datei
+ *   'verschieden'  sie traegt eine ANDERE - eine der beiden ist aelter
+ *   'fehlt'        sie ist auf diesem LoxBerry nicht installiert
+ *
+ * 'fehlt' ist ausdruecklich KEIN Befund und kein Haken: ueber eine leere
+ * Menge wird nicht geurteilt. Wer die drei Ausgaenge zu zweien zusammenzieht,
+ * bekommt eine Zeile, die bei jedem Einzelplugin gruen leuchtet, ohne je
+ * etwas verglichen zu haben.
+ *
+ * Gesucht wird NICHT nach einer festen Namensliste, sondern nach der Datei:
+ * jeder Ordner unter webfrontend/html/plugins/, in dem eine planer.php
+ * liegt, ist eine Schwesterlinie. Bis 1.1.6 stand hier
+ *
+ *     array('spotpreisawattar', 'spotpreisoctopus', 'spotpreistibber')
+ *
+ * und das war zweimal falsch: installiert wird nach FOLDER, und das ist
+ * 'spotpreis' (aWATTar) beziehungsweise 'octopus'. Die Zeile meldete auf
+ * jeder Anlage zweimal 'fehlt' und verglich nie etwas - eine Pruefung, die
+ * nicht anschlagen kann. Umbenennen war kein Weg: FOLDER geht in die
+ * Plugin-Kennung ein (PluginDB::_calculate_md5 aus author_name, author_email,
+ * NAME und FOLDER), eine Aenderung macht aus dem Upgrade eine zweite,
+ * leere Installation.
+ *
+ * Suchen statt aufzaehlen loest beides: es findet jede Schwesterlinie,
+ * gleich wie ihr Ordner heisst, auch eine vierte, und auch eine
+ * Zweitinstallation unter angehaengten MD5-Zeichen.
+ */
+function plan_pruefsummen($home, $eigen = null)
+{
+    if ($eigen === null) { $eigen = __FILE__; }
+    $out = array();
+    $meine = (is_string($eigen) && is_file($eigen)) ? hash_file('sha256', $eigen) : '';
+    $eigener_ordner = '';
+    if (is_string($eigen) && $eigen !== '') {
+        $eigener_ordner = basename(dirname($eigen));
+    }
+    $out[] = array('ordner' => $eigener_ordner, 'lage' => 'eigen', 'sha' => (string) $meine);
+    if (!is_string($home) || $home === '' || $meine === '') { return $out; }
+    $treffer = glob($home . '/webfrontend/html/plugins/*/planer.php');
+    if (!is_array($treffer)) { return $out; }
+    sort($treffer);
+    foreach ($treffer as $d) {
+        $o = basename(dirname($d));
+        /* Der eigene Ordner wird uebersprungen - sonst vergliche die Zeile
+         * die Datei mit sich selbst und meldete stolz "gleich". Verglichen
+         * wird ueber den ORDNERNAMEN und nicht ueber den Pfad: bei einer
+         * Zweitinstallation heisst der Ordner spotpreistibber_01, und dann
+         * ist die Datei dort eine echte zweite Ablage. */
+        if ($o === $eigener_ordner) { continue; }
+        if (!is_file($d)) { continue; }
+        $s = (string) hash_file('sha256', $d);
+        $out[] = array('ordner' => $o, 'sha' => $s,
+                       'lage' => ($s === $meine) ? 'gleich' : 'verschieden');
+    }
+    return $out;
+}
+
 /** Rueckgabe: array(anzahl, fehl, text) */
 function plan_selbsttest()
 {
@@ -1490,6 +1640,26 @@ function plan_selbsttest()
             $z[] = '       erwartet: ' . json_encode($soll);
         }
     };
+
+    /* GEMESSEN WIRD IN EINER FESTEN ZEITZONE, und zwar in Europe/Berlin.
+     *
+     * Der Grund steht oben bei 1.1.5: sieben Faelle pruefen die
+     * Zeitumstellung und stehen als feste Unix-Zeitpunkte da. Auf einem
+     * Geraet ohne Sommerzeit - UTC ist bei manchen Abbildern der
+     * Auslieferungszustand - ergeben dieselben Zeitpunkte andere
+     * Ortszeiten, und die sieben Zeilen gehen rot, obwohl die Rechnung
+     * stimmt.
+     *
+     * Zurueckgestellt wird am Ende dieser Funktion, unmittelbar vor der
+     * Kopfzeile. Dazwischen gibt es keinen Rueckspruch: die Funktion
+     * rechnet nur und ruft nichts, was von aussen zurueckkommen koennte.
+     *
+     * Was das NICHT ist: eine Aussage darueber, wie das Geraet steht. Die
+     * Kopfzeile nennt deshalb beide Zeitzonen. Wessen LoxBerry auf UTC
+     * steht, dessen Fristen verschieben sich an den Umstellungstagen
+     * wirklich - nur faellt das nicht mehr dem Selbsttest zur Last. */
+    $tz_geraet = date_default_timezone_get();
+    date_default_timezone_set('Europe/Berlin');
 
     /* Ein fester Zeitpunkt: 10.08.2026, 00:00 Uhr Ortszeit. Alle Fristen
      * und Zeitfenster rechnen dagegen. */
@@ -2446,7 +2616,13 @@ function plan_selbsttest()
     $pruefe('Ein krummes Paar wird weiterhin aufgerundet',
         plan_slots_noetig(array('energie' => 7.0, 'leistung' => 2.3), 3600), 4);
 
-    array_unshift($z, sprintf('Planer %s: %d Faelle geprueft, %d Fehlschlaege.',
-        PLAN_FASSUNG, $anzahl, $fehl), '');
+    /* Zurueckstellen, BEVOR die Kopfzeile gebaut wird - sonst traegt sie
+     * die gesetzte Zeitzone als die des Geraets ein und behauptete genau
+     * das, was diese Vorkehrung vermeiden soll. */
+    date_default_timezone_set($tz_geraet);
+
+    array_unshift($z, sprintf(
+        'Planer %s: %d Faelle geprueft, %d Fehlschlaege.', PLAN_FASSUNG, $anzahl, $fehl),
+        sprintf('Gerechnet in Europe/Berlin; dieses Geraet steht auf %s.', $tz_geraet), '');
     return array($anzahl, $fehl, implode("\n", $z));
 }

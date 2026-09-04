@@ -7,6 +7,39 @@ HTTP-Endpunkt als Rückfallebene.
 
 ---
 
+## Fassung 1.1.7 — der Fahrplaner liegt jetzt in drei Linien
+
+An der Rechnung ändert sich **nichts**. `plan_selbsttest()` rechnet dieselben
+170 Fälle nach wie vorher.
+
+`webfrontend/html/planer.php` steckt seit dem 04.09.2026 auch in
+**Spotpreis Tibber**. Der Dateikopf nannte zwei Linien und ist berichtigt; die
+Fassung der Datei steht auf **1.1.7**.
+
+Die Prüfung, die sie mit ihren Schwestern vergleicht, kam in 1.1.6 mit einer
+festen Namensliste (`spotpreisawattar`, `spotpreisoctopus`) — und die traf
+nicht: installiert wird nach `FOLDER`, und das heißt `spotpreis` und
+`octopus`. Sie meldete deshalb auf jeder Anlage zweimal „fehlt" und verglich
+nie etwas. Seit 1.1.7 **sucht** sie die Schwestern, statt sie aufzuzählen: jeder
+Ordner unter `webfrontend/html/plugins/` mit einer `planer.php` zählt. Damit
+findet sie auch eine vierte Linie und eine Zweitinstallation.
+
+Dazu zwei Dinge, die vorher fehlten:
+
+- **Die Regel „diese Datei ist in allen Linien byteweise gleich" hat jetzt ein
+  Werkzeug.** Der Reiter *Test* vergleicht die Prüfsumme mit den
+  Schwesterlinien, soweit sie auf demselben LoxBerry installiert sind — drei
+  Ausgänge: gleich, verschieden, nicht installiert. „Nicht installiert" ist
+  ausdrücklich kein Haken; über eine leere Menge wird nicht geurteilt.
+- **Der Selbsttest hing an der Zeitzone des Geräts.** Sieben seiner Fälle
+  prüfen die Zeitumstellung und stehen als feste Zeitpunkte da. Gemessen unter
+  PHP 8.4.21, derselbe Quelltext: mit `date.timezone=UTC` sieben Fehlschläge
+  von 170, mit `Europe/Berlin` null. Er setzt die Zone jetzt selbst, stellt sie
+  danach zurück und nennt in der Kopfzeile beide — die des Geräts und die, in
+  der gerechnet wurde. Steht Ihr LoxBerry nicht auf einer Zone mit Sommerzeit,
+  sagt der Reiter *Test* das dazu: die Rechnung stimmt, Ihre **Fristen**
+  verschieben sich an den Umstellungstagen aber gegenüber der Uhr an der Wand.
+
 ## Was 1.1.6 behebt
 
 **Wieder nur eine Datei — und wieder dieselbe.**
