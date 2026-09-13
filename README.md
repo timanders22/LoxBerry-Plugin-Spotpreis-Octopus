@@ -7,6 +7,85 @@ HTTP-Endpunkt als Rückfallebene.
 
 ---
 
+## Was 1.1.9 behebt
+
+Zwei Befunde aus der Durchsicht am **13.09.2026**, beide am laufenden
+LoxBerry gemessen, nicht am Schreibtisch. Beide treffen auch die
+Schwesterlinie *Spotpreis aWATTar* und sind dort mit 1.2.24 gleichlautend
+behoben.
+
+### Rang und Preisniveau logen, wenn keine Preise vorlagen
+
+Ohne gültige Preise — kein Vertrag hinterlegt, Abruf gescheitert, Börse
+nicht erreichbar — gingen trotzdem hinaus:
+
+```
+octopus/ok 0        octopus/rank 1      octopus/rank_h 1     octopus/level 2
+```
+
+`RANK = 1` heißt laut Themenliste *„günstigste"*. Eine Loxone-Regel
+„schalten, wenn Rang ≤ 3" schaltet damit, ohne dass ein einziger Preis
+vorliegt. Gemessen am Gerät am 13.09.2026: `ok=0`, `n=0`,
+`fehler=FEHLER_KEIN_KONTO` — und `rank=1`.
+
+Der Grund stand drei Zeilen auseinander in derselben Aufzählung:
+`rankd` hatte für genau diesen Fall schon einen Ersatzwert, `rank` und
+`rank_h` nicht. **Alle vier tragen jetzt −1 für „nicht bekannt"** — die
+Schreibweise, die dieses Plugin bei `fenster_start`, `fenster_in`,
+`co2_minh` und `plan_soc` ohnehin führt. Die Vorlage für Loxone Config
+setzt dafür `MinVal="-1"`; ohne das stünde in der Visualisierung eine 0,
+und 0 wäre bei einem Rang eine Aussage statt einer Lücke.
+
+**Wer eine Regel auf `rank` oder `level` gebaut hat, prüft sie:** bisher
+kam dort im Störfall eine 1 bzw. eine 2, jetzt kommt −1. Die 99, die
+`rankd` bislang im Störfall trug, war nirgends beschrieben und ist
+entfallen.
+
+### Nichts ging zurückbehalten (retained) hinaus
+
+Am Gerät gemessen: unter `octopus/#` lagen **0** zurückbehaltene Themen,
+während andere Linien am selben Broker 19 bis 59 führten. Nach einem
+Neustart des Miniservers oder des Gateways standen die virtuellen Eingänge
+also leer, bis sich der jeweilige Wert das nächste Mal *änderte* — und die
+Sendebremse hält gleiche Werte zurück. Bei einer Einstellung wie
+`plan_budget` kann das beliebig lange dauern.
+
+Der UDP-Weg zum MQTT-Gateway kann das seit jeher: `retain <thema> <wert>`
+statt `publish <thema> <wert>`. Am laufenden Gateway nachgemessen — 30
+Datagramme je Befehlswort, danach `--retained-only`: genau das mit `retain`
+lag im Broker, das mit `publish` nicht.
+
+**12 der 162 Themen gehen jetzt zurückbehalten hinaus**, nach dem
+Hausstandard vom 03.09.2026 (Zustände retained, Messwerte mit Zeitbezug
+nicht, das Lebenszeichen nie):
+
+| zurückbehalten | warum |
+|---|---|
+| `ok`, `demo`, `morgen_ok` | Zustand der Datenlage |
+| `audio`, `push` | Freigaben aus der Konfiguration |
+| `plan_budget`, `plan_budget2` | Einstellungen des Fahrplaners |
+| `fix`, `dyn_monat`, `diff_monat`, `euro_monat`, `shift_jahr` | Kostenvergleich, entsteht einmal im Monat |
+
+Ausdrücklich **nicht**: das Lebenszeichen (`status/ok`, `status/ts`,
+`status/zaehler`) — zurückbehalten stünde dort für immer „läuft"; die
+Schaltsignale `regelN_*` — ein stehengebliebenes 1 ließe einen Verbraucher
+eingeschaltet, und nach einem Neustart ist 0 die sichere Richtung; alle
+Preise, Ränge, Fenster, CO₂-Werte und Stundenprofile — Messwerte mit
+Zeitbezug. Eine **leere Nutzlast** geht immer flüchtig hinaus, denn sie
+löscht ein zurückbehaltenes Thema.
+
+Der Reiter *MQTT* nennt je Thema, ob es zurückbehalten wird; die Spalte
+kommt aus derselben Tabelle, die auch sendet. Der Reiter *Test* hält beide
+gegeneinander und wird rot, wenn die Tabelle ein Thema nennt, das es nicht
+gibt.
+
+### Nebenher
+
+Alle Textdateien dieser Linie führen jetzt **LF** (Hausregel seit
+13.09.2026); die Symbole sind byteweise unverändert.
+
+---
+
 ## Fassung 1.1.7 — der Fahrplaner liegt jetzt in drei Linien
 
 An der Rechnung ändert sich **nichts**. `plan_selbsttest()` rechnet dieselben

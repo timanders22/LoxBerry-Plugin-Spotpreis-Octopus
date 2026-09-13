@@ -1566,13 +1566,19 @@ for ($oc_i = 0; $oc_i < 12; $oc_i++) { ?>
 <h2><?php echo oc_t('MQTT.H_THEMEN'); ?></h2>
 <div class="sm-hilfe"><?php echo str_replace('%P%',
     '<span class="sm-mono">' . oc_e($oc_cfg['mqtt_topic']) . '</span>', oc_t('MQTT.THEMEN_HILFE')); ?></div>
+<div class="sm-hilfe"><?php echo oc_t('MQTT.RETAIN_TEXT'); ?></div>
+<!-- Die Tabelle hat mehr als sechs Spalten nicht - sie bleibt schmal.
+     Die Retain-Spalte kommt aus oc_retain_fuer(), also aus derselben
+     Quelle, die auch sendet: zwei Listen liefen sonst auseinander. -->
 <table class="sm-tbl">
 <tr><th><?php echo oc_t('MQTT.SP_THEMA'); ?></th><th><?php echo oc_t('MQTT.SP_BEDEUTUNG'); ?></th>
-    <th><?php echo oc_t('MQTT.SP_EINHEIT'); ?></th><th><?php echo oc_t('MQTT.SP_AKTUELL'); ?></th></tr>
+    <th><?php echo oc_t('MQTT.SP_EINHEIT'); ?></th><th><?php echo oc_t('MQTT.SP_RETAIN'); ?></th>
+    <th><?php echo oc_t('MQTT.SP_AKTUELL'); ?></th></tr>
 <?php $oc_werte = oc_werte($oc_st); foreach (oc_themen() as $oc_k => $oc_info) { ?>
 <tr><td><span class="sm-mono"><?php echo oc_e($oc_cfg['mqtt_topic'] . '/' . $oc_k); ?></span></td>
     <td><?php echo oc_e(oc_thema_text($oc_info)); ?></td>
     <td><?php echo oc_e($oc_info[1]); ?></td>
+    <td><?php echo oc_e(oc_t(oc_retain_fuer($oc_k) ? 'MQTT.RETAIN_JA' : 'MQTT.RETAIN_NEIN')); ?></td>
     <td><?php echo oc_e(isset($oc_werte[$oc_k]) ? $oc_werte[$oc_k] : ''); ?></td></tr>
 <?php } ?>
 </table>

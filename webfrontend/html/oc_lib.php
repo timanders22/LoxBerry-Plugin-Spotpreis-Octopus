@@ -1795,7 +1795,17 @@ function oc_state($force = false)
     foreach ($wh as $v) { if ($v < $curh) { $rangh++; } }
 
     $ok = ($heute !== null && $heute['n'] > 0);
-    $level = 2;
+
+    /* OHNE GUELTIGE PREISE IST DAS NIVEAU NICHT BEKANNT.
+     *
+     * Bis 1.1.8 stand hier 2 als Anfangswert, und 2 heisst laut
+     * Sprachdatei 'normal'. Am Geraet gemessen (13.09.2026, kein
+     * Octopus-Vertrag, also ok=0 und n=0): octopus/level ging mit 2
+     * hinaus, als sei der Preis gerade normal. -1 heisst 'nicht
+     * bekannt' - dieselbe Schreibweise, die dieses Plugin bei
+     * fenster_start, fenster_in, co2_minh und plan_soc schon
+     * benutzt. */
+    $level = $ok ? 2 : -1;
     if ($ok && $cur <= (float) $cfg['cheap']) { $level = 1; }
     if ($ok && $cur >= (float) $cfg['expensive']) { $level = 3; }
 
@@ -1817,10 +1827,24 @@ function oc_state($force = false)
         'next'        => $next,
         'next_h'      => $nexth,
         'neg'         => $curn < 0 ? 1 : 0,
-        'rank'        => $rang,
-        'rankd'       => count($werte) ? count($werte) + 1 - $rang : 99,
+        /* EIN RANG OHNE PREISE IST KEIN RANG.
+         *
+         * $rang faengt bei 1 an und wird je guenstigerem Wert erhoeht;
+         * bei leerer Liste bleibt er 1 - und 1 heisst laut Sprachdatei
+         * 'guenstigste'. Eine Loxone-Regel 'schalten, wenn Rang <= 3'
+         * schaltet damit, ohne dass ein einziger Preis vorliegt. Am
+         * Geraet gemessen (13.09.2026): octopus/rank 1 und
+         * octopus/rank_h 1 bei octopus/ok 0 und n=0.
+         *
+         * rankd hatte fuer genau diesen Fall schon einen Ersatzwert
+         * (99), rank und rank_h nicht - drei Zeilen auseinander in
+         * derselben Aufzaehlung. Alle drei tragen jetzt -1; die 99 war
+         * nirgends beschrieben und deshalb keine Zusage. -1 ist die
+         * Schreibweise, die dieses Plugin ohnehin fuehrt. */
+        'rank'        => count($werte) ? $rang : -1,
+        'rankd'       => count($werte) ? count($werte) + 1 - $rang : -1,
         'n'           => count($werte),
-        'rank_h'      => $rangh,
+        'rank_h'      => count($wh) ? $rangh : -1,
         'n_h'         => count($wh),
         'level'       => $level,
         'heute'       => $heute !== null ? $heute : oc_tagstats_leer(),
@@ -2557,6 +2581,79 @@ function oc_mqtt_wert_saeubern($v)
  * Preisen stundenlang, und niemand koennte "laeuft noch" von "haengt" oder
  * "ist tot" unterscheiden.
  */
+/**
+ * Welche Themen gehen ZURUECKBEHALTEN (retained) hinaus?
+ *
+ * Hausstandard seit 03.09.2026 (Regeln/07): Zustaende retained, damit
+ * Loxone nach einem Neustart des Miniservers oder des Gateways sofort den
+ * Stand hat; Messwerte mit Zeitbezug nicht, damit kein alter Wert als
+ * aktuell erscheint; das Lebenszeichen nie.
+ *
+ * Bis 1.1.8 ging ALLES fluechtig hinaus. Am Geraet gemessen (13.09.2026):
+ * unter octopus/# lagen 0 zurueckbehaltene Themen, waehrend andere Linien
+ * am selben Broker 19 bis 59 fuehrten. Nach einem Neustart des Miniservers
+ * standen die Eingaenge also leer, bis sich der jeweilige Wert das naechste
+ * Mal AENDERTE - und die Sendebremse haelt gleiche Werte zurueck, das kann
+ * bei einer Einstellung wie plan_budget beliebig lange dauern.
+ *
+ * Der UDP-Weg kann das: `retain <thema> <wert>` statt `publish <thema>
+ * <wert>` (mqttgateway.pl, sub udpin). Am laufenden Gateway nachgemessen -
+ * 30 Datagramme je Befehlswort, danach --retained-only: genau das mit
+ * `retain` lag im Broker, das mit `publish` nicht.
+ *
+ * NICHT in dieser Tabelle stehen mit Absicht:
+ *   status/ok, status/ts, status/zaehler - das Lebenszeichen. Wer es
+ *       zurueckbehaelt, laesst nach einem gestorbenen Cron fuer immer
+ *       "laeuft" im Broker stehen.
+ *   regelN_aktiv und die uebrigen Regelwerte - das sind Schaltsignale fuer
+ *       den laufenden Augenblick. Ein stehengebliebenes 1 liesse einen
+ *       Verbraucher eingeschaltet; nach einem Neustart ist 0 die sichere
+ *       Richtung, und der naechste Minutenlauf setzt den richtigen Wert.
+ *   alle Preise, Raenge, Fenster, CO2-Werte, Stundenprofile und `alter` -
+ *       Messwerte mit Zeitbezug bzw. eine Dauer.
+ *   ann und ptest - sie wechseln allein durch Zeitablauf; ptest lebt fuenf
+ *       Minuten.
+ */
+function oc_retain_liste()
+{
+    return array(
+        /* Zustand der Datenlage. Das Gegenstueck ist das Lebenszeichen:
+         * wer wissen will, ob das Plugin ueberhaupt noch arbeitet, sieht
+         * auf status/ts und alter, nicht auf ok. */
+        'ok'           => 1,
+        'demo'         => 1,
+        'morgen_ok'    => 1,
+        /* Freigaben aus der Konfiguration. */
+        'audio'        => 1,
+        'push'         => 1,
+        /* Einstellungen des Fahrplaners. */
+        'plan_budget'  => 1,
+        'plan_budget2' => 1,
+        /* Kostenvergleich: entsteht einmal im Monat aus der Historie.
+         * Ein Wert, der sich monatlich aendert, ist ein Zustand - ohne
+         * Retain fehlte er nach einem Neustart bis zum Monatswechsel. */
+        'fix'          => 1,
+        'dyn_monat'    => 1,
+        'diff_monat'   => 1,
+        'euro_monat'   => 1,
+        'shift_jahr'   => 1,
+    );
+}
+
+/**
+ * Geht dieses Thema zurueckbehalten hinaus?
+ *
+ * $nutzlast wird mitgegeben, wo sie schon feststeht: eine LEERE Nutzlast
+ * LOESCHT ein zurueckbehaltenes Thema im Broker. Sie geht deshalb immer
+ * als publish hinaus, auch wenn die Tabelle retain sagt.
+ */
+function oc_retain_fuer($thema, $nutzlast = null)
+{
+    if ($nutzlast !== null && (string) $nutzlast === '') { return 0; }
+    $l = oc_retain_liste();
+    return isset($l[(string) $thema]) ? 1 : 0;
+}
+
 function oc_mqtt_publish($st = null, $nur_lebenszeichen = false)
 {
     $cfg = oc_config();
@@ -2610,13 +2707,21 @@ function oc_mqtt_publish($st = null, $nur_lebenszeichen = false)
      *
      * Die Themenliste wird dafuer einmal geholt, nicht je Wert. */
     $info_alle = oc_themen();
+    $behalten = 0;
     foreach ($werte as $k => $v) {
-        $wert = oc_wert_formatieren($k, $v,
-            isset($info_alle[$k]) ? $info_alle[$k] : null);
-        $msg = 'publish ' . $praefix . '/' . $k . ' ' . oc_mqtt_wert_saeubern($wert);
+        $wert = oc_mqtt_wert_saeubern(oc_wert_formatieren($k, $v,
+            isset($info_alle[$k]) ? $info_alle[$k] : null));
+        /* Das Befehlswort entscheidet die Tabelle, nicht der Aufruf -
+         * sonst ginge das Lebenszeichen zurueckbehalten hinaus oder
+         * die Zustaende fluechtig. */
+        $verb = oc_retain_fuer($k, $wert) ? 'retain' : 'publish';
+        if ($verb === 'retain') { $behalten++; }
+        $msg = $verb . ' ' . $praefix . '/' . $k . ' ' . $wert;
         @socket_sendto($s, $msg, strlen($msg), 0, '127.0.0.1', $g['udpport']);
     }
     socket_close($s);
+    oc_log_if_changed('mqttzahl', count($werte) . ' Themen gesendet, davon '
+        . $behalten . ' zurueckbehalten');
     return true;
 }
 
@@ -2857,8 +2962,16 @@ function oc_x($s)
  *
  * Die Grenze steht damit an EINER Stelle - nicht je Vorlagenart neu.
  */
-function oc_thema_grenzen($einheit)
+function oc_thema_grenzen($einheit, $schluessel = '')
 {
+    /* Vier Felder tragen seit 1.1.9 -1 als 'nicht bekannt' und
+     * brauchen deshalb MinVal=-1, obwohl sie einheitenlos sind: ohne
+     * das steht in der Visualisierung eine 0, und 0 waere bei einem
+     * Rang eine Aussage statt einer Luecke. Die uebrigen
+     * einheitenlosen Felder (Merker, Zaehler) bleiben bei 0. */
+    $k = (string) $schluessel;
+    if ($k === 'rank' || $k === 'rankd' || $k === 'rank_h') { return array(-1, 999); }
+    if ($k === 'level') { return array(-1, 3); }
     switch ((string) $einheit) {
         case 'ct/kWh': return array(-100, 200);
         case 'kW':     return array(0, 200);
@@ -2942,7 +3055,7 @@ function oc_vorlage($art = 'mqtt_in')
         $cmds = array();
         foreach (oc_themen() as $k => $info) {
             $flach = strtoupper(oc_thema_flach($k));
-            $g = oc_thema_grenzen(isset($info[1]) ? $info[1] : '');
+            $g = oc_thema_grenzen(isset($info[1]) ? $info[1] : '', $k);
             $cmds[] = array('title' => 'OCTOPUS_' . $flach,
                             'comment' => oc_thema_text($info),
                             'einheit' => isset($info[1]) ? $info[1] : '',
@@ -2960,7 +3073,7 @@ function oc_vorlage($art = 'mqtt_in')
 
     $cmds = array();
     foreach (oc_themen() as $k => $info) {
-        $g = oc_thema_grenzen(isset($info[1]) ? $info[1] : '');
+        $g = oc_thema_grenzen(isset($info[1]) ? $info[1] : '', $k);
         $cmds[] = array(
             // Der Gateway bildet den Titel aus dem Thema und ersetzt dabei
             // den Schraegstrich - siehe oc_thema_flach().

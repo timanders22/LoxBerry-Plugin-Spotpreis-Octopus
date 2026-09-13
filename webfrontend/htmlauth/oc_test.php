@@ -133,6 +133,24 @@ function oc_test_selbst()
                 . ($zuviel ? str_replace('%S%', implode(', ', $zuviel),
                     oc_t('TEST.SCHRANKEN_ZUVIEL')) : ''))));
 
+    /* ---- Die Retain-Tabelle gegen die Themenliste ----
+     *
+     * Die Tabelle in oc_retain_liste() entscheidet je Thema, ob es
+     * zurueckbehalten hinausgeht. Nennt sie einen Namen, den
+     * oc_themen() nicht kennt, wirkt der Eintrag still nicht - und
+     * niemand merkt es, denn gesendet wird trotzdem, nur fluechtig.
+     * Die Zeile nennt die Zahl der angesehenen Stellen mit; eine Null
+     * waere kein 'in Ordnung'. */
+    $oc_rt = array_keys(oc_retain_liste());
+    $oc_th = array_keys(oc_themen());
+    $oc_rt_fremd = array_diff($oc_rt, $oc_th);
+    $h .= oc_zeile(count($oc_rt) > 0 && !$oc_rt_fremd, oc_t('TEST.RETAIN'),
+        (count($oc_rt) > 0 && !$oc_rt_fremd)
+            ? str_replace(array('%N%', '%G%'),
+                array(count($oc_rt), count($oc_th)), oc_t('TEST.RETAIN_OK'))
+            : oc_e(str_replace('%S%', $oc_rt_fremd ? implode(', ', $oc_rt_fremd) : '-',
+                oc_t('TEST.RETAIN_FREMD'))));
+
     /* ---- Der Rundlauf der Sicherung ----
      *
      * Bauen, wieder einlesen, und es muss durchgehen. Das ist der eine
