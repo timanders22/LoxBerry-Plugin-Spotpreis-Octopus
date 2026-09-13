@@ -53,8 +53,18 @@ fi
 
 # Das Token steckt in den Adressen im Miniserver - die Rechte muessen stimmen,
 # der Inhalt bleibt unberuehrt.
-chmod 640 "$CFGDIR/octopus.json" 2>/dev/null
+chmod 600 "$CFGDIR/octopus.json" 2>/dev/null
 chmod 600 "$CFGDIR/zugang.json" 2>/dev/null
+
+# Rechte NACH der Wiederherstellung, nicht davor: "cp -p" oben traegt die
+# Rechte der Sicherung mit und dreht ein frueheres chmod zurueck. In dieser
+# Konfiguration steht das Aktionstoken; wer es lesen kann, kann den Endpunkt
+# abfragen und jedes Formular der Oberflaeche absenden. Hausstandard 0600
+# (Regeln/05, 13.09.2026). Die Zweitschrift traegt dasselbe Geheimnis.
+chmod 600 "$CF" 2>/dev/null
+if [ -f "$BK" ]; then
+    chmod 600 "$BK" 2>/dev/null
+fi
 chown -R loxberry:loxberry "$CFGDIR" "$DATADIR" "$LOGDIR" 2>/dev/null
 
 # Der Zustandsspeicher wird verworfen, damit nach dem Update sofort mit der

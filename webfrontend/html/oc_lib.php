@@ -716,14 +716,34 @@ function oc_config_write($cfg)
             . json_last_error_msg() . ') - der bisherige Stand bleibt unangetastet');
         return false;
     }
-    $vor = $p['config'] . '.neu';
-    if (@file_put_contents($vor, $json) === false) { return false; }
-    @chmod($vor, 0640);
-    if (!@rename($vor, $p['config'])) { return false; }
+    /* RECHTE VOR INHALT. In dieser Datei steht das Aktionstoken. "Schreiben,
+     * dann chmod" liesse sie fuer die Dauer des Schreibens mit den Vorgaben
+     * der umask stehen - bei einem Geheimnis ist das der Unterschied
+     * zwischen "kurz lesbar" und "nie lesbar".
+     *
+     * Bis 1.1.9 stand hier file_put_contents und danach 0640. Der
+     * Hausstandard verlangt 0600, seit dem 13.09.2026 ausdruecklich auch
+     * fuer das Aktionstoken (Regeln/05): wer es lesen kann, kann den
+     * Endpunkt abfragen und - weil das Formularmerkmal daraus abgeleitet
+     * wird - jedes Formular der Oberflaeche absenden. Die Schwesterlinie
+     * aWATTar macht es seit je so; hier war es die Abweichung.
+     *
+     * Die Nebendatei traegt die Prozessnummer, sonst zerlegen zwei
+     * gleichzeitige Schreiber einander. */
+    $vor = $p['config'] . '.neu.' . getmypid();
+    $fh = @fopen($vor, 'c');
+    if ($fh === false) { return false; }
+    @chmod($vor, 0600);
+    if (!@ftruncate($fh, 0) || @fwrite($fh, $json) === false) {
+        @fclose($fh);
+        @unlink($vor);
+        return false;
+    }
+    @fclose($fh);
+    if (!@rename($vor, $p['config'])) { @unlink($vor); return false; }
     /* Die Zweitschrift traegt dasselbe Geheimnis wie die Konfiguration -
      * also auch dieselben Rechte. copy() nimmt sie nicht mit. */
-    @copy($p['config'], $p['backup']);
-    @chmod($p['backup'], 0640);
+    if (@copy($p['config'], $p['backup'])) { @chmod($p['backup'], 0600); }
     oc_weg(oc_tmpdir() . '/state.json');   // Zustand mit neuen Schwellen neu rechnen
     return true;
 }

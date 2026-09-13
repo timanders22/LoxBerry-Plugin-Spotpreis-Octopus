@@ -7,6 +7,47 @@ HTTP-Endpunkt als Rückfallebene.
 
 ---
 
+## Was 1.1.10 behebt
+
+### Die Konfiguration trug das Aktionstoken mit Rechten 0640
+
+Der Hausstandard verlangt seit dem 13.09.2026 für eine Konfiguration, in der
+das Aktionstoken steht, Rechte **0600** — wer es lesen kann, kann den
+Endpunkt abfragen und, weil das Formularmerkmal daraus abgeleitet wird, jedes
+Formular der Oberfläche absenden. Am Gerät gemessen: `octopus.json` **0640**,
+Zweitschrift `octopus.backup.json` ebenfalls 0640, und das Token war gesetzt.
+
+Die Schwesterlinie *Spotpreis aWATTar* machte es von Anfang an richtig; diese
+Linie war die Abweichung. Vier Stellen sind nachgezogen — der Hausstandard
+nennt ausdrücklich, dass es mehr als eine ist:
+
+| Stelle | vorher | jetzt |
+|---|---|---|
+| `oc_lib.php`, Konfiguration | 0640 | **0600** |
+| `oc_lib.php`, Zweitschrift | 0640 | **0600** |
+| `postinstall.sh` | 640 | **600** |
+| `postupgrade.sh` | 640 | **600** |
+
+Dazu zwei Änderungen an der Reihenfolge, beide mit derselben Ursache:
+
+* **Rechte vor Inhalt.** Bisher schrieb `file_put_contents` erst die Datei
+  und setzte danach die Rechte — für die Dauer des Schreibens stand das Token
+  mit den Vorgaben der `umask` da. Jetzt wird die Nebendatei leer angelegt,
+  geschützt und dann gefüllt; sie trägt die Prozessnummer, damit zwei
+  gleichzeitige Schreiber einander nicht zerlegen.
+* **Rechte nach der Wiederherstellung.** In `postinstall.sh` stand der
+  `chmod` *vor* dem `cp -p` aus der Sicherung — und `cp -p` bringt die Rechte
+  der alten Datei mit. Der Schutz wurde also gleich wieder aufgehoben. Jetzt
+  steht er dahinter und erfasst auch die Zweitschrift.
+
+Gemessen, beidseitig geeicht: aus einer bewusst offenen 0666-Ausgangslage
+schreibt die Vorfassung **0640/0640**, diese Fassung **0600/0600**, ohne
+liegengebliebene Nebendateien. Die Blöcke in den Hakenskripten am Gerät
+geprüft: 666/664 → **600/600**; ohne den Block bleibt es bei 666, und eine
+fehlende Zweitschrift bricht den Installer nicht (`rc=0`).
+
+---
+
 ## Was 1.1.9 behebt
 
 Zwei Befunde aus der Durchsicht am **13.09.2026**, beide am laufenden
