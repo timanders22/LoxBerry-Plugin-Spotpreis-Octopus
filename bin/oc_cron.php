@@ -254,25 +254,16 @@ if ((int) date('j') === 1 && (int) date('G') >= 8 && !is_file($oc_marke)) {
  * es dreht ihn nicht selbst. Sonst stuende in der Meldung die Nummer des
  * vorigen Durchgangs. */
 oc_zaehler();
-$werte = oc_werte($st);
-$fuer_sig = array();
-foreach ($werte as $k => $v) {
-    if (strpos((string) $k, 'status/') === 0) { continue; }
-    $fuer_sig[$k] = $v;
-}
-$sig = json_encode($fuer_sig);
-$sigf = oc_tmpdir() . '/mqtt_sig.txt';
+/* Seit 1.1.11 keine Signatur mehr: oc_mqtt_publish() schickt nur die
+ * geaenderten Themen und immer das Lebenszeichen (Merker mqtt_letzte.json).
+ * Den vollen Satz gibt es halbstuendlich - ein neu gestarteter Broker
+ * kennt die zurueckbehaltenen Werte sonst nicht mehr (Regeln/07). */
 $beat = oc_tmpdir() . '/mqtt_beat';
-$alt = is_file($sigf) ? (string) @file_get_contents($sigf) : '';
-if ($sig !== $alt || !is_file($beat) || time() - filemtime($beat) > 1800) {
-    if (oc_mqtt_publish($st)) {
-        @file_put_contents($sigf, $sig);
-        @touch($beat);
-    }
-} else {
-    // Nichts Neues - aber das Lebenszeichen geht trotzdem hinaus.
-    oc_mqtt_publish(null, true);
+$voll = !is_file($beat) || time() - filemtime($beat) > 1800;
+if (oc_mqtt_publish($st, false, $voll) && $voll) {
+    @touch($beat);
 }
+@unlink(oc_tmpdir() . '/mqtt_sig.txt');   // Rest bis 1.1.10
 
 /* ---- Die Glocke des LoxBerry ---- */
 oc_notify_pruefen($st);

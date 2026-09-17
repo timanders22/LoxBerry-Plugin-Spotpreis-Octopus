@@ -7,6 +7,85 @@ HTTP-Endpunkt als Rückfallebene.
 
 ---
 
+## Was 1.1.11 behebt
+
+Gemessen am 17.09.2026 gegen die Hausregeln vom selben Tag, am Gerät
+(installiert 1.1.10, ohne Octopus-Vertrag) und auf dem Prüfstand. Jeder
+Punkt ist zweimal gemessen: an 1.1.11 vor der Änderung rot, danach grün,
+unter PHP 7.4 und 8.4.
+
+### Eine beschädigte Konfiguration wurde still zur Werkseinstellung
+
+Die Selbstheilung kannte nur eine **leere** `octopus.json`. War die Datei da,
+ihr JSON aber beschädigt (abgebrochenes Schreiben, volles Dateisystem), galten
+still die Vorgaben — mit **leerem Aktionstoken**, obwohl daneben eine heile
+Zweitschrift lag. Kein Wort im Protokoll. Das nächste Speichern hätte die
+Werkseinstellung über die Sicherung geschrieben und ein neues Token erzeugt;
+jede Adresse im Miniserver wäre ungültig geworden.
+
+Jetzt wird die beschädigte Datei als `octopus.json.kaputt.<Zeitstempel>`
+beiseitegelegt, die Zweitschrift zurückgeholt, und beides steht im
+Protokoll. Der Reiter *Test* hat eine neue Zeile „Konfigurationsdatei heil“:
+sie nennt den Zustand, wie er **vor** der Selbstheilung war (heil, noch keine
+Datei, aus der Zweitschrift geholt, beschädigt) und dazu fehlende und fremde
+Schlüssel. Fremde Schlüssel bleiben stehen.
+
+### Ohne Preise antwortete der Endpunkt mit 200 und lauter Nullen
+
+Am Gerät, ohne Vertrag: `?aktion=status` lieferte **HTTP 200** mit
+`OCTOPUS;OK=0;CUR=0.000;…`. In Loxone sieht das aus wie gültige Werte, und
+eine Null ist ein Preis. Jetzt antwortet der Endpunkt mit **HTTP 503** und
+nennt den Grund:
+
+```
+OCTOPUS;OK=0;GRUND=FEHLER_KEIN_KONTO;STATUS_TS=…;STATUS_ZAEHLER=…
+```
+
+Loxone behält dann die letzten Werte und schaltet den Onlinestatus des
+virtuellen Eingangs ab — der Ausfall ist sichtbar. `?aktion=json` antwortet
+ebenso mit 503, `?aktion=debug` bleibt bei 200. Liegen Preise vor, ändert
+sich nichts. Die Endpunktprobe im Reiter *Test* kennt die neue Antwort.
+
+### MQTT schickte bei jeder Änderung alle Themen
+
+Eine einzige Änderung — gemessen: Sprachansage eingeschaltet — schickte den
+vollen Satz von **90 Themen**. Schlimmer: in der Signatur stand `alter` (Alter
+der Preisdaten in Minuten). Jedes Mal, wenn der Zustand neu gerechnet wurde,
+etwa alle vier Minuten, gingen deshalb wieder alle 90 hinaus.
+
+Jetzt gehen nur die Themen hinaus, deren Wert sich geändert hat; der volle
+Satz halbstündlich und über den Knopf im Reiter *Test*. `status/…` und
+`alter` gehen bei jedem Lauf mit, zählen aber nicht als Änderung. Gemessen:
+ein Lauf ohne Änderung schickt **4** statt 90 Nachrichten, eine Änderung **5**.
+Der Merker heißt `mqtt_letzte.json`; `mqtt_sig.txt` wird beim ersten Lauf
+entfernt.
+
+### Die Loxone-Vorlage trug Sätze als Kachelnamen
+
+Der Kommentar eines Befehls wird in Loxone Config zum Anzeigenamen. Bisher
+standen dort die Erklärtexte der Oberfläche — bis zu 95 Zeichen. Jetzt kurze
+Namen mit Vorsatz `Octopus:` (höchstens 39 Zeichen; bei Schaltregeln die
+ersten 12 Zeichen des Regelnamens). **Titel und Suchtexte sind byteweise
+unverändert** — ein erneuter Import legt keine neuen Bausteine an, schon
+importierte behalten ihren Namen. Geprüft gegen die Anzeigenamen der Anlage:
+keine Überschneidung.
+
+### Nebenher
+
+* Die Einzelrechnung der Schaltregeln von 0.9.1 (`oc_regel_werte()` samt zwei
+  Helfern, 124 Zeilen) war seit dem Fahrplaner nirgends mehr aufgerufen; der
+  Kommentar, der Reiter *Test* stelle sie zum Vergleich daneben, stimmte
+  nicht. Entfernt.
+* `.sm-pre` stand im Vorlagenblock mit einem Zusatz; die Vorlagenzeile ist
+  wieder wortgetreu, der Zusatz steht im eigenen Block.
+
+### Nicht gemessen
+
+Wie ein Miniserver mit HTTP-Abfrage auf die 503-Antwort reagiert, und die
+Selbstheilung am Gerät — beides nur am Prüfstand.
+
+---
+
 ## Was 1.1.10 behebt
 
 ### Die Konfiguration trug das Aktionstoken mit Rechten 0640

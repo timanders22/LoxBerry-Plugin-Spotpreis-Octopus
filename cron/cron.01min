@@ -4,7 +4,7 @@
 # Der Preisabruf selbst laeuft nur alle 15 Minuten (Cache), die Ansage und
 # das Meldefenster brauchen aber Minutentakt.
 #
-# REPLACELBPBINDIR wird bei der Installation durch den bin-Pfad des Plugins
-# ersetzt. Das Arbeitsskript liegt bewusst NICHT im Webbereich - dort waere
+# Den bin-Pfad des Plugins setzt der Installer in der Befehlszeile ein.
+# Das Arbeitsskript liegt bewusst NICHT im Webbereich - dort waere
 # es ohne Token ueber HTTP erreichbar.
 php "REPLACELBPBINDIR/oc_cron.php" >/dev/null 2>&1

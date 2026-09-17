@@ -740,7 +740,7 @@ if ($oc_rahmen) {
 .sm-mono { font-family: Consolas, "Courier New", monospace; background: #f0f0f0;
     padding: 1px 4px; border-radius: 3px; font-size: 0.94em; word-break: break-all; }
 .sm-pre { background: #f4f4f4; border: 1px solid #ccc; padding: 10px; font-size: 0.85em;
-    overflow: auto; margin: 8px 0; white-space: pre-wrap; }
+    overflow: auto; margin: 8px 0; }
 .sm-knopfreihe { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0 4px; align-items: stretch; }
 .sm-knopfreihe form { margin: 0; display: flex; }
 .sm-wrap .sm-knopfreihe .sm-btn, .sm-wrap a.sm-btn, .sm-wrap button.sm-btn {
@@ -815,6 +815,10 @@ if ($oc_rahmen) {
     background-repeat: no-repeat; background-position: right 10px center;
     padding-right: 32px; cursor: pointer; }
 .sm-tbl select { padding-right: 28px; background-position: right 7px center; }
+/* Plugin-eigener Zusatz zur Vorlagenregel .sm-pre: Endpunktantworten und
+   Adressen umbrechen, statt aus dem Kasten zu laufen. Bis 1.1.10 stand das
+   IN der Vorlagenzeile - die ist wortgetreu zu halten (CLAUDE.md, Kern 9). */
+.sm-pre { white-space: pre-wrap; }
 .sm-stunden { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; }
 .sm-stunden label { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap;
     background: #f5f5f5; border: 1px solid #ddd; border-radius: 6px; padding: 5px 9px;

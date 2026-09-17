@@ -253,11 +253,10 @@ if ($aktion === 'ptest') {
      * zum halbstuendlichen Lebenszeichen. Der Sinn des Knopfes ist, dass
      * es in Loxone SOFORT blinkt.
      *
-     * Die Signaturdatei wird dabei verworfen, damit der naechste
-     * Cron-Lauf den Merker auch wieder auf 0 meldet - sonst bliebe die
-     * Eins stehen, bis sich sonst etwas aendert. */
-    oc_weg(oc_tmpdir() . '/mqtt_sig.txt');
-    oc_mqtt_publish();
+     * Seit 1.1.11 geht dabei nur die Aenderung hinaus (ptest) und das
+     * Lebenszeichen. Das Zuruecksetzen auf 0 meldet der naechste
+     * Cron-Lauf von selbst: der Merker mqtt_letzte.json kennt die Eins. */
+    oc_mqtt_publish();   // nur die Aenderung (ptest) und das Lebenszeichen
     oc_log('Test-Pushnachricht angefordert (ptest=1 fuer 5 Minuten), sofort per MQTT gemeldet');
     oc_ende(200, 'PTEST;OK=1;DAUER=300;GESPERRT=0');
 }
@@ -290,6 +289,29 @@ if ($erzwungen && !oc_sperre_frei('refresh', 60)) {
     $gesperrt = 1;
 }
 $st = oc_state($erzwungen);
+/* OHNE PREISE: HTTP 503 (Regeln/07, "Faellt die Quelle ganz aus ...").
+ *
+ * Bis 1.1.10 kam hier HTTP 200 mit OCTOPUS;OK=0 und lauter Nullen. In
+ * Loxone sieht das aus wie gueltige Werte - der Behaelter bleibt online,
+ * und eine Null ist ein Preis. Mit 503 behaelt Loxone die letzten Werte und
+ * schaltet den Onlinestatus ab: der Ausfall ist sichtbar. Das gilt auch vor
+ * dem ersten Abruf (kein Vertrag, keine Zugangsdaten). Die Zeile nennt den
+ * Grund und traegt das Lebenszeichen, damit der Mensch sieht, dass der Cron
+ * laeuft. ?aktion=debug bleibt bei 200 - es ist fuer den Menschen da. */
+if (empty($st['ok']) && $aktion !== 'debug') {
+    $oc_grund = (string) $st['fehler'] !== '' ? (string) $st['fehler'] : 'KEINE_PREISE';
+    http_response_code(503);
+    if ($aktion === 'json') {
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode(array('ok' => 0, 'grund' => $oc_grund, 'ts' => time(),
+            'zaehler' => oc_zaehler_stand()), JSON_UNESCAPED_SLASHES) . "\n";
+        exit;
+    }
+    header('Content-Type: text/plain; charset=utf-8');
+    echo 'OCTOPUS;OK=0;GRUND=' . oc_mqtt_wert_saeubern($oc_grund) . ';STATUS_TS=' . time()
+        . ';STATUS_ZAEHLER=' . oc_zaehler_stand() . "\n";
+    exit;
+}
 
 /* ---------- JSON ---------- */
 if ($aktion === 'json') {

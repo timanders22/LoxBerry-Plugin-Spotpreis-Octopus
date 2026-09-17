@@ -243,7 +243,7 @@ function oc_vorgaben()
         'window'        => 3,      // Laenge des gesuchten guenstigsten Fensters in Stunden
         // Schaltregeln (ab 0.9.1): je Regel EIN fertiges 0/1-Signal. Bis 0.9.0
         // lieferte das Plugin nur Zahlen - Startzeit, Minuten bis dahin,
-        // Durchschnittspreis. Siehe oc_regel_werte().
+        // Durchschnittspreis. Gerechnet wird seit 1.0.0 im Fahrplaner (oc_regeln()).
         'regeln'        => array(),
         // Stundenprofil fuer den Spot Price Optimizer von Loxone:
         //   aus | absolut (PH00-PH23) | relativ (PR00-PR23) | beides
@@ -397,6 +397,58 @@ function oc_nur_lesen($setzen = null)
 }
 
 /**
+ * Die Lage der Konfigurationsdatei, wie sie VOR jeder Selbstheilung war
+ * (Regeln/05: eine Zeile, die den Zustand meldet, merkt ihn sich, bevor die
+ * Selbstheilung ihn beseitigt). Der erste Aufruf von oc_config() heilt; wer
+ * danach nachsieht, saehe eine heile Datei. Der zuerst festgestellte Zustand
+ * gilt deshalb fuer die Dauer des Prozesses.
+ */
+function oc_konfig_lage_merken($lage = null)
+{
+    static $erste = null;
+    if ($lage !== null && $erste === null) { $erste = (string) $lage; }
+    return $erste;
+}
+
+/** 'ok' | 'vorgabe' | 'zweitschrift' | 'kaputt' - jetzt, ohne Gedaechtnis. */
+function oc_konfig_lage_jetzt()
+{
+    $p = oc_paths();
+    $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
+    if ($roh === '' || $roh === '{}') {
+        return is_file($p['backup']) ? 'zweitschrift' : 'vorgabe';
+    }
+    return is_array(json_decode($roh, true)) ? 'ok' : 'kaputt';
+}
+
+/** Die Lage beim ersten Lesen in diesem Prozess. */
+function oc_konfig_lage()
+{
+    $erste = oc_konfig_lage_merken();
+    return $erste !== null ? $erste : oc_konfig_lage_jetzt();
+}
+
+/**
+ * Fehlende und fremde Schluessel der Datei (Regeln/05: fremde werden
+ * GENANNT und stehen gelassen). array(fehlend, fremd) oder null, wenn die
+ * Datei nicht lesbar ist. Schluessel mit "_" (lesbarer Kopf) zaehlen nicht.
+ */
+function oc_konfig_schluessel()
+{
+    $p = oc_paths();
+    if (!is_file($p['config'])) { return null; }
+    $d = json_decode((string) @file_get_contents($p['config']), true);
+    if (!is_array($d)) { return null; }
+    $vorg = oc_vorgaben();
+    $fehlend = array_values(array_diff(array_keys($vorg), array_keys($d)));
+    $fremd = array();
+    foreach (array_keys($d) as $k) {
+        if (!array_key_exists($k, $vorg) && !($k !== '' && $k[0] === '_')) { $fremd[] = (string) $k; }
+    }
+    return array($fehlend, $fremd);
+}
+
+/**
  * Konfiguration lesen.
  *
  * $heilen = false liest NUR; ohne Angabe entscheidet oc_nur_lesen(). Das
@@ -424,8 +476,28 @@ function oc_config($heilen = null)
 {
     if ($heilen === null) { $heilen = !oc_nur_lesen(); }
     $p = oc_paths();
-    // Selbstheilung: fehlende oder leere Konfiguration aus der Sicherung holen
+    oc_konfig_lage_merken(oc_konfig_lage_jetzt());
+    /* Selbstheilung: fehlende, leere ODER BESCHAEDIGTE Konfiguration aus
+     * der Sicherung holen.
+     *
+     * Bis 1.1.10 kannte diese Stelle nur "leer" und "{}". Eine Datei mit
+     * kaputtem JSON fiel durch: json_decode gab null, daraus wurde ein
+     * leeres Feld, die Vorgaben fuellten es auf - mit LEEREM Aktionstoken,
+     * obwohl eine heile Zweitschrift daneben lag. Gemessen am Pruefstand
+     * (kaputt_messen.py): Token leer, nichts beiseitegelegt, kein Wort im
+     * Protokoll. Das naechste Speichern haette die Werkseinstellung ueber
+     * die Sicherung geschrieben und ein neues Token erzeugt; jede Adresse
+     * im Miniserver waere ungueltig geworden. Dieselbe Klasse hat aWATTar
+     * in 1.2.20 behoben. */
     $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
+    $oc_kaputt = ($roh !== '' && $roh !== '{}' && !is_array(json_decode($roh, true)));
+    if ($heilen && $oc_kaputt) {
+        $oc_weg = $p['config'] . '.kaputt.' . date('YmdHis');
+        if (@rename($p['config'], $oc_weg)) {
+            oc_log('Konfiguration war beschaedigt und wurde beiseitegelegt: ' . basename($oc_weg));
+            $roh = '';
+        }
+    }
     if ($heilen && ($roh === '' || $roh === '{}') && is_file($p['backup'])) {
         /* is_dir() VOR mkdir(). Das @ genuegt nicht: ist ein eigener
          * Fehlerbehandler gesetzt - der Hauspruefstand tut das -, wird er
@@ -434,9 +506,13 @@ function oc_config($heilen = null)
         if (!is_dir(dirname($p['config']))) {
             @mkdir(dirname($p['config']), 0775, true);
         }
-        @copy($p['backup'], $p['config']);
+        if (@copy($p['backup'], $p['config'])) {
+            // Die Zweitschrift traegt das Aktionstoken - dieselben Rechte.
+            @chmod($p['config'], 0600);
+            if ($oc_kaputt) { oc_log('Konfiguration aus der Sicherung zurueckgeholt.'); }
+        }
         $roh = trim((string) @file_get_contents($p['config']));
-    } elseif (!$heilen && ($roh === '' || $roh === '{}') && is_file($p['backup'])) {
+    } elseif (!$heilen && ($roh === '' || $roh === '{}' || $oc_kaputt) && is_file($p['backup'])) {
         /* Nur lesen: die Sicherung wird verwendet, aber NICHT zurueck-
          * geschrieben. Sonst antwortete der Endpunkt einem berechtigten
          * Aufrufer mit Vorgabewerten, obwohl eine gueltige Sicherung
@@ -1323,130 +1399,6 @@ function oc_regel_vorgabe()
     ), plan_regel_vorgabe());
 }
 
-/** Liegt die Stunde $h im Zeitfenster? von == bis bedeutet: ganzer Tag. */
-function oc_in_zeitfenster($h, $von, $bis)
-{
-    $h = (int) $h; $von = (int) $von; $bis = (int) $bis;
-    if ($von === $bis) { return true; }
-    if ($von < $bis) { return $h >= $von && $h < $bis; }
-    return $h >= $von || $h < $bis;   // ueber Mitternacht, z. B. 22 bis 6
-}
-
-/** Viertelstunden, die fuer eine Regel in Frage kommen. ts => ct. */
-function oc_regel_kandidaten($r, $slots, $start)
-{
-    $ende = $start + max(1, (int) $r['horizont']) * 3600;
-    $out = array();
-    foreach ($slots as $ts => $s) {
-        if ($ts < $start || $ts >= $ende) { continue; }
-        if (!oc_in_zeitfenster((int) date('G', $ts), $r['von'], $r['bis'])) { continue; }
-        $out[$ts] = (float) $s['ct'];
-    }
-    ksort($out);
-    return $out;
-}
-
-/**
- * Eine Regel auswerten.
- * Rueckgabe: aktiv (0/1), in (Minuten bis zum naechsten Treffer, -1 = keiner),
- * rest (verbleibende Minuten am Stueck), ct (Schnitt der Treffer),
- * start (Startstunde), startmin (Startminute), grund.
- */
-function oc_regel_werte($r, $slots, $st)
-{
-    $leer = array('aktiv' => 0, 'in' => -1, 'rest' => 0, 'ct' => 0.0,
-                  'start' => -1, 'startmin' => 0, 'grund' => 'aus');
-    if (empty($r['aktiv'])) { return $leer; }
-    /* Die Regelart 'scheiben' gibt es erst seit 1.1.0 und nur im Planer.
-     * Diese Funktion ist die Rechnung von 0.9.1, die der Reiter Test zum
-     * Vergleich daneben stellt - sie KANN dazu nichts sagen. Ein stiller
-     * Rueckfall auf 'mittel' waere eine Falschaussage; also sagt sie es. */
-    if ((string) $r['art'] === 'scheiben') {
-        return array_merge($leer, array('grund' => 'nicht_vergleichbar'));
-    }
-    $jetzt = (int) $st['slotstart'];
-    $kand = oc_regel_kandidaten($r, $slots, $jetzt);
-    $treffer = array();
-
-    if ($r['art'] === 'fenster') {
-        // N Stunden am Stueck = N*4 luekenlose Viertelstunden.
-        $ks = array_keys($kand);
-        $len = min(max(1, (int) $r['n']) * 4, count($ks));
-        $best = null;
-        for ($i = 0; $len > 0 && $i + $len <= count($ks); $i++) {
-            if ($ks[$i + $len - 1] - $ks[$i] !== ($len - 1) * 900) { continue; }
-            $s = 0.0;
-            for ($j = 0; $j < $len; $j++) { $s += $kand[$ks[$i + $j]]; }
-            if ($best === null || $s / $len < $best[1]) { $best = array($i, $s / $len); }
-        }
-        if ($best !== null) {
-            for ($j = 0; $j < $len; $j++) { $treffer[] = $ks[$best[0] + $j]; }
-        }
-    } elseif ($r['art'] === 'stunden') {
-        // Volle Stunden mitteln, die N guenstigsten nehmen, dann alle
-        // Viertelstunden dieser Stunden als Treffer melden.
-        $std = array();
-        foreach ($kand as $ts => $ct) {
-            $h = $ts - ($ts % 3600);
-            if (!isset($std[$h])) { $std[$h] = array(0.0, 0); }
-            $std[$h][0] += $ct;
-            $std[$h][1]++;
-        }
-        $mittel = array();
-        foreach ($std as $h => $v) {
-            // Angebrochene Stunden nicht bewerten - sie waeren kuenstlich
-            // guenstig oder teuer, je nachdem welche Viertel fehlen.
-            if ($v[1] === 4) { $mittel[$h] = $v[0] / 4; }
-        }
-        asort($mittel);
-        $gewaehlt = array_slice(array_keys($mittel), 0, max(1, (int) $r['n']));
-        foreach ($kand as $ts => $ct) {
-            if (in_array($ts - ($ts % 3600), $gewaehlt, true)) { $treffer[] = $ts; }
-        }
-        sort($treffer);
-    } else {
-        if ($r['art'] === 'schwelle') {
-            $grenze = (float) $r['schwelle'];
-        } else {
-            $m = (float) $st['heute']['avg'];
-            if ($m <= 0 && $kand) { $m = array_sum($kand) / count($kand); }
-            $grenze = round($m * (1 - max(0, min(90, (int) $r['prozent'])) / 100), 3);
-        }
-        foreach ($kand as $ts => $ct) {
-            if ($ct <= $grenze) { $treffer[] = $ts; }
-        }
-    }
-
-    $erg = $leer;
-    if ($treffer) {
-        $erg['ct'] = round(array_sum(array_intersect_key($kand, array_flip($treffer))) / count($treffer), 3);
-        $erg['aktiv'] = in_array($jetzt, $treffer, true) ? 1 : 0;
-        foreach ($treffer as $ts) {
-            if ($ts >= $jetzt) {
-                $erg['start'] = (int) date('G', $ts);
-                $erg['startmin'] = (int) date('i', $ts);
-                $erg['in'] = (int) round(($ts - $jetzt) / 60);
-                break;
-            }
-        }
-        if ($erg['aktiv']) {
-            $rest = 0;
-            for ($ts = $jetzt; in_array($ts, $treffer, true); $ts += 900) { $rest += 15; }
-            $erg['rest'] = $rest;
-        }
-        $erg['grund'] = $erg['aktiv'] ? $r['art'] : 'wartet';
-    }
-
-    // Negativer Preis sticht - wer dann nicht laedt, verschenkt Geld.
-    if (!empty($r['neg']) && !empty($st['neg'])) {
-        $erg['aktiv'] = 1;
-        $erg['in'] = 0;
-        $erg['rest'] = max(15, (int) $erg['rest']);
-        $erg['grund'] = 'negativ';
-    }
-    return $erg;
-}
-
 /* ==================================================================
  * Fremde Auskuenfte fuer den Fahrplaner
  *
@@ -1588,10 +1540,12 @@ function oc_sperre_zahl($grund)
 /**
  * Alle Regeln auswerten - seit 1.0.0 ueber den gemeinsamen Fahrplaner.
  *
- * oc_regel_werte() darueber bleibt unveraendert stehen: der Reiter Test
- * zeigt damit die alte und die neue Rechnung nebeneinander. Der Planer
- * bringt drei Dinge dazu, die eine einzelne Regel nicht wissen kann - die
- * Frist, das gemeinsame Leistungsbudget und die PV-Prognose.
+ * Die Einzelrechnung von 0.9.1 (oc_regel_werte() samt zwei Helfern) ist in
+ * 1.1.11 entfernt: sie wurde seit dem Fahrplaner nirgends mehr aufgerufen,
+ * und der Satz, der Reiter Test stelle sie zum Vergleich daneben, stimmte
+ * nicht (tote_helfer.py). Der Planer bringt drei Dinge dazu, die eine
+ * einzelne Regel nicht wissen kann - die Frist, das gemeinsame
+ * Leistungsbudget und die PV-Prognose.
  *
  * 'in' und 'rest' zaehlen hier wie bisher in MINUTEN; der Planer rechnet
  * ohnehin in Minuten, es ist also nichts umzurechnen.
@@ -2482,6 +2436,28 @@ function oc_thema_text($info)
     return $t;
 }
 
+/**
+ * Kachelname eines Themas fuer die Loxone-Vorlage (Regeln/07: der Comment
+ * wird zum Anzeigenamen und bleibt kurz). Eigene Texte LOXNAME.* - der
+ * Abschnitt KACHEL.* beschriftet schon die Statuskacheln der Oberflaeche,
+ * und THEMA.* bleibt die Erklaerung dort. Fehlt ein LOXNAME-Text, gilt der
+ * THEMA-Text. Bei Schaltregeln steht der Regelname (hoechstens 12 Zeichen)
+ * an Stelle von "Regel N".
+ */
+function oc_kachel_text($info)
+{
+    $s = substr((string) $info[0], 6);
+    $roh = oc_t('LOXNAME.' . $s);
+    if ($roh === 'LOXNAME.' . $s) { return oc_thema_text($info); }
+    if (strpos($s, 'REGEL_') === 0 && isset($info[2])) {
+        $name = (isset($info[3]) && preg_match('/^ \((.*)\)$/su', (string) $info[3], $m)) ? trim($m[1]) : '';
+        $wer = $name !== '' ? preg_replace('/^(.{0,12}).*$/su', '$1', $name)
+                            : sprintf(oc_t('LOXNAME.REGEL'), (int) $info[2]);
+        return sprintf($roh, $wer);
+    }
+    return isset($info[2]) ? sprintf($roh, (int) $info[2]) : $roh;
+}
+
 /** Werte zu den Themen. */
 function oc_werte($st = null)
 {
@@ -2674,7 +2650,29 @@ function oc_retain_fuer($thema, $nutzlast = null)
     return isset($l[(string) $thema]) ? 1 : 0;
 }
 
-function oc_mqtt_publish($st = null, $nur_lebenszeichen = false)
+/** Wo der Merker der zuletzt gesendeten Werte liegt. */
+function oc_mqtt_merker()
+{
+    return oc_tmpdir() . '/mqtt_letzte.json';
+}
+
+/**
+ * Werte veroeffentlichen - NUR DIE GEAENDERTEN, dazu immer das Lebenszeichen.
+ *
+ * Bis 1.1.10 ging bei jeder Aenderung der Signatur der volle Satz hinaus:
+ * gemessen (mqtt_diff_messen.py) schickte eine einzige Aenderung - audio
+ * eingeschaltet - alle 90 Themen. Regeln/07: "nur Aenderungen und den
+ * vollen Satz in grobem Takt". Am Geraet steht die Warteschlange des
+ * Gateway-UDP-Eingangs regelmaessig ueber 200 kB; jeder Stoss verschlechtert
+ * das fuer alle Plugins.
+ *
+ * $erzwingen = true schickt alles (halbstuendlich aus dem Cron, und der
+ * Knopf im Reiter Test). Der Merker wird NUR fortgeschrieben, wenn wirklich
+ * gesendet wurde - sonst fehlten Felder, die tagelang gleich stehen, nach
+ * einem Lauf ohne UDP-Port dauerhaft. Verglichen wird der FORMATIERTE
+ * Wert als Zeichenkette (aus dem Merker kommt er ueber json_decode zurueck).
+ */
+function oc_mqtt_publish($st = null, $nur_lebenszeichen = false, $erzwingen = false)
 {
     $cfg = oc_config();
     if (empty($cfg['mqtt_enabled'])) { return false; }
@@ -2727,22 +2725,48 @@ function oc_mqtt_publish($st = null, $nur_lebenszeichen = false)
      *
      * Die Themenliste wird dafuer einmal geholt, nicht je Wert. */
     $info_alle = oc_themen();
-    $behalten = 0;
+    $formatiert = array();
     foreach ($werte as $k => $v) {
-        $wert = oc_mqtt_wert_saeubern(oc_wert_formatieren($k, $v,
+        $formatiert[$k] = oc_mqtt_wert_saeubern(oc_wert_formatieren($k, $v,
             isset($info_alle[$k]) ? $info_alle[$k] : null));
+    }
+    $merken = null;
+    if (!$nur_lebenszeichen) {
+        $merken = array();
+        foreach ($formatiert as $k => $w) {
+            /* 'alter' zaehlt Minuten seit dem Abruf - wie das Lebenszeichen
+             * geht es jeden Lauf mit und ist keine Aenderung (Regeln/07:
+             * ALTER in der Signatur macht die Bremse wirkungslos; gemessen
+             * bis 1.1.10: jede Neuberechnung des Zustands = 90 Themen). */
+            if (strpos((string) $k, 'status/') !== 0 && $k !== 'alter') { $merken[$k] = (string) $w; }
+        }
+        $vorher = array();
+        if (!$erzwingen && is_file(oc_mqtt_merker())) {
+            $d = json_decode((string) @file_get_contents(oc_mqtt_merker()), true);
+            if (is_array($d)) { $vorher = $d; }
+        }
+        foreach ($merken as $k => $w) {
+            if (array_key_exists($k, $vorher) && (string) $vorher[$k] === $w) { unset($formatiert[$k]); }
+        }
+    }
+    $behalten = 0;
+    $gesendet = 0;
+    foreach ($formatiert as $k => $wert) {
         /* Das Befehlswort entscheidet die Tabelle, nicht der Aufruf -
          * sonst ginge das Lebenszeichen zurueckbehalten hinaus oder
          * die Zustaende fluechtig. */
         $verb = oc_retain_fuer($k, $wert) ? 'retain' : 'publish';
         if ($verb === 'retain') { $behalten++; }
         $msg = $verb . ' ' . $praefix . '/' . $k . ' ' . $wert;
-        @socket_sendto($s, $msg, strlen($msg), 0, '127.0.0.1', $g['udpport']);
+        if (@socket_sendto($s, $msg, strlen($msg), 0, '127.0.0.1', $g['udpport']) !== false) { $gesendet++; }
     }
     socket_close($s);
-    oc_log_if_changed('mqttzahl', count($werte) . ' Themen gesendet, davon '
+    if ($merken !== null && $gesendet > 0) {
+        @file_put_contents(oc_mqtt_merker(), json_encode($merken));
+    }
+    oc_log_if_changed('mqttzahl', $gesendet . ' Themen gesendet, davon '
         . $behalten . ' zurueckbehalten');
-    return true;
+    return $gesendet > 0;
 }
 
 /* ==================================================================
@@ -3077,7 +3101,7 @@ function oc_vorlage($art = 'mqtt_in')
             $flach = strtoupper(oc_thema_flach($k));
             $g = oc_thema_grenzen(isset($info[1]) ? $info[1] : '', $k);
             $cmds[] = array('title' => 'OCTOPUS_' . $flach,
-                            'comment' => oc_thema_text($info),
+                            'comment' => 'Octopus: ' . oc_kachel_text($info),
                             'einheit' => isset($info[1]) ? $info[1] : '',
                             'min' => $g[0], 'max' => $g[1],
                             'check' => $flach . '=\v;');
@@ -3100,7 +3124,9 @@ function oc_vorlage($art = 'mqtt_in')
             'title'   => $praefix . '_' . oc_thema_flach($k),
             'einheit' => isset($info[1]) ? $info[1] : '',
             'min'     => $g[0], 'max' => $g[1],
-            'comment' => oc_thema_text($info) . ($info[1] !== '' ? ' [' . $info[1] . ']' : ''),
+            /* Kachelname (Regeln/07): kurz, mit Vorsatz. Bis 1.1.10 stand
+             * hier der Erklaertext - 67 von 90 ueber 40 Zeichen. */
+            'comment' => 'Octopus: ' . oc_kachel_text($info) . ($info[1] !== '' ? ' [' . $info[1] . ']' : ''),
             'check'   => ' ',
         );
     }

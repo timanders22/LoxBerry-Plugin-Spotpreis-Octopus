@@ -48,6 +48,22 @@ function oc_test_selbst()
         function_exists('socket_create') ? '' : oc_t('TEST.SOCKETS_NEIN'));
     $h .= oc_zeile(is_writable(dirname($p['config'])) || is_writable($p['config']),
         oc_t('TEST.CONFIG_SCHREIBBAR'), oc_e($p['config']));
+    /* Zustand der Konfigurationsdatei - so, wie er VOR der Selbstheilung
+     * war (oc_konfig_lage()), dazu fehlende und fremde Schluessel. Eine
+     * geheilte Datei ist kein Nicht-Schaden: die Zweitschrift kann aelter
+     * sein als das, was verlorenging. */
+    $oc_lage = oc_konfig_lage();
+    $oc_text = oc_t('TEST.KONFIG_' . strtoupper($oc_lage));
+    $oc_sk = oc_konfig_schluessel();
+    if ($oc_sk !== null && $oc_sk[0]) {
+        $oc_text .= ' ' . str_replace(array('%N%', '%S%'),
+            array(count($oc_sk[0]), oc_e(implode(', ', $oc_sk[0]))), oc_t('TEST.KONFIG_FEHLEND'));
+    }
+    if ($oc_sk !== null && $oc_sk[1]) {
+        $oc_text .= ' ' . str_replace(array('%N%', '%S%'),
+            array(count($oc_sk[1]), oc_e(implode(', ', $oc_sk[1]))), oc_t('TEST.KONFIG_FREMD'));
+    }
+    $h .= oc_zeile($oc_lage === 'ok' || $oc_lage === 'vorgabe', oc_t('TEST.KONFIG'), $oc_text);
     /* NUR FRAGEN, NICHT ANLEGEN. Bis 1.1.3 stand hier ein @mkdir im
      * ODER-Zweig: die Zeile meldete 'Datenordner vorhanden' ueber einen
      * Ordner, den sie eine Millisekunde vorher selbst erzeugt hatte -
@@ -259,7 +275,7 @@ function oc_test_mqtt()
             '<div class="sm-warnung">' . oc_t('TEST.MQTT_AUS') . '</div>');
     }
     $st = oc_state();
-    $ok = oc_mqtt_publish($st);
+    $ok = oc_mqtt_publish($st, false, true);   // der Knopf schickt bewusst alles
     $anz = count(oc_werte($st));
     $h = oc_zeile($ok, $ok ? str_replace('%N%', $anz, oc_t('TEST.MQTT_GESENDET'))
                            : oc_t('TEST.MQTT_FEHLER'));
@@ -314,8 +330,17 @@ function oc_test_endpunkt()
     // 4) richtiger Aufruf
     $r = oc_http($basis . '?token=' . rawurlencode($cfg['aktionstoken']) . '&aktion=status',
                  null, array(), 8);
-    $ok = $r['ok'] && strpos($r['body'], 'OCTOPUS;') === 0;
-    $h .= oc_zeile($ok, oc_t('TEST.E_RICHTIG'), 'HTTP ' . ($r['code'] ?: '-'));
+    /* Ohne Preise antwortet der Endpunkt seit 1.1.11 mit 503 - das ist
+     * dann die richtige Antwort, kein Fehler. Welche erwartet wird, sagt
+     * der eigene Zustand. */
+    $oc_ohne = empty(oc_state()['ok']);
+    if ($oc_ohne) {
+        $ok = ((int) $r['code'] === 503);
+        $h .= oc_zeile($ok, oc_t('TEST.E_KEINE_PREISE'), 'HTTP ' . ($r['code'] ?: '-'));
+    } else {
+        $ok = $r['ok'] && strpos($r['body'], 'OCTOPUS;') === 0;
+        $h .= oc_zeile($ok, oc_t('TEST.E_RICHTIG'), 'HTTP ' . ($r['code'] ?: '-'));
+    }
     if ($r['body'] !== '') {
         $h .= '<div class="sm-pre">' . oc_e(substr(trim($r['body']), 0, 1200)) . '</div>';
     }
@@ -360,11 +385,11 @@ function oc_test_ptest()
      * MQTT. Vorher wirkte der Knopf auf dem Regelweg erst beim
      * naechsten Cron-Lauf, also bis zu eine Minute spaeter - und ein
      * Test, der erst spaeter wirkt, sieht aus wie einer, der nicht
-     * wirkt. Die Signaturdatei wird dafuer verworfen, damit der
-     * naechste Lauf den Merker auch wieder auf 0 meldet. */
+     * wirkt. Seit 1.1.11 geht dabei nur die Aenderung hinaus (und das
+     * Lebenszeichen); der naechste Lauf meldet das Zuruecksetzen von
+     * selbst, weil der Merker den geaenderten Wert kennt. */
     $ok = (@file_put_contents(oc_tmpdir() . '/ptest', '1') !== false);
     if ($ok) {
-        oc_weg(oc_tmpdir() . '/mqtt_sig.txt');
         oc_mqtt_publish();
         oc_log('Test-Pushnachricht ueber die Oberflaeche angefordert, sofort per MQTT gemeldet');
     } else {
