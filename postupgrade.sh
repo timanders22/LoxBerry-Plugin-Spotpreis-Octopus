@@ -70,16 +70,76 @@ else
 fi
 echo "<INFO> Sicherungsordner: $SICHERUNG"
 
-[ -f "$SICHERUNG/octopus.json" ] && cp -p "$SICHERUNG/octopus.json" "$CFGDIR/octopus.json"
-[ -f "$SICHERUNG/zugang.json" ]  && cp -p "$SICHERUNG/zugang.json"  "$CFGDIR/zugang.json"
-[ -f "$SICHERUNG/history.csv" ]  && cp -p "$SICHERUNG/history.csv"  "$DATADIR/history.csv"
+# Traegt eine Datei Inhalt? 0 = ja, 1 = nein, 2 = nicht pruefbar (kein php).
+# "konfig": ein Aktionstoken in der Form, die webfrontend/html/oc_lib.php
+# (Normalisierung der Konfiguration) als Token gelten laesst,
+# [A-Za-z0-9]{8,64}; es entsteht beim ersten Speichern. "zugang": E-Mail UND
+# Passwort als nicht leerer Text (die Felder aus oc_zugang_write()).
+# Wortgleich in postinstall.sh und postupgrade.sh - die Hakenskripte laufen
+# getrennt und binden keine gemeinsame Datei ein.
+oc_inhalt() {   # $1 Datei, $2 Art: konfig | zugang
+    [ -f "$1" ] || return 1
+    command -v php >/dev/null 2>&1 || return 2
+    php -r '
+        $d = json_decode((string) @file_get_contents($argv[1]), true);
+        if (!is_array($d)) { exit(1); }
+        if ($argv[2] === "konfig") {
+            $t = (isset($d["aktionstoken"]) && !is_array($d["aktionstoken"]))
+                ? trim((string) $d["aktionstoken"]) : "";
+            exit(preg_match("/^[A-Za-z0-9]{8,64}$/", $t) ? 0 : 1);
+        }
+        $da = function ($k) use ($d) {
+            return isset($d[$k]) && is_string($d[$k]) && trim($d[$k]) !== "";
+        };
+        exit(($da("email") && $da("passwort")) ? 0 : 1);
+    ' -- "$1" "$2" >/dev/null 2>&1
+    oc_rc=$?
+    [ "$oc_rc" = 0 ] || [ "$oc_rc" = 1 ] || return 2
+    return "$oc_rc"
+}
 
-# Selbstheilung wie in postinstall.sh
+# ---------- Zurueckspielen - und nur melden, was wirklich zurueckkam ----------
+# Bis 1.1.12 wurde jede gesicherte Datei ungeprueft kopiert, und am Ende stand
+# unbedingt "Konfiguration, Zugangsdaten und Historie wurden uebernommen" -
+# auch wenn die Sicherung nur "{}" trug oder gar keine da war (gemessen
+# 24.09.2026 in WSL, Pruefung-Spotpreis-Octopus-1.1.13, Fall c). Jetzt: eine
+# Sicherung ohne Inhalt ueberschreibt nichts (eine gute Datei, die
+# postinstall.sh schon aus der Zweitschrift geholt hat, bleibt stehen), jede
+# Kopie wird mit cmp nachgesehen, und gemeldet wird je Datei. Ohne php wird
+# wie bisher kopiert. Bauart: Abfahrtsassistent 1.6.12, postupgrade.sh.
+oc_zurueck() {   # $1 Quelle, $2 Ziel, $3 Art (konfig|zugang|-), $4 Bezeichnung
+    [ -f "$1" ] || return 0
+    if [ "$3" != "-" ]; then
+        oc_inhalt "$1" "$3"
+        if [ "$?" = 1 ]; then
+            echo "<INFO> $4: Update-Sicherung ohne Einstellungen - nichts zurueckgespielt."
+            return 0
+        fi
+    elif [ ! -s "$1" ]; then
+        return 0
+    fi
+    if cp -p "$1" "$2" 2>/dev/null && cmp -s "$1" "$2"; then
+        echo "<OK> $4 aus der Update-Sicherung zurueckgespielt."
+    else
+        echo "<WARNING> $4 liess sich NICHT zurueckspielen; die Sicherung liegt unter $1."
+    fi
+}
+oc_zurueck "$SICHERUNG/octopus.json" "$CFGDIR/octopus.json" konfig "Konfiguration"
+oc_zurueck "$SICHERUNG/zugang.json"  "$CFGDIR/zugang.json"  zugang "Zugangsdaten"
+oc_zurueck "$SICHERUNG/history.csv"  "$DATADIR/history.csv" -      "Historie"
+
+# Selbstheilung wie in postinstall.sh - ebenfalls nur aus einer Zweitschrift
+# mit Inhalt.
 BK="$BASE/config/plugins/$PFOLDER.backup.json"
 CF="$CFGDIR/octopus.json"
 if [ -f "$BK" ]; then
     if [ ! -s "$CF" ] || [ "$(cat "$CF" 2>/dev/null)" = "{}" ]; then
-        cp -p "$BK" "$CF"
+        oc_inhalt "$BK" konfig
+        if [ "$?" = 1 ]; then
+            echo "<INFO> Zweitschrift ohne Einstellungen - nichts zurueckgespielt."
+        else
+            cp -p "$BK" "$CF" && echo "<OK> Konfiguration aus der Zweitschrift wiederhergestellt."
+        fi
     fi
 fi
 
@@ -103,5 +163,17 @@ chown -R loxberry:loxberry "$CFGDIR" "$DATADIR" "$LOGDIR" 2>/dev/null
 # neuen Fassung gerechnet wird.
 rm -f /tmp/"$PFOLDER"/state.json 2>/dev/null
 
-echo "<OK> Aktualisierung abgeschlossen. Konfiguration, Zugangsdaten und Historie wurden uebernommen."
+# Die Schlusszeile nach INHALT (oc_inhalt, oben), nicht nach dem Umstand
+# "Upgrade" - Bauart Abfahrtsassistent 1.6.12.
+if oc_inhalt "$CF" konfig; then
+    echo "<OK> Aktualisierung abgeschlossen, Einstellungen uebernommen."
+    oc_inhalt "$CFGDIR/zugang.json" zugang
+    if [ "$?" = 1 ]; then
+        echo "<INFO> Zugangsdaten sind keine hinterlegt (Demo-Modus oder noch nicht eingetragen)."
+    fi
+else
+    echo "<WARNING> Nach der Aktualisierung liegt keine eingerichtete Konfiguration vor."
+    echo "<INFO> Plugin oeffnen, im Reiter Einstellungen die Octopus-Zugangsdaten hinterlegen"
+    echo "<INFO> (oder den Demo-Modus einschalten) und einmal speichern."
+fi
 exit 0

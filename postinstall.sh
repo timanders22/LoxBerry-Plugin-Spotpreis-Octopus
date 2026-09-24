@@ -75,13 +75,49 @@ if [ ! -f "$CFGDIR/zugang.json" ]; then
 fi
 chmod 600 "$CFGDIR/zugang.json" 2>/dev/null
 
+# Traegt eine Datei Inhalt? 0 = ja, 1 = nein, 2 = nicht pruefbar (kein php).
+# "konfig": ein Aktionstoken in der Form, die webfrontend/html/oc_lib.php
+# (Normalisierung der Konfiguration) als Token gelten laesst,
+# [A-Za-z0-9]{8,64}; es entsteht beim ersten Speichern. "zugang": E-Mail UND
+# Passwort als nicht leerer Text (die Felder aus oc_zugang_write()).
+# Wortgleich in postinstall.sh und postupgrade.sh - die Hakenskripte laufen
+# getrennt und binden keine gemeinsame Datei ein.
+oc_inhalt() {   # $1 Datei, $2 Art: konfig | zugang
+    [ -f "$1" ] || return 1
+    command -v php >/dev/null 2>&1 || return 2
+    php -r '
+        $d = json_decode((string) @file_get_contents($argv[1]), true);
+        if (!is_array($d)) { exit(1); }
+        if ($argv[2] === "konfig") {
+            $t = (isset($d["aktionstoken"]) && !is_array($d["aktionstoken"]))
+                ? trim((string) $d["aktionstoken"]) : "";
+            exit(preg_match("/^[A-Za-z0-9]{8,64}$/", $t) ? 0 : 1);
+        }
+        $da = function ($k) use ($d) {
+            return isset($d[$k]) && is_string($d[$k]) && trim($d[$k]) !== "";
+        };
+        exit(($da("email") && $da("passwort")) ? 0 : 1);
+    ' -- "$1" "$2" >/dev/null 2>&1
+    oc_rc=$?
+    [ "$oc_rc" = 0 ] || [ "$oc_rc" = 1 ] || return 2
+    return "$oc_rc"
+}
+
 # Selbstheilung: bei einer Neuinstallation ueber eine alte Sicherung wird die
-# Konfiguration zurueckgeholt, sofern die aktuelle leer ist.
+# Konfiguration zurueckgeholt, sofern die aktuelle leer ist - aber nur aus
+# einer Zweitschrift MIT Inhalt. Bis 1.1.12 wurde auch "{}" kopiert und als
+# "wiederhergestellt" gemeldet (gemessen 24.09.2026,
+# Pruefung-Spotpreis-Octopus-1.1.13, Fall c). Ohne php wird wie bisher kopiert.
 BK="$BASE/config/plugins/$PFOLDER.backup.json"
 CF="$CFGDIR/octopus.json"
 if [ -f "$BK" ]; then
     if [ ! -s "$CF" ] || [ "$(cat "$CF" 2>/dev/null)" = "{}" ]; then
-        cp -p "$BK" "$CF" && echo "<OK> Konfiguration aus der Sicherung wiederhergestellt."
+        oc_inhalt "$BK" konfig
+        if [ "$?" = 1 ]; then
+            echo "<INFO> Sicherung ohne Einstellungen - nichts zurueckgespielt."
+        else
+            cp -p "$BK" "$CF" && echo "<OK> Konfiguration aus der Sicherung wiederhergestellt."
+        fi
     fi
 fi
 
@@ -102,8 +138,27 @@ if ! command -v php >/dev/null 2>&1; then
     echo "<WARNING> php wurde nicht gefunden. Ohne PHP laeuft weder die Oberflaeche noch der Cron."
 fi
 
-echo "<OK> Installation abgeschlossen."
-echo "<INFO> Naechster Schritt: Plugin oeffnen, im Reiter Einstellungen die Octopus-Zugangsdaten"
-echo "<INFO> hinterlegen (oder den Demo-Modus einschalten) und einmal speichern - dabei wird das"
-echo "<INFO> Token fuer den Loxone-Endpunkt erzeugt."
+# ---------- Abschluss: Erstanleitung nur ohne gespeicherte Einstellungen ----------
+# Dieses Skript laeuft bei der Erstinstallation UND bei jedem Upgrade. Bis
+# 1.1.12 stand die Anleitung darunter deshalb auch nach jedem gelungenen
+# Upgrade da (gemessen 24.09.2026 in WSL, Pruefung-Spotpreis-Octopus-1.1.13,
+# Fall b) - und gleich danach meldete postupgrade.sh, alles sei uebernommen.
+#
+# Entschieden wird nach dem INHALT von octopus.json, wie er nach dem
+# Zurueckspielen oben steht: ein Aktionstoken in der Form, die
+# webfrontend/html/oc_lib.php (Normalisierung der Konfiguration) als
+# Token gelten laesst ([A-Za-z0-9]{8,64}; oc_inhalt, oben). Es entsteht beim ersten
+# Speichern - genau dem Schritt, zu dem die Anleitung auffordert. Die
+# Zugangsdaten taugen hier NICHT als Merkmal: zugang.json kommt beim
+# Upgrade erst in postupgrade.sh zurueck, also nach diesem Skript.
+# Fehlt das Token nach einem Upgrade, ist die Rueckholung gescheitert, und
+# die Anleitung ist richtig; ohne php ebenso (lieber einmal zu viel).
+if oc_inhalt "$CF" konfig; then
+    echo "<OK> Aktualisierung abgeschlossen, Einstellungen uebernommen."
+else
+    echo "<OK> Installation abgeschlossen."
+    echo "<INFO> Naechster Schritt: Plugin oeffnen, im Reiter Einstellungen die Octopus-Zugangsdaten"
+    echo "<INFO> hinterlegen (oder den Demo-Modus einschalten) und einmal speichern - dabei wird das"
+    echo "<INFO> Token fuer den Loxone-Endpunkt erzeugt."
+fi
 exit 0

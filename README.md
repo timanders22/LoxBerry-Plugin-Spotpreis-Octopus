@@ -7,6 +7,21 @@ HTTP-Endpunkt als Rückfallebene.
 
 ---
 
+## Was 1.1.13 behebt
+
+Die Anleitung am Ende der Installation („Naechster Schritt: … Zugangsdaten
+hinterlegen … einmal speichern“) erscheint nur noch, wenn `octopus.json` nach dem
+Zurückspielen kein Aktionstoken trägt – also bei der Erstinstallation oder wenn die
+Rückholung gescheitert ist; nach einem gelungenen Update steht stattdessen
+`<OK> Aktualisierung abgeschlossen, Einstellungen uebernommen.` (gemessen in WSL,
+`Pruefung-Spotpreis-Octopus-1.1.13/postinstall_hinweis.md`). Eine Sicherung
+ohne Einstellungen (`{}`) wird weder in `postinstall.sh` noch in `postupgrade.sh`
+mehr kopiert und als zurückgespielt gemeldet („… ohne Einstellungen - nichts
+zurueckgespielt“); `postupgrade.sh` meldet je Datei, was wirklich zurückkam, und
+schließt nach dem Inhalt: `Aktualisierung abgeschlossen, Einstellungen uebernommen`
+nur mit Aktionstoken, sonst eine Warnung samt Anleitung. Bis 1.1.12 stand dort
+unbedingt „Konfiguration, Zugangsdaten und Historie wurden uebernommen“.
+
 ## Was 1.1.12 behebt
 
 Gemessen am 24.09.2026 auf dem Prüfstand (WSL, PHP 8.3; Syntax gegen PHP 7.4
