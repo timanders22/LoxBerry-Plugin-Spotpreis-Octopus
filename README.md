@@ -7,6 +7,92 @@ HTTP-Endpunkt als Rückfallebene.
 
 ---
 
+## Was 1.1.12 behebt
+
+Gemessen am 24.09.2026 auf dem Prüfstand (WSL, PHP 8.3; Syntax gegen PHP 7.4
+und 8.4), **nicht am Gerät und nicht an einem echten Broker**. Jeder Punkt war
+vor der Änderung rot und ist danach grün; jede Änderung wurde einzeln
+zurückgebaut und macht dann ihre Prüfzeile wieder rot.
+
+### Was allein durch die Uhr falsch wird, geht nicht mehr zurückbehalten hinaus
+
+Bis 1.1.11 gingen `ok`, `morgen_ok`, `dyn_monat`, `diff_monat`, `euro_monat`
+und `shift_jahr` zurückbehalten (retained) hinaus. Alle sechs werden ohne
+neue Nachricht falsch: `morgen_ok` um Mitternacht, die Werte des jüngsten
+Monats zum Monatswechsel, `shift_jahr` (Fenster der letzten sieben Tage) mit
+jedem Tag. `ok` („gültige Preise liegen vor") ist eine Aussage des Plugins
+über sich selbst: stirbt der Cron, stünde die 1 für immer im Broker, und nach
+jedem Neustart von Broker oder Gateway läse Loxone „in Ordnung". Alle sechs
+gehen jetzt flüchtig. Zurückbehalten bleiben nur die Einstellungen `demo`,
+`audio`, `push`, `plan_budget`, `plan_budget2` und `fix` — sie bleiben wahr,
+bis der Anwender sie ändert, und gehen dann als Änderung neu hinaus.
+
+Die Altwerte räumt das Plugin einmal ab. Es fragt den Broker (Anmeldung mit
+`Brokeruser`/`Brokerpass` aus der `general.json`), schickt je belegtem Thema
+die leere Nutzlast **unmittelbar vor** dem gültigen Wert und sendet in diesem
+Lauf den vollen Satz. Erst wenn der Broker „nichts mehr da" bestätigt, legt es
+den Merker `data/plugins/<ordner>/.mqtt_altlast_geraeumt` ab; er trägt Präfix
+und Themenliste, ein anderer Inhalt gilt nicht. Ist der Broker nicht zu
+fragen, wird vor jedem ohnehin gesendeten Wert gelöscht, und der Merker
+entsteht nicht — der UDP-Eingang des Gateways verwirft unter Last Datagramme,
+ein bloßes Senden ist kein Beleg.
+
+**Preis:** nach einem Neustart von Broker oder Gateway fehlen die sechs Werte,
+bis der nächste volle Satz hinausgeht (halbstündlich).
+
+### Die Deinstallation räumt den Broker ab
+
+`uninstall` ruft `bin/oc_cron.php --mqtt-leeren` (als `loxberry`): alle zwölf
+Themen, die diese Linie je zurückbehalten gesendet hat, werden mit leerer
+Nutzlast gelöscht und beim Broker nachgelesen, höchstens drei Runden. Steht
+nichts da, geht nichts hinaus. Themen unter einem **früher** eingestellten
+Präfix räumt das Skript nicht ab; nachsehen mit
+`mosquitto_sub -t '<präfix>/#' --retained-only`.
+
+### Ein ausgepacktes Archiv benutzt nicht mehr die Anlage
+
+Aus einem Archiv unterhalb der LoxBerry-Wurzel — oder mit `LBHOMEDIR` allein,
+wie es am LoxBerry immer gesetzt ist — arbeitete `bin/oc_cron.php` bisher mit
+Konfiguration, Daten und Protokoll der Anlage. Jetzt gelten deren Pfade nur,
+wenn die Bibliothek dort wirklich installiert liegt oder `LBHOMEDIR` **und**
+`LBPPLUGINDIR` ausdrücklich gesetzt sind; sonst steigt der Cron mit einer
+Meldung aus, bevor er etwas liest oder schreibt. `LBPPLUGINDIR` hat beim
+Ordnernamen Vorrang.
+
+### Keine Pfade mehr ab der Laufwerkswurzel, kein fester Rückfall
+
+* Die Wurzel wird nur noch an `config/plugins`, `data/plugins` **und**
+  `config/system/general.json` erkannt; der fest verdrahtete Rückfall auf das
+  Heimatverzeichnis des Benutzers `loxberry` ist entfernt (`oc_lib.php`,
+  `bin/oc_cron.php`).
+* Ohne Wurzel suchte das Plugin Sprachdateien, `loxberry_log.php` und die
+  Plugin-Datenbank ab der Laufwerkswurzel, die Oberfläche ihre Bibliothek und
+  die Reiterprüfung ebenso, und `bin/oc_cron.php` lud eine Bibliothek ab `/`
+  — auch neben einer heilen eigenen (der Installer-Platzhalter blieb im
+  Archiv ein relativer Pfad). Jetzt entscheidet der eigene Ablageort.
+* `postinstall.sh`, `preupgrade.sh`, `postupgrade.sh` und `uninstall` rechneten
+  ohne fünftes Argument drei Ebenen hoch bzw. nahmen einen Baum ohne
+  `general.json` als Wurzel; ganz ohne Wurzel löschte `uninstall` ab der
+  Laufwerkswurzel und meldete `<OK>`. Jetzt suchen sie mit `general.json` und
+  warnen ohne Wurzel, statt etwas zu vollziehen.
+
+### Nebenher
+
+* Eine beschädigte `octopus.json`, die beiseitegelegt wird
+  (`octopus.json.kaputt.<zeit>`), trägt jetzt die Rechte 0600 — bisher behielt
+  sie die der beschädigten Datei.
+* Geprüft, kein Fehler: diese Linie hat keinen Dauerdienst, also keine
+  Prozessanzeige und kein `kill`; mit ausgeschaltetem MQTT erscheint keine
+  Warnung „Undefined array key" (gemessen); eine aus der Zweitschrift geheilte
+  Konfiguration trägt 0600 (gemessen).
+
+### Nicht gemessen
+
+Am Gerät nichts; die Rückfrage nicht gegen einen echten Mosquitto, die
+Deinstallation nicht mit `su loxberry`.
+
+---
+
 ## Was 1.1.11 behebt
 
 Gemessen am 17.09.2026 gegen die Hausregeln vom selben Tag, am Gerät
@@ -1024,6 +1110,10 @@ Reiter *MQTT*. Die wichtigsten:
 | `ok` | 1, sobald gültige Preise vorliegen |
 | `alter` | Alter der Preisdaten in Minuten |
 | `demo` | 1, wenn die Preise simuliert sind |
+
+Zurückbehalten (retained) gehen seit 1.1.12 nur die Einstellungen `demo`,
+`audio`, `push`, `plan_budget`, `plan_budget2` und `fix`; alles andere geht
+flüchtig, das Lebenszeichen `status/…` nie retained.
 
 ---
 

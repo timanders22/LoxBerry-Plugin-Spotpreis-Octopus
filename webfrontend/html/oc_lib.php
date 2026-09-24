@@ -47,11 +47,19 @@ require_once __DIR__ . '/planer.php';
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
  *
  * Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
- * config/plugins UND webfrontend enthaelt. Das trifft die uebliche
- * Installation genauso wie eine an einem anderen Ort - und es trifft auch
- * den Fall, dass das Plugin noch als entpacktes Archiv daliegt (dann findet
- * es nichts und gibt einen Leerstring zurueck, was der Aufrufer ohnehin
- * abfangen muss).
+ * config/plugins, data/plugins UND config/system/general.json traegt. Das
+ * trifft die uebliche Installation genauso wie eine an einem anderen Ort -
+ * und es trifft auch den Fall, dass das Plugin noch als entpacktes Archiv
+ * daliegt (dann findet es nichts und gibt einen Leerstring zurueck, was der
+ * Aufrufer abfangen muss).
+ *
+ * general.json ist die entscheidende Bedingung. Bis 1.1.11 genuegten
+ * config/plugins und webfrontend - genau diese Ordner hinterlaesst ein
+ * Pruefstand auf einem Arbeitsrechner, und am 05.09.2026 hat eine solche
+ * Suche dort C:\ als "LoxBerry" erkannt und Daten geloescht (Regeln/06). In
+ * WSL gemessen (Pruefung-Spotpreis-Octopus-1.1.12, Faelle H1 und H2): in
+ * einem fremden Baum ohne general.json nahm diese Bibliothek den Baum als
+ * Wurzel, und bin/oc_cron.php schrieb dort Protokoll und Zwischenstaende.
  *
  * Der Name traegt kein Plugin-Kuerzel und ist deshalb abgesichert: zwei
  * Bibliotheken landen nie im selben Prozess, aber die Pruefung kostet nichts.
@@ -61,7 +69,8 @@ if (!function_exists('lb_wurzel_ermitteln')) {
     {
         $d = __DIR__;
         for ($i = 0; $i < 8; $i++) {
-            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')) {
+            if (is_dir($d . '/config/plugins') && is_dir($d . '/data/plugins')
+                && is_file($d . '/config/system/general.json')) {
                 return $d;
             }
             $eltern = dirname($d);
@@ -72,23 +81,103 @@ if (!function_exists('lb_wurzel_ermitteln')) {
     }
 }
 
+/* Die Wurzel in der Reihenfolge der Hausregel: erst die Umgebung, dann die
+ * Suche - und DANACH NICHTS MEHR.
+ *
+ * Bis 1.1.11 stand in oc_paths() und in bin/oc_cron.php als dritte Stufe ein
+ * fest verdrahteter Systempfad (das Heimatverzeichnis des Benutzers
+ * loxberry). Er macht jede Suche wirkungslos und trifft auf einem anders
+ * installierten LoxBerry die falsche Anlage (in WSL gemessen,
+ * Pruefung-Spotpreis-Octopus-1.1.12, Fall C14); dieselbe Stelle wurde in
+ * Spotpreis-Tibber 0.9.18, ZendureSolarFlow 0.9.25 und Weissware 0.9.29
+ * entfernt.
+ *
+ * Ein gesetztes LBHOMEDIR gilt mit config/plugins UND data/plugins darunter -
+ * general.json wird hier nicht verlangt, damit Attrappen ohne sie
+ * (Werkzeuge/lb) weiter tragen. Rueckgabe '' heisst "keine Wurzel"; jeder
+ * Aufrufer muss das abfangen. */
+function oc_lbhome()
+{
+    $h = getenv('LBHOMEDIR');
+    if ($h && is_dir($h . '/config/plugins') && is_dir($h . '/data/plugins')) {
+        return rtrim($h, '/');
+    }
+    return lb_wurzel_ermitteln();
+}
+
+/* Fuer bin/oc_cron.php: ohne Wurzel nichts tun, eine Meldung auf stderr,
+ * Rueckgabewert 1. Steht dort VOR oc_config(), denn schon deren
+ * Selbstheilung schreibt.
+ *
+ * Bis 1.1.11 lief der Cron ohne Wurzel mit den Ersatzpfaden unter dem
+ * Temp-Ordner los, und aus einem ausgepackten Archiv unterhalb einer echten
+ * Wurzel schrieb er Protokoll und Zwischenstaende DER ANLAGE (in WSL
+ * gemessen, Pruefung-Spotpreis-Octopus-1.1.12, Faelle B6, B7, H2). Bauart
+ * tb_keine_wurzel_abbruch() aus Spotpreis-Tibber 0.9.19. */
+function oc_keine_wurzel_abbruch($programm)
+{
+    $p = oc_paths();
+    if ($p['home'] !== '') { return; }
+    if ($p['archiv'] !== '') {
+        fwrite(STDERR, $programm . ': Diese Datei liegt nicht in der Installation unter '
+            . $p['archiv'] . "\n"
+            . '(ausgepacktes Archiv oder Pruefordner). Damit nichts in die Anlage kommt,' . "\n"
+            . 'wurde nichts geholt, nichts gesendet und nichts geschrieben.' . "\n"
+            . 'Abhilfe: das Programm aus ' . $p['archiv'] . '/bin/plugins/<ordner> aufrufen' . "\n"
+            . 'oder LBHOMEDIR und LBPPLUGINDIR ausdruecklich setzen.' . "\n");
+        exit(1);
+    }
+    fwrite(STDERR, $programm . ': Es wurde kein LoxBerry-Wurzelverzeichnis gefunden.' . "\n"
+        . '$LBHOMEDIR ist nicht gesetzt, und oberhalb von ' . __DIR__ . ' traegt kein' . "\n"
+        . 'Verzeichnis config/plugins, data/plugins und config/system/general.json.' . "\n"
+        . 'Es wurde nichts geholt, nichts gesendet und nichts geschrieben.' . "\n");
+    exit(1);
+}
+
 function oc_paths()
 {
     static $p = null;
     if ($p !== null) {
         return $p;
     }
-    $home = getenv('LBHOMEDIR');
-    if (!$home || !is_dir($home)) {
-        foreach (array(lb_wurzel_ermitteln(), '/home/loxberry/loxberry') as $k) {
-            if (is_dir($k)) { $home = $k; break; }
-        }
-    }
+    $home = oc_lbhome();
     $ordner = basename(dirname(__FILE__));   // installiert: .../html/plugins/<ordner>
-    if ($ordner === 'html' || $ordner === '') {
+    /* LBPPLUGINDIR ist die Auskunft von LoxBerry SELBST und hat Vorrang. Von
+     * ihr zaehlt nur der letzte Pfadteil, und die Namen, die nachweislich
+     * kein Pluginordner sind, gelten auch dort nicht (Bauart Spotpreis-Tibber
+     * 0.9.19). Der feste Name greift nur, wo der abgeleitete kein
+     * Pluginordner sein KANN - aus dem ausgepackten Archiv heisst er 'html'. */
+    $lbp = basename(rtrim((string) getenv('LBPPLUGINDIR'), '/'));
+    $lbp_gilt = ($lbp !== '' && !in_array($lbp, array('.', '/', 'html', 'bin', 'plugins'), true));
+    if ($lbp_gilt) {
+        $ordner = $lbp;
+    } elseif ($ordner === '' || $ordner === '.' || $ordner === '/'
+              || $ordner === 'html' || $ordner === 'bin' || $ordner === 'plugins') {
         $ordner = 'octopus';                 // Archiv: .../webfrontend/html
     }
-    if ($home && is_dir($home)) {
+    /* Archivmodus. Die Pfade DER ANLAGE gelten nur, wenn diese Bibliothek
+     * dort installiert liegt (<Wurzel>/webfrontend/html/plugins/<ordner>,
+     * physisch verglichen) oder der Aufrufer Wurzel UND Ordner ausdruecklich
+     * nennt ($LBHOMEDIR und $LBPPLUGINDIR - so arbeiten die Pruefwerkzeuge mit
+     * ihrer Attrappe, und so ruft die Deinstallation oc_cron.php). Sonst ist
+     * das ein ausgepacktes Archiv oder ein Pruefordner, und es gelten die
+     * Ersatzpfade weiter unten.
+     *
+     * Bis 1.1.11 nahm ein Archiv unterhalb einer echten Wurzel diese Wurzel
+     * und den festen Namen 'octopus' - Konfiguration, Zugangsdaten, Daten und
+     * Protokoll der Anlage; mit $LBHOMEDIR allein, wie es am Geraet in
+     * /etc/environment steht, ebenso (in WSL gemessen,
+     * Pruefung-Spotpreis-Octopus-1.1.12, Faelle B1, B2, B6, B7). Bauart
+     * tb_paths() aus Spotpreis-Tibber 0.9.19. */
+    $gefunden = $home;
+    if ($home !== '') {
+        $soll = @realpath($home . '/webfrontend/html/plugins/' . basename(__DIR__));
+        $ist = @realpath(__DIR__);
+        $installiert = ($soll !== false && $ist !== false && $soll === $ist);
+        $ausdruecklich = $lbp_gilt && $home === rtrim((string) getenv('LBHOMEDIR'), '/');
+        if (!$installiert && !$ausdruecklich) { $home = ''; }
+    }
+    if ($home !== '') {
         $p = array(
             'home'    => $home,
             'plugin'  => $ordner,
@@ -99,10 +188,14 @@ function oc_paths()
             'log'     => $home . '/log/plugins/' . $ordner . '/octopus.log',
             'general' => $home . '/config/system/general.json',
             'tmp'     => '/tmp/' . $ordner,
+            'archiv'  => '',
         );
         return $p;
     }
-    // Kein LoxBerry gefunden (Entwicklung, Pruefstand)
+    /* Keine Wurzel (Entwicklung, Pruefstand, fremder Baum) oder Archivmodus:
+     * die Ersatzpfade unter dem Temp-Ordner, nie ein Pfad der Anlage und nie
+     * einer ab der Laufwerkswurzel. bin/oc_cron.php steigt in beiden Faellen
+     * vorher aus (oc_keine_wurzel_abbruch()). */
     $wurzel = dirname(dirname(__DIR__));
     $tmp = sys_get_temp_dir() . '/octopus';
     $p = array(
@@ -115,6 +208,9 @@ function oc_paths()
         'log'     => $tmp . '/octopus.log',
         'general' => $wurzel . '/general.json',
         'tmp'     => $tmp,
+        // Die gefundene Wurzel, wenn diese Datei NICHT darin installiert
+        // liegt (Archivmodus) - fuer die Meldung; sonst leer.
+        'archiv'  => $gefunden,
     );
     return $p;
 }
@@ -494,6 +590,12 @@ function oc_config($heilen = null)
     if ($heilen && $oc_kaputt) {
         $oc_weg = $p['config'] . '.kaputt.' . date('YmdHis');
         if (@rename($p['config'], $oc_weg)) {
+            /* Die beiseitegelegte Datei traegt das Aktionstoken wie das
+             * Original, und rename() behaelt dessen Rechte - eine von Hand
+             * oder vor 1.1.10 angelegte Konfiguration also 644 bzw. 640 (in
+             * WSL gemessen, Pruefung-Spotpreis-Octopus-1.1.12, Fall N2b).
+             * Hausregel: die .kaputt-Datei 0600 (Regeln/05). */
+            @chmod($oc_weg, 0600);
             oc_log('Konfiguration war beschaedigt und wurde beiseitegelegt: ' . basename($oc_weg));
             $roh = '';
         }
@@ -2609,30 +2711,37 @@ function oc_mqtt_wert_saeubern($v)
  *       Messwerte mit Zeitbezug bzw. eine Dauer.
  *   ann und ptest - sie wechseln allein durch Zeitablauf; ptest lebt fuenf
  *       Minuten.
+ *   ok, morgen_ok, dyn_monat, diff_monat, euro_monat, shift_jahr -
+ *       BERICHTIGT in 1.1.12, bis 1.1.11 standen sie hier. Die Frage ist,
+ *       ob ein Wert OHNE neue Nachricht allein durch den Lauf der Zeit falsch
+ *       wird: morgen_ok um Mitternacht, die Werte des juengsten Monats der
+ *       Historie (oc_month_compare(1)) zum Monatswechsel, shift_jahr
+ *       (gleitendes Fenster der letzten sieben Tage) mit jedem Tag. Und ok
+ *       ("gueltige Preise liegen vor", aus dem eigenen Speicher) ist eine
+ *       Aussage des Dienstes ueber sich selbst - nach dem Entscheid vom
+ *       18./19.09.2026 nie retained (Regeln/07, Abschnitt 2): stirbt der
+ *       Cron, stuende die 1 fuer immer im Broker. Die Altwerte raeumt
+ *       oc_mqtt_altlast() einmal ab (in WSL gemessen,
+ *       Pruefung-Spotpreis-Octopus-1.1.12, Faelle R1 bis R12). Preis: nach
+ *       einem Neustart von Broker oder Gateway fehlen sie, bis der naechste
+ *       volle Satz hinausgeht (halbstuendlich).
+ *
+ * Zurueckbehalten bleibt, was eine EINSTELLUNG ist und wahr bleibt, bis der
+ * Anwender sie aendert - dann geht sie als Aenderung neu hinaus.
  */
 function oc_retain_liste()
 {
     return array(
-        /* Zustand der Datenlage. Das Gegenstueck ist das Lebenszeichen:
-         * wer wissen will, ob das Plugin ueberhaupt noch arbeitet, sieht
-         * auf status/ts und alter, nicht auf ok. */
-        'ok'           => 1,
+        /* Demo-Modus eingeschaltet (demo in der Konfiguration). */
         'demo'         => 1,
-        'morgen_ok'    => 1,
         /* Freigaben aus der Konfiguration. */
         'audio'        => 1,
         'push'         => 1,
         /* Einstellungen des Fahrplaners. */
         'plan_budget'  => 1,
         'plan_budget2' => 1,
-        /* Kostenvergleich: entsteht einmal im Monat aus der Historie.
-         * Ein Wert, der sich monatlich aendert, ist ein Zustand - ohne
-         * Retain fehlte er nach einem Neustart bis zum Monatswechsel. */
+        /* Der eingetragene feste Arbeitspreis. */
         'fix'          => 1,
-        'dyn_monat'    => 1,
-        'diff_monat'   => 1,
-        'euro_monat'   => 1,
-        'shift_jahr'   => 1,
     );
 }
 
@@ -2648,6 +2757,329 @@ function oc_retain_fuer($thema, $nutzlast = null)
     if ($nutzlast !== null && (string) $nutzlast === '') { return 0; }
     $l = oc_retain_liste();
     return isset($l[(string) $thema]) ? 1 : 0;
+}
+
+/**
+ * Die Themen, die frueher zurueckbehalten hinausgingen und es heute nicht
+ * mehr tun: oc_retain_liste() der Archive 1.1.9, 1.1.10 und 1.1.11 (gelesen
+ * am 24.09.2026; bis 1.1.8 ging nichts zurueckbehalten hinaus, status/* nie).
+ * Ihre Altwerte stehen auf bestehenden Anlagen im Broker, bis jemand sie
+ * loescht - ein spaeteres publish ersetzt einen zurueckbehaltenen Wert nicht.
+ */
+function oc_mqtt_frueher_behalten()
+{
+    return array('ok', 'morgen_ok', 'dyn_monat', 'diff_monat', 'euro_monat', 'shift_jahr');
+}
+
+/**
+ * Den Broker fragen, welche der Themen $themen er zurueckbehaelt - in EINER
+ * Verbindung, ein SUBSCRIBE mit allen Filtern.
+ *
+ * Rueckgabe array('lage' => 'ok'|'unbekannt', 'belegt' => array(thema => true)).
+ * 'ok' heisst: der Broker hat das Abonnement bestaetigt (oder einen Wert
+ * geschickt); was dann nicht unter 'belegt' steht, ist leer. 'unbekannt':
+ * er war nicht zu fragen (keine Wurzel, keine Verbindung, Anmeldung
+ * abgewiesen, keine Antwort).
+ *
+ * Warum ueberhaupt fragen: gesendet wird ueber den UDP-Eingang des Gateways,
+ * und dort meldet sendto() auch fuer ein verworfenes Datagramm Erfolg. Am
+ * Geraet gemessen (Regeln/07, "Ein Absender merkt nichts davon", Nachtraege
+ * vom 19.09.2026): Beschattungswaechter 0.9.19 und KODI-NG 1.2.7 setzten
+ * ihren Merker nach dem Senden, der Eingang verwarf ~70 %, und der Altwert
+ * stand weiter im Broker. Belegt ist das Abraeumen erst, wenn der Broker
+ * selbst sagt, dass nichts mehr dasteht.
+ *
+ * MQTT 3.1.1 von Hand, nur CONNECT, SUBSCRIBE (QoS 0) und DISCONNECT - ohne
+ * fremde Bibliothek; wortgleich mit tb_mqtt_behalten_liste() aus
+ * Spotpreis-Tibber 0.9.19 bis auf die Kennung und die Lesestelle der
+ * general.json. Die Anmeldung nimmt Brokeruser/Brokerpass aus der
+ * general.json (Regeln/07, Abschnitt 2); das Kennwort steht nur im
+ * CONNECT-Paket, nie in einem Protokoll und nie auf einer Kommandozeile.
+ */
+function oc_mqtt_behalten_liste(array $themen)
+{
+    $aus = array('lage' => 'unbekannt', 'belegt' => array());
+    $soll = array();
+    foreach ($themen as $t) {
+        if ((string) $t !== '') { $soll[(string) $t] = true; }
+    }
+    if (!$soll) {
+        $aus['lage'] = 'ok';
+        return $aus;
+    }
+    $p = oc_paths();
+    if ($p['home'] === '' || !is_file($p['general'])) { return $aus; }
+    $gen = json_decode((string) @file_get_contents($p['general']), true);
+    if (!is_array($gen)) { return $aus; }
+    $m = array();
+    if (isset($gen['Mqtt']) && is_array($gen['Mqtt'])) { $m = $gen['Mqtt']; }
+    elseif (isset($gen['mqtt']) && is_array($gen['mqtt'])) { $m = $gen['mqtt']; }
+    if (!$m) { return $aus; }
+    $hol = function ($gross, $klein) use ($m) {
+        if (isset($m[$gross])) { return (string) $m[$gross]; }
+        return isset($m[$klein]) ? (string) $m[$klein] : '';
+    };
+    $host = trim($hol('Brokerhost', 'brokerhost'));
+    if ($host === '' || $host === 'localhost') { $host = '127.0.0.1'; }
+    $port = (int) $hol('Brokerport', 'brokerport');
+    if ($port <= 0 || $port > 65535) { $port = 1883; }
+    $benutzer = $hol('Brokeruser', 'brokeruser');
+    $kennwort = $hol('Brokerpass', 'brokerpass');
+
+    $s = @stream_socket_client('tcp://' . $host . ':' . $port, $errno, $errstr, 2);
+    if (!$s) { return $aus; }
+    stream_set_timeout($s, 1);
+
+    $zk = function ($t) { return pack('n', strlen($t)) . $t; };
+    $laenge = function ($n) {
+        $o = '';
+        do {
+            $b = $n % 128;
+            $n = intdiv($n, 128);
+            if ($n > 0) { $b |= 128; }
+            $o .= chr($b);
+        } while ($n > 0);
+        return $o;
+    };
+    /* Genau $n Bytes lesen oder null - bei Zeitablauf und Verbindungsende. */
+    $lies = function ($n) use ($s) {
+        $d = '';
+        while (strlen($d) < $n) {
+            $t = @fread($s, $n - strlen($d));
+            if ($t === false || $t === '') {
+                $meta = stream_get_meta_data($s);
+                if (!empty($meta['timed_out']) || !empty($meta['eof']) || feof($s)) { return null; }
+                continue;
+            }
+            $d .= $t;
+        }
+        return $d;
+    };
+    /* Ein Paket: array(kopfbyte, rumpf) oder null. */
+    $paket = function () use ($lies) {
+        $k = $lies(1);
+        if ($k === null) { return null; }
+        $n = 0; $mult = 1;
+        for ($i = 0; $i < 4; $i++) {
+            $b = $lies(1);
+            if ($b === null) { return null; }
+            $n += (ord($b) & 127) * $mult;
+            $mult *= 128;
+            if (!(ord($b) & 128)) { break; }
+        }
+        $r = ($n > 0) ? $lies($n) : '';
+        return ($r === null) ? null : array(ord($k), $r);
+    };
+
+    $flags = 0x02;                                  // saubere Sitzung
+    $nutz = $zk('ocrueck' . getmypid());
+    if ($benutzer !== '') {
+        $flags |= 0x80;
+        // Ein Kennwort ohne Benutzer laesst MQTT 3.1.1 nicht zu (Abschnitt
+        // CONNECT, Kennwort-Merkmal).
+        if ($kennwort !== '') { $flags |= 0x40; }
+    }
+    $kopf = $zk('MQTT') . chr(4) . chr($flags) . pack('n', 10);
+    if ($benutzer !== '') {
+        $nutz .= $zk($benutzer);
+        if ($kennwort !== '') { $nutz .= $zk($kennwort); }
+    }
+    if (@fwrite($s, chr(0x10) . $laenge(strlen($kopf . $nutz)) . $kopf . $nutz) !== false) {
+        $ack = $paket();
+        if ($ack !== null && ($ack[0] >> 4) === 2 && strlen($ack[1]) >= 2 && ord($ack[1][1]) === 0) {
+            $sub = pack('n', 1);
+            foreach (array_keys($soll) as $t) { $sub .= $zk($t) . chr(0); }
+            @fwrite($s, chr(0x82) . $laenge(strlen($sub)) . $sub);
+            $bestaetigt = false;
+            $ende = microtime(true) + 3.0;
+            while (microtime(true) < $ende) {
+                $pk = $paket();
+                if ($pk === null) { break; }           // Zeitablauf: nichts mehr gekommen
+                $art = $pk[0] >> 4;
+                if ($art === 9) {
+                    $bestaetigt = true;
+                    // Zurueckbehaltenes kommt unmittelbar nach dem SUBACK.
+                    $ende = min($ende, microtime(true) + 1.0);
+                } elseif ($art === 3 && strlen($pk[1]) >= 2) {
+                    $tl = unpack('n', substr($pk[1], 0, 2));
+                    $t = substr($pk[1], 2, $tl[1]);
+                    $versatz = 2 + $tl[1] + ((($pk[0] >> 1) & 3) > 0 ? 2 : 0);
+                    $wert = (string) substr($pk[1], $versatz);
+                    if (isset($soll[$t]) && ($pk[0] & 1) && $wert !== '') {
+                        $aus['belegt'][$t] = true;
+                        if (count($aus['belegt']) === count($soll)) { break; }
+                    }
+                }
+            }
+            if ($bestaetigt || $aus['belegt']) { $aus['lage'] = 'ok'; }
+        }
+        @fwrite($s, chr(0xE0) . chr(0));
+    }
+    fclose($s);
+    return $aus;
+}
+
+/**
+ * Welche Altwerte muessen in diesem Lauf noch abgeraeumt werden?
+ *
+ * Rueckgabe array('lage' => 'erledigt'|'belegt'|'unbekannt',
+ *                 'themen' => array(<thema ohne praefix>, ...)).
+ *
+ * Je Lauf, bis der Merker liegt:
+ *   1. den Broker nach allen Themen aus oc_mqtt_frueher_behalten() fragen;
+ *   2. keines belegt -> Merker schreiben, nichts abraeumen ('erledigt');
+ *      einige belegt -> genau diese abraeumen, kein Merker ('belegt'); der
+ *      Aufrufer sendet dann VOLL, damit die leere retain-Nutzlast
+ *      unmittelbar vor dem gueltigen Wert steht;
+ *      nicht zu fragen -> alle, aber nur unmittelbar vor einem Wert, der
+ *      ohnehin hinausgeht ('unbekannt'), kein Merker.
+ * Der Merker traegt die Kennung "leer-bestaetigt <praefix>: <Themenliste>":
+ * ein anderer Inhalt - ein anderes Praefix, eine andere Liste - gilt nicht,
+ * und ein Merker, den eine Vorfassung unter anderem Namen angelegt haette,
+ * ebenso wenig. purge_installation raeumt ihn bei jedem Upgrade mit ab;
+ * dann wird genau einmal nachgefragt. Bauart tb_mqtt_altlast() aus
+ * Spotpreis-Tibber 0.9.19.
+ */
+function oc_mqtt_altlast($praefix)
+{
+    static $cache = array();
+    $praefix = (string) $praefix;
+    if (isset($cache[$praefix])) { return $cache[$praefix]; }
+    $liste = oc_mqtt_frueher_behalten();
+    $merker = oc_datadir() . '/.mqtt_altlast_geraeumt';
+    $kennung = 'leer-bestaetigt ' . $praefix . ': ' . implode(' ', $liste);
+    if (is_file($merker) && trim((string) @file_get_contents($merker)) === $kennung) {
+        return $cache[$praefix] = array('lage' => 'erledigt', 'themen' => array());
+    }
+    $voll = array();
+    foreach ($liste as $t) { $voll[] = $praefix . '/' . $t; }
+    $f = oc_mqtt_behalten_liste($voll);
+    if ($f['lage'] === 'ok' && !$f['belegt']) {
+        if (@file_put_contents($merker, $kennung . "\n") === false) {
+            oc_log_if_changed('mqtt_merker', 'Der Merker ' . $merker . ' liess sich nicht schreiben - '
+                . 'der Broker wird im naechsten Lauf wieder gefragt.');
+        } else {
+            oc_log('MQTT: unter ' . $praefix . '/ steht keines der ' . count($liste)
+                . ' frueher zurueckbehaltenen Themen mehr im Broker (vom Broker bestaetigt).');
+        }
+        return $cache[$praefix] = array('lage' => 'erledigt', 'themen' => array());
+    }
+    if ($f['lage'] === 'ok') {
+        $l = strlen($praefix) + 1;
+        $t = array();
+        foreach (array_keys($f['belegt']) as $v) { $t[] = substr($v, $l); }
+        return $cache[$praefix] = array('lage' => 'belegt', 'themen' => $t);
+    }
+    oc_log_if_changed('mqtt_rueckfrage', 'Der Broker liess sich nicht befragen, ob unter '
+        . $praefix . '/ noch frueher zurueckbehaltene Werte stehen. Sie werden deshalb '
+        . 'unmittelbar vor jedem Senden geloescht, bis der Broker antwortet.');
+    return $cache[$praefix] = array('lage' => 'unbekannt', 'themen' => $liste);
+}
+
+/**
+ * Alle Themen, die diese Linie je zurueckbehalten gesendet hat - fuer die
+ * Deinstallation: die heutige Retain-Tabelle und die frueheren Eintraege.
+ */
+function oc_mqtt_leer_themen()
+{
+    $t = array();
+    foreach (oc_mqtt_frueher_behalten() as $k) { $t[$k] = true; }
+    foreach (array_keys(oc_retain_liste()) as $k) { $t[$k] = true; }
+    ksort($t);
+    return array_keys($t);
+}
+
+/**
+ * Aus der Deinstallation (bin/oc_cron.php --mqtt-leeren): die
+ * zurueckbehaltenen Themen der Linie leeren.
+ *
+ * Der Weg ist derselbe wie beim Senden - der UDP-Eingang des Gateways,
+ * "retain <thema> " mit leerer Nutzlast (am Geraet belegt: die leere
+ * Nachricht geht als Loeschung an den Broker, Regeln/07, Nachtraege vom
+ * 19.09.2026). VOR der ersten Runde und nach jeder wird der Broker gefragt
+ * (oc_mqtt_behalten_liste()); hinaus geht nur, was dort noch steht, hoechstens
+ * $runden Runden. Steht nichts da, geht nichts hinaus. Ist der Broker nicht zu
+ * fragen, gehen alle Themen in jeder Runde hinaus, und die Ausgabe sagt, dass
+ * nicht nachgelesen wurde - der Eingang verwirft unter Last Datagramme
+ * (Regeln/07), ein blosses Senden ist kein Beleg.
+ *
+ * Bis 1.1.11 raeumte die Deinstallation nichts ab: die zurueckbehaltenen
+ * Themen blieben im Broker, und nach jedem Neustart von Broker oder Gateway
+ * bekam der Miniserver sie wieder - von einem Plugin, das es nicht mehr gibt
+ * (in WSL gemessen, Pruefung-Spotpreis-Octopus-1.1.12, Faelle U1, U3, U4,
+ * U6). Bauart tb_mqtt_leeren() aus Spotpreis-Tibber 0.9.19.
+ *
+ * Liest die Konfiguration ohne Selbstheilung und schreibt weder Protokoll
+ * noch Datei. Ausgabe im Format der Hakenskripte (<OK>/<INFO>/<WARNING>).
+ * Rueckgabe 0 geleert oder nicht nachpruefbar, 1 es steht noch etwas bzw. der
+ * Eingang war nicht erreichbar, 2 nicht moeglich.
+ */
+function oc_mqtt_leeren($runden = 3, $pause = 1.0)
+{
+    oc_nur_lesen(true);
+    $cfg = oc_config();
+    $praefix = oc_mqtt_thema_saeubern($cfg['mqtt_topic'], 'octopus');
+    $g = oc_gateway();
+    if (!$g['udpport']) {
+        echo "<INFO> MQTT: in der general.json steht kein UDP-Eingangsport des Gateways - "
+           . "zurueckbehaltene Themen unter " . $praefix . "/ wurden nicht geleert.\n";
+        return 2;
+    }
+    $alle = array();
+    foreach (oc_mqtt_leer_themen() as $t) { $alle[] = $praefix . '/' . $t; }
+    $n = count($alle);
+    $f = oc_mqtt_behalten_liste($alle);
+    $nachgelesen = ($f['lage'] === 'ok');
+    $offen = $nachgelesen ? array_keys($f['belegt']) : $alle;
+    if ($nachgelesen && !$offen) {
+        echo "<OK> MQTT: der Broker bestaetigt: keines der " . $n . " Themen unter " . $praefix
+           . "/ steht zurueckbehalten - nichts zu leeren.\n";
+        return 0;
+    }
+    $strom = @stream_socket_client('udp://127.0.0.1:' . (int) $g['udpport'], $errno, $errstr, 2);
+    if (!$strom) {
+        echo "<WARNING> MQTT: der UDP-Eingang des Gateways war nicht erreichbar - "
+           . "zurueckbehaltene Themen unter " . $praefix . "/ wurden nicht geleert.\n";
+        return 1;
+    }
+    $zu_leeren = count($offen);
+    $datagramme = 0;
+    for ($r = 1; $r <= max(1, (int) $runden) && $offen; $r++) {
+        if ($r > 1) { usleep((int) ($pause * 1000000)); }
+        foreach ($offen as $t) {
+            // Ein Leerzeichen hinter dem Thema, sonst keine Nutzlast: die
+            // Form, die das Gateway als Loeschung liest.
+            @fwrite($strom, 'retain ' . $t . ' ');
+            $datagramme++;
+        }
+        usleep(300000);     // dem Gateway Zeit bis zum Broker lassen
+        $f = oc_mqtt_behalten_liste($offen);
+        if ($f['lage'] === 'ok') {
+            $nachgelesen = true;
+            $offen = array_keys($f['belegt']);
+        } else {
+            $nachgelesen = false;
+        }
+    }
+    fclose($strom);
+    echo "<INFO> MQTT: " . $zu_leeren . " von " . $n . " Themen unter " . $praefix . "/ mit leerer "
+       . "Nutzlast an den UDP-Eingang " . (int) $g['udpport'] . " des Gateways gesendet ("
+       . $datagramme . " Datagramme).\n";
+    if ($nachgelesen && !$offen) {
+        echo "<OK> MQTT: der Broker bestaetigt: keines der " . $n . " Themen steht mehr "
+           . "zurueckbehalten.\n";
+        return 0;
+    }
+    if ($nachgelesen) {
+        echo "<WARNING> MQTT: " . count($offen) . " Themen stehen noch zurueckbehalten im Broker ("
+           . implode(', ', array_slice($offen, 0, 5)) . (count($offen) > 5 ? ', ...' : '')
+           . "). Von Hand: mosquitto_pub -r -n -t <thema>\n";
+        return 1;
+    }
+    echo "<INFO> MQTT: der Broker liess sich nicht befragen - nicht nachgelesen. Der UDP-Eingang "
+       . "verwirft unter Last Datagramme; was stehen bleibt, laesst sich mit "
+       . "mosquitto_pub -r -n -t <thema> von Hand loeschen.\n";
+    return 0;
 }
 
 /** Wo der Merker der zuletzt gesendeten Werte liegt. */
@@ -2694,6 +3126,15 @@ function oc_mqtt_publish($st = null, $nur_lebenszeichen = false, $erzwingen = fa
      * bildet er erfundene Themen. Der WERT wird weiter unten gesaeubert;
      * bis 1.0.9 wurde nur der Wert behandelt und das Thema nie. */
     $praefix = oc_mqtt_thema_saeubern($cfg['mqtt_topic'], 'octopus');
+    /* Die Altwerte frueher zurueckbehaltener Themen abraeumen, solange der
+     * Broker sie noch haelt - oc_mqtt_altlast() fragt ihn VORHER. Meldet er
+     * welche, geht dieser Lauf VOLL hinaus: sonst stuende die Loeschung nur
+     * vor den Themen, die sich gerade geaendert haben, und ein Altwert mit
+     * unveraendertem Wert bliebe bis zum halbstuendlichen Vollsatz stehen
+     * (in WSL gemessen, Pruefung-Spotpreis-Octopus-1.1.12, Faelle R8, R12). */
+    $alt = oc_mqtt_altlast($praefix);
+    if ($alt['lage'] === 'belegt') { $erzwingen = true; }
+    $raeumen = array_flip($alt['themen']);
 
     $s = @socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
     if (!$s) {
@@ -2755,6 +3196,15 @@ function oc_mqtt_publish($st = null, $nur_lebenszeichen = false, $erzwingen = fa
         /* Das Befehlswort entscheidet die Tabelle, nicht der Aufruf -
          * sonst ginge das Lebenszeichen zurueckbehalten hinaus oder
          * die Zustaende fluechtig. */
+        /* Die leere retain-Nutzlast loescht den zurueckbehaltenen Wert
+         * (mqttgateway.pl, sub udpin; am Geraet am 19.09.2026 belegt,
+         * Regeln/07). Sie geht UNMITTELBAR vor dem gueltigen Wert hinaus:
+         * wer das Thema abonniert hat, bekommt die Loeschung als leere
+         * Nachricht, und der naechste Wert steht gleich dahinter. */
+        if (isset($raeumen[$k])) {
+            $leer = 'retain ' . $praefix . '/' . $k . ' ';
+            @socket_sendto($s, $leer, strlen($leer), 0, '127.0.0.1', $g['udpport']);
+        }
         $verb = oc_retain_fuer($k, $wert) ? 'retain' : 'publish';
         if ($verb === 'retain') { $behalten++; }
         $msg = $verb . ' ' . $praefix . '/' . $k . ' ' . $wert;
@@ -3172,7 +3622,13 @@ function oc_eigene_ip()
  */
 function oc_version()
 {
-    $f = oc_paths()['home'] . '/data/system/plugindatabase.json';
+    /* Ohne Wurzel gibt es keine Plugin-Datenbank. Bis 1.1.11 stand hier dann
+     * '/data/system/plugindatabase.json' ab der Laufwerkswurzel, und die
+     * Fassung, die dort stand, galt (in WSL gemessen,
+     * Pruefung-Spotpreis-Octopus-1.1.12, Fall C6). */
+    $home = oc_paths()['home'];
+    if ($home === '') { return oc_version_aus_cfg(); }
+    $f = $home . '/data/system/plugindatabase.json';
     if (!is_file($f)) { return oc_version_aus_cfg(); }
     $d = json_decode((string) @file_get_contents($f), true);
     if (!isset($d['plugins']) || !is_array($d['plugins'])) { return oc_version_aus_cfg(); }
@@ -3242,9 +3698,14 @@ function oc_t($schluessel)
     static $texte = null;
     if ($texte === null) {
         $p = oc_paths();
-        // Installiert: <home>/templates/plugins/<ordner>/lang
-        $pfad = $p['home'] . '/templates/plugins/' . $p['plugin'] . '/lang';
-        if (!is_dir($pfad)) {
+        /* Installiert: <home>/templates/plugins/<ordner>/lang. Ohne Wurzel
+         * NICHTS ab der Laufwerkswurzel: bis 1.1.11 hiess das
+         * '' . '/templates/plugins/octopus/lang', und was dort lag, galt vor
+         * den eigenen Sprachdateien (in WSL gemessen,
+         * Pruefung-Spotpreis-Octopus-1.1.12, Fall C1; dieselbe Stelle in
+         * tb_t() von Spotpreis-Tibber 0.9.19). */
+        $pfad = $p['home'] !== '' ? $p['home'] . '/templates/plugins/' . $p['plugin'] . '/lang' : '';
+        if ($pfad === '' || !is_dir($pfad)) {
             // Archiv/Entwicklung: drei Ebenen ueber dieser Bibliothek
             $pfad = dirname(dirname(dirname(__FILE__))) . '/templates/lang';
         }
@@ -3768,9 +4229,14 @@ function oc_notify($thema, $stufe, $text)
     @file_put_contents($f, $neu);
     if ($stufe === 'ok') { return true; }        // Entwarnung: nur merken
 
-    // loxberry_log.php nachladen, wenn es da ist - der Cron laedt es nicht.
-    $lib = oc_paths()['home'] . '/libs/phplib/loxberry_log.php';
-    if (!function_exists('notify_ext') && is_file($lib)) { @require_once $lib; }
+    /* loxberry_log.php nachladen, wenn es da ist - der Cron laedt es nicht.
+     * Nur aus der Wurzel der Anlage: ohne Wurzel hiess das bis 1.1.11
+     * '/libs/phplib/loxberry_log.php' ab der Laufwerkswurzel, und was dort
+     * lag, lief als Code dieses Plugins (in WSL gemessen,
+     * Pruefung-Spotpreis-Octopus-1.1.12, Fall C4). */
+    $oc_home = oc_paths()['home'];
+    $lib = $oc_home !== '' ? $oc_home . '/libs/phplib/loxberry_log.php' : '';
+    if (!function_exists('notify_ext') && $lib !== '' && is_file($lib)) { @require_once $lib; }
     if (!function_exists('notify_ext')) {
         oc_log_if_changed('kein_notify', 'Der Hinweis "' . $text . '" konnte nicht an das '
             . 'Benachrichtigungszentrum gehen: notify_ext() gibt es in dieser '

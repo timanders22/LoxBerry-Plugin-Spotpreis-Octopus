@@ -7,12 +7,21 @@
 # je nachdem, wohin LoxBerry diese Datei bei der Installation legt, sind es
 # drei oder vier Ebenen. Deshalb wird aufwaerts gesucht, bis ein
 # Verzeichnis gefunden ist, das nachweislich eine LoxBerry-Wurzel ist:
-# es traegt config/plugins UND data/plugins.
+# es traegt config/plugins, data/plugins UND config/system/general.json.
+#
+# general.json ist seit 1.1.12 Bedingung. Bis dahin genuegten die beiden
+# Ordner - genau die hinterlaesst ein Pruefstand auf einem Arbeitsrechner, und
+# diese Deinstallation loeschte dann Zugangsdaten und Sicherung eines fremden
+# Baums; ganz ohne Wurzel loeschte sie ab der Laufwerkswurzel und meldete
+# trotzdem "<OK>" (in WSL gemessen, Pruefung-Spotpreis-Octopus-1.1.12, Faelle
+# H3 bis H5; Raumklima-Vorfall, Regeln/06). Findet sich nichts, wird GEWARNT
+# statt vollzogen.
 lb_wurzel_suchen() {
-    v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd)
+    v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd -P)
     i=0
     while [ -n "$v" ] && [ "$v" != "/" ] && [ $i -lt 8 ]; do
-        if [ -d "$v/config/plugins" ] && [ -d "$v/data/plugins" ]; then
+        if [ -d "$v/config/plugins" ] && [ -d "$v/data/plugins" ] \
+           && [ -f "$v/config/system/general.json" ]; then
             echo "$v"; return 0
         fi
         v=$(dirname "$v"); i=$((i + 1))
@@ -47,8 +56,38 @@ ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-octopus}"
 BASE="${ARGV5:-$LBHOMEDIR}"
-if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-        BASE=$(lb_wurzel_suchen)
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ]; then
+        BASE=$(lb_wurzel_suchen) || BASE=""
+fi
+if [ -z "$BASE" ]; then
+    echo "<WARNING> Es wurde kein LoxBerry-Wurzelverzeichnis gefunden: weder als"
+    echo "<WARNING> fuenftes Argument noch in \$LBHOMEDIR, und oberhalb von"
+    echo "<WARNING> $(dirname "$(readlink -f "$0")") traegt kein Verzeichnis"
+    echo "<WARNING> config/plugins, data/plugins und config/system/general.json."
+    echo "<WARNING> Es wurde NICHTS geloescht."
+    exit 1
+fi
+
+# Die zurueckbehaltenen MQTT-Themen der Linie leeren - VOR dem Loeschen, denn
+# das Praefix steht in der Konfiguration. Bis 1.1.11 blieben sie nach dem
+# Deinstallieren im Broker stehen, und nach jedem Neustart von Broker oder
+# Gateway bekam der Miniserver sie wieder (in WSL gemessen,
+# Pruefung-Spotpreis-Octopus-1.1.12, Faelle U1 bis U7). Geleert wird ueber den
+# Weg der Linie, den UDP-Eingang des Gateways, und beim Broker nachgelesen
+# (oc_mqtt_leeren() in webfrontend/html/oc_lib.php; Bauart Spotpreis-Tibber
+# 0.9.19). Als loxberry, nicht als root; stdin geschlossen, damit su nie auf
+# eine Eingabe wartet.
+OC_CRON="$BASE/bin/plugins/$PFOLDER/oc_cron.php"
+if command -v php >/dev/null 2>&1 && [ -f "$OC_CRON" ]; then
+    if [ "$(id -u)" = "0" ] && id loxberry >/dev/null 2>&1; then
+        su -s /bin/bash loxberry -c "$(printf '%q ' env "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PFOLDER" \
+            timeout 60 php "$OC_CRON" --mqtt-leeren)" < /dev/null 2>&1 || true
+    else
+        env "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PFOLDER" timeout 60 php "$OC_CRON" --mqtt-leeren \
+            < /dev/null 2>&1 || true
+    fi
+else
+    echo "<INFO> PHP oder oc_cron.php fehlt - zurueckbehaltene MQTT-Themen wurden nicht geleert."
 fi
 
 rm -f "$BASE/config/plugins/$PFOLDER/zugang.json" 2>/dev/null

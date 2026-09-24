@@ -14,11 +14,43 @@ ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-octopus}"
 BASE="${ARGV5:-$LBHOMEDIR}"
-if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-    # Kein fest verdrahteter Systempfad: aus dem eigenen Ablageort ableiten.
-    # Dieses Skript liegt im Wurzelverzeichnis des Plugin-Archivs bzw. unter
-    # <home>/data/plugins/<ordner>/.
-    BASE=$(cd "$(dirname "$(readlink -f "$0")")/../../.." 2>/dev/null && pwd)
+# Die Wurzel: $5 (vom Installer) oder $LBHOMEDIR, wenn dort config/plugins
+# und data/plugins liegen - sonst vom eigenen Ablageort AUFWAERTS SUCHEN, bis
+# ein Verzeichnis config/plugins, data/plugins UND config/system/general.json
+# traegt. Keine feste Ebenenzahl und kein fest verdrahteter Systempfad danach.
+#
+# Bis 1.1.11 stand hier der Rueckfall "drei Ebenen ueber dem eigenen
+# Ablageort", ohne jede Pruefung. Aus einem ausgepackten Archiv drei Ebenen
+# unter einem fremden Baum legte postinstall.sh dort an, preupgrade.sh
+# sicherte dessen Konfiguration, und postupgrade.sh spielte in ihn zurueck (in
+# WSL gemessen, Pruefung-Spotpreis-Octopus-1.1.12, Faelle H8, H10, H12).
+# general.json ist die Bedingung aus dem Raumklima-Vorfall (Regeln/06): ein
+# LoxBerry hat die Datei immer, ein Pruefstandsrest nie. Findet sich nichts,
+# wird GEWARNT statt vollzogen. Bauart Spotpreis-Tibber 0.9.18.
+oc_wurzel_suchen() {
+    oc_v=$(cd "$1" 2>/dev/null && pwd -P) || return 1
+    oc_i=0
+    while [ -n "$oc_v" ] && [ "$oc_v" != "/" ] && [ "$oc_i" -lt 8 ]; do
+        if [ -d "$oc_v/config/plugins" ] && [ -d "$oc_v/data/plugins" ] \
+           && [ -f "$oc_v/config/system/general.json" ]; then
+            echo "$oc_v"
+            return 0
+        fi
+        oc_v=$(dirname "$oc_v")
+        oc_i=$((oc_i + 1))
+    done
+    return 1
+}
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ]; then
+    BASE=$(oc_wurzel_suchen "$(dirname "$(readlink -f "$0")")") || BASE=""
+fi
+if [ -z "$BASE" ]; then
+    echo "<WARNING> Es wurde kein LoxBerry-Wurzelverzeichnis gefunden: weder als"
+    echo "<WARNING> fuenftes Argument noch in \$LBHOMEDIR, und oberhalb von"
+    echo "<WARNING> $(dirname "$(readlink -f "$0")") traegt kein Verzeichnis"
+    echo "<WARNING> config/plugins, data/plugins und config/system/general.json."
+    echo "<WARNING> Es wurde nichts angelegt, gesichert oder zurueckgespielt."
+    exit 1
 fi
 
 CFGDIR="$BASE/config/plugins/$PFOLDER"

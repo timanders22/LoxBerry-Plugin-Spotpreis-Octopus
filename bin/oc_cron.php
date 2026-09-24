@@ -8,6 +8,9 @@
  * 4. Tageswerte kurz vor Mitternacht fortschreiben
  * 5. Monatsbericht am Monatsersten
  *
+ * Mit --mqtt-leeren (nur aus uninstall/uninstall): die zurueckbehaltenen
+ * MQTT-Themen der Linie leeren und beim Broker nachlesen, sonst nichts.
+ *
  * Laeuft ueber die Kommandozeile. cron/cron.01min leitet die Ausgabe nach
  * /dev/null - hier steht deshalb nur eine Zeile auf stdout, und alles,
  * was jemand spaeter lesen soll, geht ueber oc_log() in die Logdatei.
@@ -21,62 +24,25 @@
 
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 
-/**
- * Den LoxBerry-Wurzelordner ohne festen Systempfad finden.
+/* Die Bibliothek: welche Lage gilt, entscheidet der eigene Ablageort, nicht
+ * die Reihenfolge der Versuche. Installiert liegt diese Datei unter
+ * <Wurzel>/bin/plugins/<ordner> und die Bibliothek unter
+ * <Wurzel>/webfrontend/html/plugins/<ordner>, im ausgepackten Archiv unter
+ * <archiv>/bin und <archiv>/webfrontend/html.
  *
- * DIESE DEFINITION MUSS VOR IHREM ERSTEN AUFRUF STEHEN.
- *
- * Bis 1.0.9 stand sie am DATEIENDE, in einem
- * "if (!function_exists(...)) { function ... }". Eine BEDINGTE
- * Funktionsdefinition hebt PHP nicht vor - beim Aufruf weiter unten gab es
- * die Funktion also noch nicht. Gemessen, unter 7.4 wie unter 8.4
- * wortgleich:
- *
- *     Fatal error: Uncaught Error: Call to undefined function
- *     lb_wurzel_ermitteln() in .../bin/oc_cron.php:25
- *
- * Getroffen wurde genau der Rueckfall, den der Kommentar darunter
- * verspricht: Platzhalter nicht ersetzt UND LBHOMEDIR nicht gesetzt. Und
- * weil cron.01min nach /dev/null umleitet, haette es niemand je gesehen.
- * Der Rueckfall war also nie eine Absicherung, sondern eine Erzaehlung.
- *
- * Sie traegt kein Plugin-Kuerzel und ist deshalb gegen eine
- * Doppeldefinition abgesichert - oc_lib.php bringt dieselbe Funktion mit,
- * und beide koennen im selben Prozess landen.
- */
-if (!function_exists('lb_wurzel_ermitteln')) {
-    function lb_wurzel_ermitteln()
-    {
-        $d = __DIR__;
-        for ($i = 0; $i < 8; $i++) {
-            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')) {
-                return $d;
-            }
-            $eltern = dirname($d);
-            if ($eltern === $d) { break; }
-            $d = $eltern;
-        }
-        return '';
-    }
-}
-
-/* Die Bibliothek liegt im unangemeldeten Webbereich, weil der Endpunkt fuer
-   Loxone sie ebenfalls braucht. Der Platzhalter wird bei der Installation
-   ersetzt; die beiden Rueckfaelle greifen im Archiv und wenn ein
-   Installationslauf den Platzhalter einmal nicht ersetzt hat. */
-$oc_lib = 'REPLACELBPHTMLDIR/oc_lib.php';
-if (!is_file($oc_lib)) {
-    $oc_home = getenv('LBHOMEDIR');
-    if (!$oc_home || !is_dir($oc_home)) {
-        foreach (array(lb_wurzel_ermitteln(), '/home/loxberry/loxberry') as $k) {
-            if ($k !== '' && is_dir($k)) { $oc_home = $k; break; }
-        }
-    }
-    // Eigener Ablageort: <home>/bin/plugins/<ordner>
-    $oc_ordner = basename(dirname(__FILE__));
-    $oc_lib = $oc_home . '/webfrontend/html/plugins/' . $oc_ordner . '/oc_lib.php';
-}
-if (!is_file($oc_lib)) {
+ * Bis 1.1.11 standen hier drei Kandidaten in Reihe, zwei davon VOR der
+ * eigenen Bibliothek: der Platzhalter des Installers, der im Archiv ein
+ * RELATIVER Pfad bleibt und gegen das Arbeitsverzeichnis aufgeloest wird
+ * (der Cron arbeitet aus /), und ohne Wurzel
+ * /webfrontend/html/plugins/bin/oc_lib.php ab der Laufwerkswurzel. Was dort
+ * lag, lief als Bibliothek - auch neben einer heilen eigenen (in WSL
+ * gemessen, Pruefung-Spotpreis-Octopus-1.1.12, Faelle C11 bis C13). Dazu
+ * suchte diese Datei die Wurzel selbst, ohne general.json und mit einem fest
+ * verdrahteten Rueckfall; die Wurzel bestimmt jetzt allein oc_lbhome() in
+ * oc_lib.php. Bauart bin/tb_cron.php aus Spotpreis-Tibber 0.9.19. */
+if (basename(dirname(__DIR__)) === 'plugins' && basename(dirname(dirname(__DIR__))) === 'bin') {
+    $oc_lib = dirname(dirname(dirname(__DIR__))) . '/webfrontend/html/plugins/' . basename(__DIR__) . '/oc_lib.php';
+} else {
     $oc_lib = dirname(__DIR__) . '/webfrontend/html/oc_lib.php';   // Archiv
 }
 if (!is_file($oc_lib)) {
@@ -84,6 +50,19 @@ if (!is_file($oc_lib)) {
     exit(1);
 }
 require_once $oc_lib;
+
+/* Ohne Wurzel, oder aus einem ausgepackten Archiv unterhalb einer Wurzel
+ * (Archivmodus in oc_paths()): nichts holen, nichts senden, nichts
+ * schreiben - und das VOR oc_config(), denn schon deren Selbstheilung
+ * schreibt. Naeheres an oc_keine_wurzel_abbruch(). */
+oc_keine_wurzel_abbruch('oc_cron.php');
+
+/* --mqtt-leeren: aus der Deinstallation. Liest die Konfiguration ohne
+ * Selbstheilung und schreibt nichts; gilt auch bei ausgeschaltetem Plugin,
+ * denn zurueckbehalten steht, was je gesendet wurde. */
+if (in_array('--mqtt-leeren', isset($argv) ? (array) $argv : array(), true)) {
+    exit(oc_mqtt_leeren());
+}
 
 $cfg = oc_config();
 if (empty($cfg['enabled'])) {

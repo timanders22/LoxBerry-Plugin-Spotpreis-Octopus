@@ -17,14 +17,24 @@
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 ini_set('display_errors', '1');
 
-/* ---- Bibliothek finden: installiert im html-Zweig, im Archiv daneben ---- */
+/* ---- Bibliothek finden: installiert im html-Zweig, im Archiv daneben ----
+ *
+ * Welche Lage gilt, entscheidet der eigene Ablageort, nicht die Reihenfolge
+ * der Versuche: liegt diese Datei unter <Wurzel>/webfrontend/htmlauth/
+ * plugins/<ordner>, ist sie installiert, sonst liegt sie in einem
+ * ausgepackten Archiv. Bis 1.1.11 wurden zwei Kandidaten der Reihe nach
+ * probiert, der installierte VOR der eigenen Bibliothek - aus einem Archiv
+ * unter / war das /html/plugins/htmlauth/oc_lib.php ab der Laufwerkswurzel,
+ * und was dort lag, lief als Bibliothek (in WSL gemessen,
+ * Pruefung-Spotpreis-Octopus-1.1.12, Fall C8; Bauart Spotpreis-Tibber
+ * 0.9.19). */
 $oc_ordner = basename(__DIR__);
-foreach (array(
-    dirname(dirname(dirname(__DIR__))) . '/html/plugins/' . $oc_ordner . '/oc_lib.php',
-    dirname(__DIR__) . '/html/oc_lib.php',
-) as $oc_kand) {
-    if (is_file($oc_kand)) { require_once $oc_kand; break; }
+if (basename(dirname(__DIR__)) === 'plugins' && basename(dirname(dirname(__DIR__))) === 'htmlauth') {
+    $oc_kand = dirname(dirname(dirname(__DIR__))) . '/html/plugins/' . $oc_ordner . '/oc_lib.php';
+} else {
+    $oc_kand = dirname(__DIR__) . '/html/oc_lib.php';
 }
+if (is_file($oc_kand)) { require_once $oc_kand; }
 if (!function_exists('oc_config')) {
     echo '<p>oc_lib.php nicht gefunden. Das Plugin ist unvollstaendig installiert.</p>';
     exit;
@@ -1918,14 +1928,13 @@ $oc_budget = (float) $oc_cfg['budget_kw'];
  * nichts gemessen wurde. Findet sich die Datei nicht, gibt es einen Strich
  * und keinen Haken.
  */
-$oc_rp_datei = '';
-foreach (array(
-    (string) (getenv('LBHOMEDIR') ?: '') . '/webfrontend/htmlauth/plugins/'
-        . basename(dirname(__DIR__, 2)) . '/index.php',
-    __FILE__,
-) as $oc_rp_k) {
-    if ($oc_rp_k !== '' && is_file($oc_rp_k)) { $oc_rp_datei = $oc_rp_k; break; }
-}
+/* Gezaehlt wird an __FILE__ - das ist die Datei, die gerade laeuft, in
+ * jeder Lage. Bis 1.1.11 stand davor ein Kandidat aus LBHOMEDIR: installiert
+ * zeigte er nie auf diese Datei (basename(dirname(__DIR__, 2)) ist dort
+ * 'htmlauth'), und ohne LBHOMEDIR begann er an der Laufwerkswurzel - was dort
+ * lag, wurde statt dieser Seite gezaehlt (in WSL gemessen,
+ * Pruefung-Spotpreis-Octopus-1.1.12, Fall C10). */
+$oc_rp_datei = is_file(__FILE__) ? __FILE__ : '';
 $oc_rp_ok = 2;
 $oc_rp_text = oc_t('TEST.REITER_UNKLAR');
 if ($oc_rp_datei !== '') {
