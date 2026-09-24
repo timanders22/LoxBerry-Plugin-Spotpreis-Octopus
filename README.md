@@ -7,6 +7,15 @@ HTTP-Endpunkt als Rückfallebene.
 
 ---
 
+## Was 1.1.14 behebt
+
+Fehlt bei einem Update die Zweitschrift `octopus.backup.json`, trägt aber die
+Update-Sicherung gespeicherte Einstellungen, zeigt `postinstall.sh` nicht mehr die
+Erstanleitung, sondern kündigt an, dass `postupgrade.sh` die Einstellungen gleich
+zurückholt; das Ergebnis meldet dann `postupgrade.sh`. Bis 1.1.13 widersprach sich
+das Protokoll in diesem Fall (gemessen in WSL,
+`Pruefung-Spotpreis-Octopus-1.1.14/postinstall_hinweis.md`, Fall d).
+
 ## Was 1.1.13 behebt
 
 Die Anleitung am Ende der Installation („Naechster Schritt: … Zugangsdaten

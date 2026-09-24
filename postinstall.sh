@@ -153,8 +153,26 @@ fi
 # Upgrade erst in postupgrade.sh zurueck, also nach diesem Skript.
 # Fehlt das Token nach einem Upgrade, ist die Rueckholung gescheitert, und
 # die Anleitung ist richtig; ohne php ebenso (lieber einmal zu viel).
+#
+# Fehlt beim Upgrade die Zweitschrift <ordner>.backup.json, traegt aber die
+# Update-Sicherung aus preupgrade.sh ein Token, holt erst postupgrade.sh die
+# Einstellungen zurueck. Bis 1.1.13 stand hier dann die Erstanleitung, und
+# gleich danach meldete postupgrade.sh "Einstellungen uebernommen" - das
+# Protokoll widersprach sich (gemessen 24.09.2026 in WSL,
+# Pruefung-Spotpreis-Octopus-1.1.14, Fall d). Jetzt wird die Rueckholung
+# angekuendigt; ihr Ergebnis meldet postupgrade.sh. Der Ordner der Sicherung
+# wird genau so bestimmt wie in preupgrade.sh und postupgrade.sh (sechstes
+# Argument, sonst die Kennung aus dem ersten). Bauart AWM-Abfuhr 1.4.13,
+# ACTiKamera 1.9.22, FerienFeiertage 1.2.16, MGiSmart 1.1.17.
+if [ -n "$6" ] && [ -d "$6/octopus_upgrade" ]; then
+    OC_SICHERUNG="$6/octopus_upgrade"
+else
+    OC_SICHERUNG="${1:-octopus}_upgrade"
+fi
 if oc_inhalt "$CF" konfig; then
     echo "<OK> Aktualisierung abgeschlossen, Einstellungen uebernommen."
+elif oc_inhalt "$OC_SICHERUNG/octopus.json" konfig; then
+    echo "<OK> Installation abgeschlossen. Die Einstellungen holt postupgrade.sh gleich aus der Update-Sicherung zurueck."
 else
     echo "<OK> Installation abgeschlossen."
     echo "<INFO> Naechster Schritt: Plugin oeffnen, im Reiter Einstellungen die Octopus-Zugangsdaten"
