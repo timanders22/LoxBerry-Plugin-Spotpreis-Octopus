@@ -7,6 +7,17 @@ HTTP-Endpunkt als Rückfallebene.
 
 ---
 
+## Was 1.1.15 behebt
+
+Die Rückfrage beim Broker, ob früher zurückbehaltene Werte (`ok`, `morgen_ok`,
+Monatswerte) noch dastehen, liest jetzt die Antwort auf das Abonnement (SUBACK).
+Lehnt der Broker das Lesen ab (Rückgabe 0x80, etwa durch eine Zugriffsregel) oder
+antwortet er nicht zu jedem Thema, gilt er als „nicht zu fragen“: kein Merker „vom
+Broker bestätigt“, die Altwerte werden weiter unmittelbar vor dem gültigen Wert
+gelöscht, und die Deinstallation leert, statt „nichts zu leeren“ zu melden. Bis
+1.1.14 galt eine Ablehnung als „nichts belegt“ (gemessen in WSL,
+`Pruefung-Spotpreis-Octopus-1.1.15`, Fälle S3, S4, S7, S9, S11).
+
 ## Was 1.1.14 behebt
 
 Fehlt bei einem Update die Zweitschrift `octopus.backup.json`, trägt aber die
