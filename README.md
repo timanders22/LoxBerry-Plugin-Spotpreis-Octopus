@@ -7,6 +7,64 @@ HTTP-Endpunkt als Rückfallebene.
 
 ---
 
+## Was 1.1.16 behebt
+
+Durchgang vom 30.09.2026 mit vier Prüfern (Code, Oberfläche, Installer, MQTT).
+Gemessen an Attrappen für Kraken, Energy-Charts, Broker und Gateway unter PHP
+7.4, 8.3 und 8.5; nicht am Gerät. Befunde mit Datei:Zeile:
+`Pruefung-Durchgang-2026-09-29/Octopus_BEFUNDE_UND_VERBESSERUNGEN.md`.
+
+**Bitte die Loxone-Vorlagen neu importieren** (neue Grenzen, neue Themen
+`cur_fehlt` und `pr_ersatz`).
+
+**Preise**
+
+* **Fehlende Preise erscheinen nie mehr als 0.** Bis zur Veröffentlichung der
+  Preise für morgen gingen alle 24 Stunden von morgen mit `0.000` hinaus, und
+  der Optimierer hielt sie für die günstigsten. Jetzt stehen die Werte für
+  morgen auf `-1`; in `PR` und bei einer fehlenden Viertelstunde steht der
+  Tageshöchstpreis, gekennzeichnet mit `pr_ersatz` bzw. `cur_fehlt`.
+* Stundeneinträge werden richtig in Viertelstunden zerlegt; `rank` und `rankd`
+  liegen immer zwischen 1 und der Zahl der Einträge.
+* Fällt der Abruf ganz aus, gehen über MQTT nur `ok=0`, `alter`, das
+  Lebenszeichen und `regelN_aktiv=0` hinaus, keine Preise. `ok` geht bei jedem
+  Lauf hinaus, nicht nur bei einer Änderung.
+* Rang- und Schwellregeln der Baustein-Liste sind per UND mit `ok` verknüpft;
+  Hilfe und Liste nennen `-1`.
+
+**Anmeldung und Abruf**
+
+* Die Oberfläche fragt Octopus und Energy-Charts nicht mehr selbst; jeder
+  Seitenaufruf meldete sich bisher mit dem hinterlegten Kennwort an.
+* Nach einer abgelehnten Anmeldung wartet der Abruf 30 Minuten.
+
+**MQTT**
+
+* Deinstallation und Präfixwechsel räumen die zurückbehaltenen Themen direkt am
+  Broker ab, unter jedem je benutzten Präfix. Bisher blieben sie bei Verlusten
+  am UDP-Eingang stehen.
+* Vorlagentitel wie die Namen im Gateway (`haus/strom` → `haus_strom_cur`);
+  `alter` bis 9999, `fenster_in` und `regelN_in` bis 2880.
+
+**Oberfläche**
+
+* Jedes Absenden endet mit einer Umleitung; F5 wiederholt nichts mehr.
+* Unbrauchbare Eingaben werden abgewiesen, dann wird nichts gespeichert.
+* Eine Sicherung ohne Token behält das laufende; ein fehlendes Token heilt aus
+  der Zweitschrift, ein neues entsteht nur mit Protokollzeile und Hinweis.
+* Reiter Test: „nicht geprüft“ statt eines falschen Kreuzes, Pflichtzeile
+  Formularmerkmal; Reiter Logdateien mit Hinweis auf die Ramdisk.
+
+**Installation und Betrieb**
+
+* Eine Neuinstallation spielt keine alte Zweitschrift mehr ein (neu:
+  `preinstall.sh`); während eines Updates ruht der Takt; `preise.json`
+  übersteht das Update.
+* Konfiguration und Zugangsdaten werden mit Längenprüfung geschrieben; eine
+  volle Karte zerstört sie nicht mehr.
+* Fehler des Minutentakts stehen in `cron.err`.
+* PHP 8.5: keine Verfallsmeldung mehr (`curl_close`, Kopfzeilen).
+
 ## Was 1.1.15 behebt
 
 Die Rückfrage beim Broker, ob früher zurückbehaltene Werte (`ok`, `morgen_ok`,
@@ -80,9 +138,14 @@ bis der nächste volle Satz hinausgeht (halbstündlich).
 `uninstall` ruft `bin/oc_cron.php --mqtt-leeren` (als `loxberry`): alle zwölf
 Themen, die diese Linie je zurückbehalten gesendet hat, werden mit leerer
 Nutzlast gelöscht und beim Broker nachgelesen, höchstens drei Runden. Steht
-nichts da, geht nichts hinaus. Themen unter einem **früher** eingestellten
-Präfix räumt das Skript nicht ab; nachsehen mit
-`mosquitto_sub -t '<präfix>/#' --retained-only`.
+nichts da, geht nichts hinaus. Gelöscht wird direkt am Broker über dieselbe
+TCP-Verbindung, mit der das Plugin nachliest; der
+UDP-Eingang des Gateways ist nur noch der Rückfall, wenn der Broker nicht zu
+fragen ist (bis 1.1.15 ging die Löschung nur dorthin, und unter Last blieben
+Themen stehen — am Gerät am 30.09.2026 5 von 6). Abgeräumt wird unter dem
+eingestellten Präfix **und** unter jedem früher eingestellten: die Oberfläche
+merkt sich jeden Präfixwechsel und räumt das alte Präfix dabei gleich ab.
+Nachsehen mit `mosquitto_sub -t '<präfix>/#' --retained-only`.
 
 ### Ein ausgepacktes Archiv benutzt nicht mehr die Anlage
 
@@ -1136,14 +1199,15 @@ Reiter *MQTT*. Die wichtigsten:
 
 | Thema | Bedeutung |
 |---|---|
-| `cur` | Endpreis der laufenden Viertelstunde (ct/kWh) |
+| `cur` | Endpreis der laufenden Viertelstunde (ct/kWh); fehlt sie, der Tageshöchstpreis |
+| `cur_fehlt` | 1, wenn `cur` den Tageshöchstpreis als Ersatzwert trägt |
 | `cur_h` | Endpreis der laufenden Stunde |
-| `rank` | Rang in den nächsten 24 h, 1 = günstigste Viertelstunde |
-| `level` | 1 günstig, 2 normal, 3 teuer |
-| `fenster_in` | in wie vielen Minuten das günstigste Fenster beginnt |
+| `rank` | Rang in den nächsten 24 h, 1 = günstigste Viertelstunde, −1 = nicht bekannt |
+| `level` | 1 günstig, 2 normal, 3 teuer, −1 nicht bekannt |
+| `fenster_in` | in wie vielen Minuten das günstigste Fenster beginnt, −1 = keines |
 | `neg` | 1, wenn der Nettopreis negativ ist |
-| `ok` | 1, sobald gültige Preise vorliegen |
-| `alter` | Alter der Preisdaten in Minuten |
+| `ok` | 1, sobald gültige Preise vorliegen; bei 0 gehen nur `ok`, `alter`, das Lebenszeichen und `regelN_aktiv` = 0 hinaus |
+| `alter` | Alter der Preisdaten in Minuten, 9999 = noch nie abgerufen |
 | `demo` | 1, wenn die Preise simuliert sind |
 
 Zurückbehalten (retained) gehen seit 1.1.12 nur die Einstellungen `demo`,

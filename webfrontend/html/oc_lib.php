@@ -250,6 +250,216 @@ function oc_weg($f)
 
 
 /**
+ * Eine Datei ganz schreiben (C4, seit 1.1.16).
+ *
+ * Nebendatei mit Prozessnummer, Rechte VOR dem Inhalt, dann Laenge
+ * (Rueckgabe von fwrite gegen strlen) und Ruecklesen pruefen - erst dann
+ * umbenennen. Rueckgabe false heisst: am alten Stand hat sich nichts
+ * geaendert.
+ *
+ * Bis 1.1.15 galt "fwrite() !== false" als Erfolg. In WSL gemessen mit
+ * ulimit -f 16 (Pruefbericht code, Befund 4): von 43 600 Byte kamen 16 384
+ * an, oc_config_write() meldete true, und die Zweitschrift wurde aus der
+ * abgeschnittenen Datei kopiert - Konfiguration UND Rueckfallkopie waren
+ * unlesbar, das Aktionstoken weg. Bauform ev_datei_schreiben() aus EVCC
+ * 0.9.34 (Regeln/03, "atomar schreiben").
+ */
+function oc_datei_schreiben($pfad, $inhalt, $modus = 0600)
+{
+    $inhalt = (string) $inhalt;
+    $ordner = dirname($pfad);
+    if (!is_dir($ordner)) { @mkdir($ordner, 0775, true); }
+    $neben = $pfad . '.neu.' . getmypid();
+    if (is_file($neben)) { @unlink($neben); }
+    $fh = @fopen($neben, 'xb');           // leer angelegt ...
+    if ($fh === false) { return false; }
+    @chmod($neben, $modus);                // ... sofort geschuetzt ...
+    $n = @fwrite($fh, $inhalt);            // ... dann erst gefuellt
+    $ok = ($n === strlen($inhalt)) && @fflush($fh);
+    $ok = @fclose($fh) && $ok;
+    if ($ok) {
+        clearstatcache(true, $neben);
+        $ok = (@filesize($neben) === strlen($inhalt))
+              && ((string) @file_get_contents($neben) === $inhalt);
+    }
+    if (!$ok || !@rename($neben, $pfad)) {
+        if (is_file($neben)) { @unlink($neben); }
+        return false;
+    }
+    @chmod($pfad, $modus);
+    return true;
+}
+
+/** Hat der Wert die Form eines Aktionstokens? ([A-Za-z0-9]{8,64}) */
+function oc_token_form($t)
+{
+    return !is_array($t) && preg_match('/^[A-Za-z0-9]{8,64}$/', trim((string) $t)) === 1;
+}
+
+/** Traegt die JSON-Datei ein Aktionstoken in gueltiger Form? (C5) */
+function oc_datei_hat_token($f)
+{
+    if (!is_file($f)) { return false; }
+    $d = json_decode((string) @file_get_contents($f), true);
+    return is_array($d) && isset($d['aktionstoken']) && oc_token_form($d['aktionstoken']);
+}
+
+/**
+ * Nur anzeigen, nichts abrufen (O2, seit 1.1.16).
+ *
+ * Die Oberflaeche setzt den Schalter EINMAL ganz oben. Dann liest
+ * oc_preise() nur den Zwischenspeicher des Minutentakts (preise.json, in
+ * jedem Alter), oc_co2(), oc_umwelt() und oc_verbrauch() ebenso, und
+ * oc_state() schreibt keinen Zustand und keine Hysterese fort. Bis 1.1.15
+ * meldete sich JEDES Oeffnen der Oberflaeche bei Kraken an, sobald der
+ * Zwischenspeicher aelter als 900 s war - auch bei "Plugin aktiv: Nein" -,
+ * und fragte api.energy-charts.info; schwieg die Gegenstelle, lud die Seite
+ * 30 s (Pruefbericht oberflaeche, Befund 2). Der Abruf gehoert dem
+ * Minutentakt und den ausdruecklichen Knoepfen im Reiter Test.
+ */
+function oc_kein_abruf($setzen = null)
+{
+    static $an = false;
+    if ($setzen !== null) { $an = (bool) $setzen; }
+    return $an;
+}
+
+/**
+ * Ein ausdruecklicher Knopf (Reiter Test: "Anmeldung pruefen", "Preise
+ * jetzt abrufen") darf die Anmeldebremse uebergehen (C7).
+ */
+function oc_anmeldung_ausdruecklich($setzen = null)
+{
+    static $an = false;
+    if ($setzen !== null) { $an = (bool) $setzen; }
+    return $an;
+}
+
+/** Wo die Anmeldebremse liegt (Datenordner, uebersteht einen Neustart). */
+function oc_anmeldesperre_datei()
+{
+    return oc_paths()['datadir'] . '/anmeldesperre.json';
+}
+
+/**
+ * Bis wann ist die Anmeldung bei Kraken ausgesetzt? 0 = gar nicht (C7).
+ *
+ * Nach einer ABGELEHNTEN Anmeldung (FEHLER_ANMELDUNG) wartet der Abruf 30
+ * Minuten. Bis 1.1.15 meldete sich das Plugin mit falschem Kennwort bei
+ * jeder Neuberechnung neu an - gemessen: 6 Neuberechnungen, 6
+ * Anmeldeversuche, 1 Protokollzeile (Pruefbericht code, Befund 7). Eine
+ * Sperre des Kontos nach Fehlversuchen ist bei Octopus nicht gemessen.
+ */
+function oc_anmeldesperre()
+{
+    $f = oc_anmeldesperre_datei();
+    if (!is_file($f)) { return 0; }
+    $d = json_decode((string) @file_get_contents($f), true);
+    $bis = (is_array($d) && isset($d['bis']) && !is_array($d['bis'])) ? (int) $d['bis'] : 0;
+    return ($bis > time() && $bis <= time() + 7200) ? $bis : 0;
+}
+
+/**
+ * Die Upgrade-Marke data/plugins/<ordner>.upgrade_laeuft (I2, Entscheidung 1).
+ *
+ * preupgrade.sh legt sie als Erstes an (Unixzeit), postupgrade.sh raeumt sie
+ * ueber einen trap ab. Sie liegt NEBEN dem Datenordner, den
+ * purge_installation loescht. Der Minutentakt ruht, solange sie juenger als
+ * 3600 s ist (die 3600 s gelten nur fuer diese Startsperre; ob
+ * zurueckgespielt wird, entscheidet allein ihr Vorhandensein).
+ *
+ * Rueckgabe null (keine Marke) oder array('alter' => Sekunden|null,
+ * 'gilt' => bool). Unlesbar, aus der Zukunft oder aelter als 3600 s: gilt
+ * nicht. Bauform au_marke() (AudiConnect 0.9.22).
+ */
+function oc_upgrade_marke()
+{
+    $d = oc_paths()['datadir'];
+    $f = dirname($d) . '/' . basename($d) . '.upgrade_laeuft';
+    if (!is_file($f)) { return null; }
+    $roh = trim((string) @file_get_contents($f));
+    if ($roh === '' || !preg_match('/^[0-9]+$/', $roh)) {
+        return array('alter' => null, 'gilt' => false);
+    }
+    $alter = time() - (int) $roh;
+    if ($alter < 0) { return array('alter' => $alter, 'gilt' => false); }
+    return array('alter' => $alter, 'gilt' => $alter < 3600);
+}
+
+/**
+ * Die Einmalmeldung der Oberflaeche (O1, PRG): nach jedem POST leitet die
+ * Seite mit 303 um, das Ergebnis reist in dieser Datei (Datenordner, 0600,
+ * 120 s gueltig) und wird nur beim GET gelesen - und dabei geloescht.
+ * Aktionstoken und Formularmerkmal stehen darin nie im Klartext.
+ * Bauform ev_meldung_ablegen() (EVCC 0.9.34).
+ */
+function oc_meldung_datei()
+{
+    return oc_paths()['datadir'] . '/einmalmeldung.json';
+}
+
+function oc_meldung_ablegen($daten)
+{
+    $daten['zeit'] = time();
+    $geheim = array();
+    $c = oc_config(false);
+    if ((string) $c['aktionstoken'] !== '') {
+        $geheim[] = (string) $c['aktionstoken'];
+        $geheim[] = oc_formtoken($c);
+    }
+    array_walk_recursive($daten, function (&$w) use ($geheim) {
+        if (is_string($w)) {
+            foreach ($geheim as $g) { if ($g !== '') { $w = str_replace($g, '***', $w); } }
+        }
+    });
+    $js = json_encode($daten, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    return is_string($js) && oc_datei_schreiben(oc_meldung_datei(), $js, 0600);
+}
+
+function oc_meldung_abholen()
+{
+    $f = oc_meldung_datei();
+    clearstatcache(true, $f);
+    if (!is_file($f)) { return null; }
+    $d = json_decode((string) @file_get_contents($f), true);
+    @unlink($f);                         // loeschen VOR der Anzeige
+    if (!is_array($d) || !isset($d['zeit']) || abs(time() - (int) $d['zeit']) > 120) { return null; }
+    return $d;
+}
+
+/**
+ * Eintraege laenger als eine Viertelstunde in Viertelstunden zerlegen (C2).
+ *
+ * oc_sammle_preise() las die Laenge jedes Eintrags ('len') und warf sie
+ * weg: ein Stundeneintrag belegte nur seine erste Viertelstunde, die drei
+ * uebrigen fehlten - gemessen an der Attrappe mit Stundeneintraegen
+ * (validTo - validFrom = 3600): um 15:33 cur=0.000 rank=1 level=1
+ * (Pruefbericht code, Befund 2). Eine vorhandene Viertelstunde gewinnt
+ * immer; hoechstens 96 Viertelstunden je Eintrag. Der Demo-Zweig zerlegt
+ * seine Stunden seit jeher selbst.
+ */
+function oc_slots_vierteln($slots)
+{
+    $out = array();
+    foreach ((array) $slots as $ts => $s) { $out[(int) $ts] = $s; }
+    foreach ((array) $slots as $ts => $s) {
+        $ts = (int) $ts;
+        $len = (is_array($s) && isset($s['len'])) ? (int) $s['len'] : 900;
+        if (!is_array($s) || $len <= 900 || $ts % 900 !== 0) { continue; }
+        $n = min(96, intdiv($len, 900));
+        for ($k = 1; $k < $n; $k++) {
+            $t = $ts + $k * 900;
+            if (!isset($out[$t])) {
+                $out[$t] = array('ct' => $s['ct'], 'net' => isset($s['net']) ? $s['net'] : null, 'len' => 900);
+            }
+        }
+    }
+    ksort($out);
+    return $out;
+}
+
+
+/**
  * Protokollzeile. Bewusst ohne Umlaute: die Datei wird auch ueber die
  * Konsole gelesen, und dort ist die Zeichensatzlage unklar.
  */
@@ -514,7 +724,15 @@ function oc_konfig_lage_jetzt()
     if ($roh === '' || $roh === '{}') {
         return is_file($p['backup']) ? 'zweitschrift' : 'vorgabe';
     }
-    return is_array(json_decode($roh, true)) ? 'ok' : 'kaputt';
+    $d = json_decode($roh, true);
+    if (!is_array($d)) { return 'kaputt'; }
+    /* C5 (seit 1.1.16): gueltiges JSON OHNE Aktionstoken, waehrend die
+     * Zweitschrift eines traegt - oc_config() heilt dann nach Inhalt. */
+    if (!(isset($d['aktionstoken']) && oc_token_form($d['aktionstoken']))
+        && oc_datei_hat_token($p['backup'])) {
+        return 'ohne_token';
+    }
+    return 'ok';
 }
 
 /** Die Lage beim ersten Lesen in diesem Prozess. */
@@ -587,6 +805,22 @@ function oc_config($heilen = null)
      * in 1.2.20 behoben. */
     $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
     $oc_kaputt = ($roh !== '' && $roh !== '{}' && !is_array(json_decode($roh, true)));
+    /* HEILEN NACH INHALT, NICHT NACH FORM (C5, seit 1.1.16).
+     *
+     * Eine gueltige Datei OHNE Aktionstoken fiel durch beide Pruefungen:
+     * sie ist weder leer noch kaputt. oc_config(true) lieferte token=LEER,
+     * obwohl die Zweitschrift daneben eines trug, und die Oberflaeche
+     * wuerfelte beim naechsten Oeffnen still ein neues - jede Adresse im
+     * Miniserver bekam danach 403 (Pruefbericht code, Befund 5; Regeln/05,
+     * "Selbstheilung entscheidet nach Inhalt"). Jetzt: die Datei geht als
+     * .kaputt beiseite, die Zweitschrift mit Token kommt zurueck, eine
+     * Protokollzeile nennt beides. */
+    $oc_ohne_token = false;
+    if ($roh !== '' && $roh !== '{}' && !$oc_kaputt) {
+        $oc_d = json_decode($roh, true);
+        $oc_ohne_token = !(isset($oc_d['aktionstoken']) && oc_token_form($oc_d['aktionstoken']))
+                         && oc_datei_hat_token($p['backup']);
+    }
     if ($heilen && $oc_kaputt) {
         $oc_weg = $p['config'] . '.kaputt.' . date('YmdHis');
         if (@rename($p['config'], $oc_weg)) {
@@ -597,6 +831,15 @@ function oc_config($heilen = null)
              * Hausregel: die .kaputt-Datei 0600 (Regeln/05). */
             @chmod($oc_weg, 0600);
             oc_log('Konfiguration war beschaedigt und wurde beiseitegelegt: ' . basename($oc_weg));
+            $roh = '';
+        }
+    }
+    if ($heilen && $oc_ohne_token) {
+        $oc_weg = $p['config'] . '.kaputt.' . date('YmdHis');
+        if (@rename($p['config'], $oc_weg)) {
+            @chmod($oc_weg, 0600);
+            oc_log('Konfiguration trug kein Aktionstoken, die Zweitschrift schon: beiseitegelegt als '
+                . basename($oc_weg) . ', die Zweitschrift wird zurueckgeholt.');
             $roh = '';
         }
     }
@@ -611,10 +854,10 @@ function oc_config($heilen = null)
         if (@copy($p['backup'], $p['config'])) {
             // Die Zweitschrift traegt das Aktionstoken - dieselben Rechte.
             @chmod($p['config'], 0600);
-            if ($oc_kaputt) { oc_log('Konfiguration aus der Sicherung zurueckgeholt.'); }
+            if ($oc_kaputt || $oc_ohne_token) { oc_log('Konfiguration aus der Sicherung zurueckgeholt.'); }
         }
         $roh = trim((string) @file_get_contents($p['config']));
-    } elseif (!$heilen && ($roh === '' || $roh === '{}' || $oc_kaputt) && is_file($p['backup'])) {
+    } elseif (!$heilen && ($roh === '' || $roh === '{}' || $oc_kaputt || $oc_ohne_token) && is_file($p['backup'])) {
         /* Nur lesen: die Sicherung wird verwendet, aber NICHT zurueck-
          * geschrieben. Sonst antwortete der Endpunkt einem berechtigten
          * Aufrufer mit Vorgabewerten, obwohl eine gueltige Sicherung
@@ -908,20 +1151,24 @@ function oc_config_write($cfg)
      *
      * Die Nebendatei traegt die Prozessnummer, sonst zerlegen zwei
      * gleichzeitige Schreiber einander. */
-    $vor = $p['config'] . '.neu.' . getmypid();
-    $fh = @fopen($vor, 'c');
-    if ($fh === false) { return false; }
-    @chmod($vor, 0600);
-    if (!@ftruncate($fh, 0) || @fwrite($fh, $json) === false) {
-        @fclose($fh);
-        @unlink($vor);
+    /* C4 (seit 1.1.16): geschrieben wird ueber oc_datei_schreiben() - Laenge
+     * gegen strlen, Ruecklesen, erst dann umbenennen. Eine kurze Schreibung
+     * (volle Karte) liefert false, und Konfiguration UND Zweitschrift bleiben,
+     * wie sie waren. Bis 1.1.15 meldete eine abgeschnittene Datei Erfolg, und
+     * die Zweitschrift wurde aus ihr kopiert (Pruefbericht code, Befund 4). */
+    if (!oc_datei_schreiben($p['config'], $json, 0600)) {
+        oc_log('Konfiguration NICHT geschrieben: die Datei liess sich nicht vollstaendig schreiben '
+            . '(voller Datentraeger?) - der bisherige Stand und die Zweitschrift bleiben unangetastet');
         return false;
     }
-    @fclose($fh);
-    if (!@rename($vor, $p['config'])) { @unlink($vor); return false; }
-    /* Die Zweitschrift traegt dasselbe Geheimnis wie die Konfiguration -
-     * also auch dieselben Rechte. copy() nimmt sie nicht mit. */
-    if (@copy($p['config'], $p['backup'])) { @chmod($p['backup'], 0600); }
+    /* Die Zweitschrift erst NACH dem geprueften Schreiben, aus demselben
+     * Inhalt, mit denselben Rechten - und nur, wenn er ein Aktionstoken traegt:
+     * eine Zweitschrift ohne Token haette die Selbstheilung nichts zu holen. */
+    if (is_array($cfg) && isset($cfg['aktionstoken']) && oc_token_form($cfg['aktionstoken'])) {
+        if (!oc_datei_schreiben($p['backup'], $json, 0600)) {
+            oc_log('Die Zweitschrift liess sich nicht vollstaendig schreiben - die bisherige bleibt stehen.');
+        }
+    }
     oc_weg(oc_tmpdir() . '/state.json');   // Zustand mit neuen Schwellen neu rechnen
     return true;
 }
@@ -973,16 +1220,15 @@ function oc_zugang_write($email, $passwort, $konto)
      * Nebendatei traegt dazu die Prozessnummer, damit zwei gleichzeitige
      * Schreibvorgaenge sich nicht ins Gehege kommen (Hausstandard
      * "Rechte vor Inhalt, und die Nebendatei traegt die Prozessnummer"). */
-    $vor = $f . '.tmp.' . getmypid();
-    $fh = @fopen($vor, 'wb');
-    if (!$fh) { return false; }
-    @chmod($vor, 0600);
-    $ok = (@fwrite($fh, $json) !== false);
-    @fclose($fh);
-    if (!$ok) { @unlink($vor); return false; }
-    if (!@rename($vor, $f)) { @unlink($vor); return false; }
-    @chmod($f, 0600);
+    /* C4 (seit 1.1.16): Laenge und Ruecklesen pruefen - bis 1.1.15 galt
+     * "fwrite() !== false" als Erfolg (Pruefbericht code, Befund 4). */
+    if (!oc_datei_schreiben($f, $json, 0600)) {
+        oc_log('Zugangsdaten NICHT geschrieben: die Datei liess sich nicht vollstaendig schreiben '
+            . '- der bisherige Stand bleibt');
+        return false;
+    }
     oc_weg(oc_datadir() . '/token.json');   // neue Zugangsdaten, altes Token verwerfen
+    oc_weg(oc_anmeldesperre_datei());       // C7: neue Zugangsdaten, neuer Versuch
     oc_weg(oc_tmpdir() . '/state.json');
     oc_log('Zugangsdaten gespeichert (Konto ' . oc_maske_konto($konto) . ', Passwortlaenge '
         . strlen((string) $passwort) . ' Zeichen)');
@@ -1045,7 +1291,11 @@ function oc_http($url, $post = null, $extra = array(), $timeout = 20)
         $body = curl_exec($ch);
         $nr = curl_errno($ch);
         $erg['code'] = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
+        /* C6 (seit 1.1.16): das ausdrueckliche Schliessen des cURL-Griffs ist
+         * seit PHP 8.0 wirkungslos und meldet unter 8.5 zur LAUFZEIT
+         * "deprecated" (php -l sieht das nicht). Nur noch hinter der
+         * Fassungsweiche in DERSELBEN Zeile. */
+        if (PHP_VERSION_ID < 80000) { curl_close($ch); }
         if ($body === false) {
             $erg['fehler'] = oc_curl_fehler($nr);
             return $erg;
@@ -1061,16 +1311,19 @@ function oc_http($url, $post = null, $extra = array(), $timeout = 20)
             'ignore_errors' => true,
         ));
         if ($post !== null) { $opt['http']['content'] = $post; }
-        $body = @file_get_contents($url, false, stream_context_create($opt));
+        /* C6 (seit 1.1.16): die Kopfzeilen kommen aus
+         * stream_get_meta_data()['wrapper_data'], und es gilt die LETZTE
+         * Statuszeile (nach einer Umleitung stehen mehrere darin). Bis
+         * 1.1.15 las diese Stelle die vordefinierte Kopfzeilen-Variable von
+         * PHP und davon nur die ERSTE Zeile; PHP 8.5 meldet schon deren
+         * Nennung als ueberholt, und entfaellt sie, hiesse jeder Code 0 und
+         * jede Antwort Erfolg. Bauform ev_http_strom() (EVCC 0.9.34). */
+        list($body, $erg['code']) = oc_http_strom($url, stream_context_create($opt));
         if ($body === false) {
             $erg['fehler'] = 'FEHLER_VERBINDUNG';
             return $erg;
         }
         $erg['body'] = (string) $body;
-        if (isset($http_response_header[0])
-            && preg_match('#HTTP/\S+\s+(\d{3})#', $http_response_header[0], $m)) {
-            $erg['code'] = (int) $m[1];
-        }
     }
 
     if ($erg['code'] >= 400) {
@@ -1079,6 +1332,27 @@ function oc_http($url, $post = null, $extra = array(), $timeout = 20)
     }
     $erg['ok'] = true;
     return $erg;
+}
+
+/**
+ * Eine Adresse ueber den Datenstrom abrufen (Ersatzweg ohne php-curl und
+ * oc_holen()). Rueckgabe array(Rumpf oder false, HTTP-Code der LETZTEN
+ * Statuszeile). Die Kopfzeilen kommen aus stream_get_meta_data() (C6).
+ */
+function oc_http_strom($url, $ctx)
+{
+    $fh = @fopen($url, 'rb', false, $ctx);
+    if ($fh === false) { return array(false, 0); }
+    $meta = @stream_get_meta_data($fh);
+    $body = @stream_get_contents($fh);
+    @fclose($fh);
+    $kopf = (is_array($meta) && isset($meta['wrapper_data']) && is_array($meta['wrapper_data']))
+        ? $meta['wrapper_data'] : array();
+    $code = 0;
+    foreach ($kopf as $z) {
+        if (is_string($z) && preg_match('#^HTTP/\S+\s+([0-9]{3})#', $z, $m)) { $code = (int) $m[1]; }
+    }
+    return array($body === false ? '' : (string) $body, $code);
 }
 
 /**
@@ -1136,6 +1410,18 @@ function oc_kraken_token($force = false, &$fehler = null)
         $fehler = 'FEHLER_KEIN_ZUGANG';
         return '';
     }
+    /* ANMELDEBREMSE (C7, seit 1.1.16): nach einer ABGELEHNTEN Anmeldung 30
+     * Minuten keine neue - der Grund bleibt stehen. Bis 1.1.15 gab es bei
+     * falschem Kennwort je Neuberechnung einen Versuch, gemessen 6 bei 6
+     * Laeufen. Ein ausdruecklicher Knopf im Reiter Test versucht es sofort. */
+    $oc_sperre = oc_anmeldesperre();
+    if ($oc_sperre > 0 && !oc_anmeldung_ausdruecklich()) {
+        $fehler = 'FEHLER_ANMELDUNG';
+        oc_log_if_changed('anmeldesperre', 'Anmeldung bei Kraken ausgesetzt bis '
+            . date('H:i', $oc_sperre) . ' - die letzte wurde abgelehnt. Reiter Test, '
+            . '"Anmeldung pruefen" versucht es sofort.');
+        return '';
+    }
     $abfrage = 'mutation krakenTokenAuthentication($email: String!, $password: String!) {'
              . ' obtainKrakenToken(input: {email: $email, password: $password}) { token } }';
     $payload = json_encode(array(
@@ -1159,6 +1445,11 @@ function oc_kraken_token($force = false, &$fehler = null)
         $fehler = 'FEHLER_ANMELDUNG';
         $m = isset($d['errors'][0]['message']) ? (string) $d['errors'][0]['message'] : '';
         oc_log_if_changed('anmeldung', 'abgelehnt: ' . substr($m, 0, 200));
+        // C7: die naechste Anmeldung fruehestens in 30 Minuten.
+        if (!oc_datei_schreiben(oc_anmeldesperre_datei(), json_encode(array('bis' => time() + 1800)), 0600)) {
+            oc_log_if_changed('anmeldesperre_datei', 'Die Anmeldebremse liess sich nicht schreiben ('
+                . oc_anmeldesperre_datei() . ') - der naechste Lauf versucht es wieder.');
+        }
         return '';
     }
     $token = isset($d['data']['obtainKrakenToken']['token'])
@@ -1180,6 +1471,7 @@ function oc_kraken_token($force = false, &$fehler = null)
         if (@rename($vor, $f)) { @chmod($f, 0600); } else { @unlink($vor); }
     }
     oc_log_if_changed('anmeldung', 'Token geholt, gueltig bis ' . date('H:i', time() + 3300));
+    oc_weg(oc_anmeldesperre_datei());
     return $token;
 }
 
@@ -1268,7 +1560,10 @@ function oc_sammle_preise($node, &$out)
             $out[$von] = array(
                 'ct'     => $brutto !== null ? round($brutto, 4) : round($netto, 4),
                 'net'    => $netto !== null ? round($netto, 4) : null,
-                'len'    => min(3600, max(300, $bis - $von)),
+                /* Die ECHTE Laenge (C2, seit 1.1.16): bis 1.1.15 auf 3600 s
+                 * gekappt und danach nie gelesen. oc_slots_vierteln() zerlegt
+                 * laengere Eintraege in Viertelstunden. */
+                'len'    => min(86400, max(300, $bis - $von)),
                 'brutto' => $brutto !== null ? 1 : 0,
             );
         }
@@ -1381,8 +1676,47 @@ function oc_demo_preise($force = false)
  */
 function oc_preise($force = false)
 {
+    $erg = oc_preise_holen($force);
+    /* Stundeneintraege und zusammengefasste Eintraege in Viertelstunden
+     * zerlegen - auf JEDEM Weg, auch aus dem Zwischenspeicher (C2). */
+    if (is_array($erg) && isset($erg['slots']) && is_array($erg['slots'])) {
+        $erg['slots'] = oc_slots_vierteln($erg['slots']);
+    }
+    return $erg;
+}
+
+/** Wo der Grund des letzten gescheiterten Abrufs liegt (O2: fuer die Anzeige). */
+function oc_abruf_fehler_datei()
+{
+    return oc_tmpdir() . '/abruf_fehler.txt';
+}
+
+function oc_preise_holen($force = false)
+{
     $cfg = oc_config();
     $cache = oc_datadir() . '/preise.json';
+    /* NUR ANZEIGEN (O2, seit 1.1.16): der Zwischenspeicher des
+     * Minutentakts in JEDEM Alter, nie ein Abruf. Ist er aelter als der
+     * Takt des Abrufs, gilt er als veraltet, und der Grund kommt aus dem
+     * letzten Lauf des Takts. */
+    if (oc_kein_abruf() && !$force) {
+        $grund = is_file(oc_abruf_fehler_datei())
+            ? trim((string) @file_get_contents(oc_abruf_fehler_datei())) : '';
+        $c = is_file($cache) ? json_decode((string) @file_get_contents($cache), true) : null;
+        if (is_array($c) && !empty($c['slots']) && is_array($c['slots'])) {
+            $neu = array();
+            foreach ($c['slots'] as $ts => $s) { $neu[(int) $ts] = $s; }
+            ksort($neu);
+            $c['slots'] = $neu;
+            if (time() - (int) filemtime($cache) >= 900) {
+                $c['veraltet'] = 1;
+                $c['fehler'] = $grund !== '' ? $grund : 'FEHLER_NOCH_KEIN_ABRUF';
+            }
+            return $c;
+        }
+        return array('slots' => array(), 'fehler' => $grund !== '' ? $grund : 'FEHLER_NOCH_KEIN_ABRUF',
+                     'demo' => !empty($cfg['demo']) ? 1 : 0, 'brutto_ok' => 1, 'stand' => 0);
+    }
     if (!$force && is_file($cache) && time() - filemtime($cache) < 900) {
         $c = json_decode((string) @file_get_contents($cache), true);
         if (is_array($c) && !empty($c['slots'])) {
@@ -1397,6 +1731,8 @@ function oc_preise($force = false)
     }
     $demo = !empty($cfg['demo']);
     $r = $demo ? oc_demo_preise($force) : oc_kraken_preise($force);
+    // Den Grund fuer die Anzeige merken (O2) - leer nach einem Erfolg.
+    @file_put_contents(oc_abruf_fehler_datei(), $r['slots'] ? '' : (string) $r['fehler']);
     // Ohne Zugangsdaten waere die Oberflaeche sonst dauerhaft leer. Statt
     // stillschweigend auf Demo auszuweichen, wird der Ersatzweg GEMELDET.
     if (!$demo && !$r['slots'] && in_array($r['fehler'], array('FEHLER_KEIN_ZUGANG', 'FEHLER_KEIN_KONTO'), true)) {
@@ -1520,6 +1856,11 @@ function oc_umwelt($force = false)
         $c = json_decode((string) @file_get_contents($cache), true);
         if (is_array($c)) { return $c + $leer; }
     }
+    // O2: die Oberflaeche liest nur, was der Takt geholt hat.
+    if (oc_kein_abruf() && !$force) {
+        $c = is_file($cache) ? json_decode((string) @file_get_contents($cache), true) : null;
+        return is_array($c) ? $c + $leer : $leer;
+    }
     $erg = $leer;
     $erg['ts'] = time();
     $jetzt = time() - (time() % 900);
@@ -1598,19 +1939,14 @@ function oc_holen($url, &$fehler = null)
         'follow_location' => 0,
         'max_redirects' => 1,
         'ignore_errors' => true)));
-    $r = @file_get_contents($url, false, $ctx);
+    /* C6 (seit 1.1.16): Rumpf und LETZTE Statuszeile ueber
+     * oc_http_strom() - ohne die vordefinierte Kopfzeilen-Variable, die
+     * PHP 8.5 als ueberholt meldet. Entfiele sie, wuerde ein Fehlerrumpf
+     * (404/500) wieder als Prognose gelesen. */
+    list($r, $code) = oc_http_strom($url, $ctx);
     if ($r === false) {
         $fehler = 'NICHT_ERREICHBAR';
         return null;
-    }
-    /* $http_response_header legt PHP im aufrufenden Bereich an. Genommen
-     * wird die LETZTE Statuszeile - bei einer Umleitung stehen mehrere
-     * darin, und nur die letzte gehoert zum Rumpf. */
-    $code = 0;
-    if (isset($http_response_header) && is_array($http_response_header)) {
-        foreach ($http_response_header as $z) {
-            if (preg_match('#^HTTP/\S+\s+(\d{3})#', (string) $z, $m)) { $code = (int) $m[1]; }
-        }
     }
     if ($code >= 400 || ($code > 0 && $code < 200)) {
         /* Die Zahl gehoert ins Protokoll, nicht in die Beschriftung: eine
@@ -1781,8 +2117,11 @@ function oc_tagstats($slots, $von, $bis)
 
 function oc_tagstats_leer()
 {
-    return array('n' => 0, 'avg' => 0, 'minp' => 0, 'mints' => 0, 'minh' => 0, 'minm' => 0,
-                 'maxp' => 0, 'maxts' => 0, 'maxh' => 0, 'maxm' => 0,
+    /* Ohne Preise ist kein Tageswert bekannt: -1 (Entscheidung 5/8, seit
+     * 1.1.16). Bis 1.1.15 stand hier 0, und avg_morgen/min_morgen gingen
+     * jeden Vormittag als 0.000 hinaus - eine Null ist ein Preis. */
+    return array('n' => 0, 'avg' => -1, 'minp' => -1, 'mints' => 0, 'minh' => -1, 'minm' => 0,
+                 'maxp' => -1, 'maxts' => 0, 'maxh' => -1, 'maxm' => 0,
                  'slots' => array(), 'hours' => array());
 }
 
@@ -1811,7 +2150,8 @@ function oc_fenster($slots, $stunden)
         if ($best === null || $avg < $best[1]) { $best = array($ks[$i], $avg); }
     }
     if ($best === null) {
-        return array('ts' => 0, 'h' => -1, 'm' => 0, 'in' => -1, 'ct' => 0);
+        // Kein Fenster, kein Preis: -1 statt 0 (Entscheidung 5/8, seit 1.1.16).
+        return array('ts' => 0, 'h' => -1, 'm' => 0, 'in' => -1, 'ct' => -1);
     }
     return array(
         'ts' => $best[0],
@@ -1830,7 +2170,10 @@ function oc_state($force = false)
     $slotstart = $jetzt - ($jetzt % 900);
     $hstart = $jetzt - ($jetzt % 3600);
     $cache = oc_tmpdir() . '/state.json';
-    if (!$force && is_file($cache) && time() - filemtime($cache) < 240) {
+    /* O2: im Nur-Anzeige-Betrieb gilt der Zustand des Takts, solange er
+     * dieselbe Viertelstunde meint - in jedem Alter. */
+    $grenze = (oc_kein_abruf() && !$force) ? 900 : 240;
+    if (!$force && is_file($cache) && time() - filemtime($cache) < $grenze) {
         $c = json_decode((string) @file_get_contents($cache), true);
         if (is_array($c) && isset($c['slotstart']) && (int) $c['slotstart'] === $slotstart) {
             return $c;
@@ -1842,23 +2185,69 @@ function oc_state($force = false)
     $heute = oc_tagstats($slots, strtotime('today 00:00'), strtotime('tomorrow 00:00'));
     $morgen = oc_tagstats($slots, strtotime('tomorrow 00:00'), strtotime('tomorrow 00:00') + 86400);
     $std = oc_stunden($slots);
+    $ok = ($heute !== null && $heute['n'] > 0);
+    $morgen_da = ($morgen !== null && $morgen['n'] > 0);
 
-    $cur = isset($slots[$slotstart]) ? round((float) $slots[$slotstart]['ct'], 3) : 0.0;
-    $curn = (isset($slots[$slotstart]) && $slots[$slotstart]['net'] !== null)
-        ? round((float) $slots[$slotstart]['net'], 3) : 0.0;
-    $next = isset($slots[$slotstart + 900]) ? round((float) $slots[$slotstart + 900]['ct'], 3) : 0.0;
-    $curh = isset($std[$hstart]) ? $std[$hstart] : 0.0;
-    $nexth = isset($std[$hstart + 3600]) ? $std[$hstart + 3600] : 0.0;
+    /* ---- Ersatzwerte, falls eine Viertelstunde fehlt (C1, C2, seit 1.1.16) ----
+     *
+     * Uebertragen aus Spotpreis-aWATTar 1.2.30 (spot_lib.php:1487-1526 und
+     * :1646-1672): fehlt ein Preis, ist die Frage nicht "welche Zahl passt am
+     * besten", sondern "welche Zahl richtet keinen Schaden an". Eine 0 ist die
+     * schlechteste - sie sieht wie die guenstigste Viertelstunde des Tages aus.
+     * Bis 1.1.15 stand hier 0.0: gemessen an der Attrappe (Pruefbericht code,
+     * Befunde 1 und 2) gingen jeden Vormittag PM00-23 und die hinteren
+     * PR-Stunden als 0.000 an den Spot Price Optimizer, und fehlte die
+     * laufende Viertelstunde, kam CUR=0 RANK=1 LEVEL=1 bei OK=1.
+     *
+     * Ersatzwert ist der TAGESHOECHSTPREIS (fuer die rollende Sicht der
+     * hoehere der beiden Tage), damit wird die Stunde nie gewaehlt. cur_fehlt
+     * sagt an, dass fuer die laufende Viertelstunde ein Ersatzwert steht;
+     * pr_ersatz zaehlt die Stunden der rollenden Reihe mit Ersatzwert. Ohne
+     * jeden Preis (ok=0) tragen alle Preise -1 - dann antwortet der Endpunkt
+     * ohnehin mit 503, und ueber MQTT geht nur das Signal (C3). */
+    $ph_ersatz = $ok ? round((float) $heute['maxp'], 3) : -1.0;
+    $pm_ersatz = $morgen_da ? round((float) $morgen['maxp'], 3) : $ph_ersatz;
+    $pr_ersatz = max($ph_ersatz, $pm_ersatz);
+    // Der Nettoanteil der teuersten Viertelstunde - nie eine negative Zahl
+    // aus dem Nichts, sonst hiesse es "neg=1" und eine Regel schaltete ein.
+    $n_ersatz = $pr_ersatz;
+    foreach (array($morgen_da && $pm_ersatz >= $ph_ersatz ? $morgen : null, $ok ? $heute : null) as $tg) {
+        if ($tg !== null && isset($slots[(int) $tg['maxts']]['net']) && $slots[(int) $tg['maxts']]['net'] !== null) {
+            $n_ersatz = round((float) $slots[(int) $tg['maxts']]['net'], 3);
+            break;
+        }
+    }
+    $cur_fehlt = isset($slots[$slotstart]) ? 0 : 1;
+    if ($ok) {
+        $cur = isset($slots[$slotstart]) ? round((float) $slots[$slotstart]['ct'], 3) : $pr_ersatz;
+        if (isset($slots[$slotstart])) {
+            $curn = ($slots[$slotstart]['net'] !== null) ? round((float) $slots[$slotstart]['net'], 3) : 0.0;
+        } else {
+            $curn = $n_ersatz;
+        }
+        $next = isset($slots[$slotstart + 900]) ? round((float) $slots[$slotstart + 900]['ct'], 3) : $pr_ersatz;
+        $curh = isset($std[$hstart]) ? $std[$hstart] : $pr_ersatz;
+        $nexth = isset($std[$hstart + 3600]) ? $std[$hstart + 3600] : $pr_ersatz;
+    } else {
+        $cur = -1.0; $curn = -1.0; $next = -1.0; $curh = -1.0; $nexth = -1.0;
+    }
 
     // Rang der laufenden Viertelstunde in den naechsten 24 Stunden
     $fenster24 = array();
     foreach ($slots as $ts => $s) {
-        if ($ts >= $slotstart && $ts < $slotstart + 86400) { $fenster24[$ts] = (float) $s['ct']; }
+        if ($ts >= $slotstart && $ts < $slotstart + 86400) { $fenster24[$ts] = round((float) $s['ct'], 3); }
     }
     $werte = array_values($fenster24);
     sort($werte);
     $rang = 1;
     foreach ($werte as $v) { if ($v < $cur) { $rang++; } }
+    /* RANG 1..n (seit 1.1.16): verglichen wird mit denselben auf 3 Stellen
+     * gerundeten Werten wie cur - bis 1.1.15 stand cur gerundet gegen
+     * ungerundete Werte, und es kam rankd=0 bzw. rank=n+1 heraus (gemessen:
+     * rank=97 rankd=0 bei n=96, Stundeneintraege). Ein Ersatzwert ausserhalb
+     * der 24 Stunden (Hoechstpreis von morgen oder schon vorbei) zaehlt als
+     * teuerster Platz n. Dieselbe Stelle hat Spotpreis-aWATTar 1.2.30. */
+    if (count($werte)) { $rang = min($rang, count($werte)); }
 
     // Rang der laufenden Stunde in den naechsten 24 Stunden
     $std24 = array();
@@ -1869,8 +2258,7 @@ function oc_state($force = false)
     sort($wh);
     $rangh = 1;
     foreach ($wh as $v) { if ($v < $curh) { $rangh++; } }
-
-    $ok = ($heute !== null && $heute['n'] > 0);
+    if (count($wh)) { $rangh = min($rangh, count($wh)); }
 
     /* OHNE GUELTIGE PREISE IST DAS NIVEAU NICHT BEKANNT.
      *
@@ -1880,7 +2268,8 @@ function oc_state($force = false)
      * hinaus, als sei der Preis gerade normal. -1 heisst 'nicht
      * bekannt' - dieselbe Schreibweise, die dieses Plugin bei
      * fenster_start, fenster_in, co2_minh und plan_soc schon
-     * benutzt. */
+     * benutzt. Fehlt nur die laufende Viertelstunde, gilt der
+     * Ersatzwert (Tageshoechstpreis) - nie mehr "guenstig" aus einer 0. */
     $level = $ok ? 2 : -1;
     if ($ok && $cur <= (float) $cfg['cheap']) { $level = 1; }
     if ($ok && $cur >= (float) $cfg['expensive']) { $level = 3; }
@@ -1898,11 +2287,13 @@ function oc_state($force = false)
         'stunde'      => (int) date('G'),
         'minute'      => (int) date('i'),
         'cur'         => $cur,
+        'cur_fehlt'   => $ok ? $cur_fehlt : 1,
         'cur_netto'   => $curn,
         'cur_h'       => $curh,
         'next'        => $next,
         'next_h'      => $nexth,
-        'neg'         => $curn < 0 ? 1 : 0,
+        // Nur ein bekannter Preis kann negativ sein - -1 heisst "ohne Aussage".
+        'neg'         => ($ok && $curn < 0) ? 1 : 0,
         /* EIN RANG OHNE PREISE IST KEIN RANG.
          *
          * $rang faengt bei 1 an und wird je guenstigerem Wert erhoeht;
@@ -1925,7 +2316,7 @@ function oc_state($force = false)
         'level'       => $level,
         'heute'       => $heute !== null ? $heute : oc_tagstats_leer(),
         'morgen'      => $morgen !== null ? $morgen : oc_tagstats_leer(),
-        'tomorrow_ok' => ($morgen !== null && $morgen['n'] > 0) ? 1 : 0,
+        'tomorrow_ok' => $morgen_da ? 1 : 0,
         'fenster'     => oc_fenster($slots, $cfg['window']),
         'fenster_len' => (int) $cfg['window'],
         'slots_n'     => count($slots),
@@ -1958,19 +2349,7 @@ function oc_state($force = false)
      * unterhalb dieser Zeile noch in $st gelegt wird - die Stundenprofile
      * ph/pm/pr, pv_summe, soc, die REGELN und planlast -, fehlte im
      * Zwischenspeicher. Der zweite und jeder weitere Aufruf innerhalb von
-     * 240 Sekunden bekam ihn und damit einen verstuemmelten Zustand:
-     *
-     *     1. Aufruf (frisch)          146 Felder
-     *     2. Aufruf (Zwischenspeicher) 118 Felder
-     *     es fehlten REGEL1_AKTIV bis REGEL4_RANG und PH/PM/PR00-23
-     *
-     * Und weil der minuetliche Cron den Zwischenspeicher selbst fuellt,
-     * war das der Regelfall und nicht die Ausnahme: der Miniserver bekam
-     * die Schaltausgaenge praktisch nie. Dazu sprang das Zahlenformat
-     * (12.000 frisch, 12 aus dem Speicher), weil json_encode aus 12.0 eine
-     * ganze Zahl macht - und die MQTT-Bremse "nur bei Aenderung senden"
-     * war wirkungslos, weil ihre Signatur im Minutentakt zwischen 145 und
-     * 117 Schluesseln sprang.
+     * 240 Sekunden bekam ihn und damit einen verstuemmelten Zustand.
      *
      * Merksatz fuer den naechsten, der hier etwas anhaengt: ein
      * Zwischenspeicher wird geschrieben, wenn der Wert FERTIG ist. */
@@ -1981,39 +2360,31 @@ function oc_state($force = false)
     $st['profil_heute'] = array();
     $st['profil_morgen'] = array();
     $st['profil_relativ'] = array();
-    /* PH/PM MEINEN ORTSSTUNDEN, NICHT "MITTERNACHT PLUS h STUNDEN".
+    /* PH/PM MEINEN ORTSSTUNDEN, NICHT "MITTERNACHT PLUS h STUNDEN" (seit
+     * 1.1.4, gemessen an 29.03. und 25.10.2026). PR bleibt bei der Addition:
+     * es ist als "in %d Stunden" beschriftet.
      *
-     * Bis 1.1.3 stand hier $t0 + $h * 3600. Das trifft an 363 Tagen im Jahr
-     * zu und an zweien nicht. Gemessen in Europe/Berlin:
-     *
-     *   29.03.2026 (23 Stunden): 22 von 24 Feldern zeigten eine andere
-     *     Ortsstunde als ihre Beschriftung, eines sogar den Folgetag.
-     *   25.10.2026 (25 Stunden): 21 von 24 Feldern verschoben, und 23:00
-     *     wurde ueberhaupt nicht veroeffentlicht.
-     *   02.09.2026 (normaler Tag): 0 Abweichungen.
-     *
-     * Der Spot Price Optimizer plante an diesen Tagen also mit dem Preis
-     * der Nachbarstunde. mktime() rechnet mit Ortszeit und trifft die
-     * Stunde, die auf dem Etikett steht.
-     *
-     * PR bleibt bei der Addition: es ist als "in %d Stunden" beschriftet
-     * und meint genau das - eine rollende Reihe ab der laufenden Stunde,
-     * keine Ortsstunde.
-     *
-     * Der Baustein hat 24 Eingaenge. Am 25-Stunden-Tag laesst sich die
-     * doppelte Stunde damit nicht abbilden; PH02 zeigt dann die erste der
-     * beiden. Das ist eine Grenze des Bausteins, keine Wahl - und immer
-     * noch richtiger, als alle 24 Felder zu verschieben. */
+     * FEHLT EIN PREIS (C1, seit 1.1.16): PH mit dem Tageshoechstpreis von
+     * heute, PR mit dem hoeheren der beiden Tageshoechstpreise (aWATTar
+     * 1.2.30, spot_lib.php:1646-1672). PM ohne veroeffentlichte Preise fuer
+     * morgen: -1 und morgen_ok=0 (Entscheidung 5/8) - fehlt nur eine Stunde
+     * von morgen (Zeitumstellung), der Hoechstpreis von morgen. */
     $t0 = strtotime('today 00:00');
     $m0 = strtotime('tomorrow 00:00');
     $dh = getdate($t0);
     $dm = getdate($m0);
+    $st['pr_ersatz'] = 0;
     for ($h = 0; $h < 24; $h++) {
         $kh = mktime($h, 0, 0, $dh['mon'], $dh['mday'], $dh['year']);
         $km = mktime($h, 0, 0, $dm['mon'], $dm['mday'], $dm['year']);
-        $st['profil_heute'][$h] = isset($stdh[$kh]) ? $stdh[$kh] : 0.0;
-        $st['profil_morgen'][$h] = isset($stdh[$km]) ? $stdh[$km] : 0.0;
-        $st['profil_relativ'][$h] = isset($stdh[$hstart + $h * 3600]) ? $stdh[$hstart + $h * 3600] : 0.0;
+        $st['profil_heute'][$h] = isset($stdh[$kh]) ? $stdh[$kh] : $ph_ersatz;
+        $st['profil_morgen'][$h] = isset($stdh[$km]) ? $stdh[$km] : ($morgen_da ? $pm_ersatz : -1.0);
+        if (isset($stdh[$hstart + $h * 3600])) {
+            $st['profil_relativ'][$h] = $stdh[$hstart + $h * 3600];
+        } else {
+            $st['profil_relativ'][$h] = $pr_ersatz;
+            $st['pr_ersatz']++;
+        }
     }
     /* Fremde Auskuenfte vor den Regeln - der Planer braucht sie. Ein
      * Fehlschlag macht den Zustand nicht ungueltig: ohne Prognose plant der
@@ -2037,18 +2408,21 @@ function oc_state($force = false)
     $st['planlast'] = round($st['planlast'], 2);
     $st['spart_eur'] = round($st['spart_eur'], 2);
 
+    /* Die Oberflaeche (O2) rechnet nur fuer die Anzeige: sie schreibt weder
+     * die Hysterese noch den Zwischenspeicher fort - das bleibt dem Takt. */
+    if (oc_kein_abruf() && !$force) { return $st; }
+
     /* Die Hysterese fortschreiben: welcher Block laeuft gerade, und bis
      * wann? Erst NACH der Rechnung, damit der naechste Lauf ihn vorfindet.
      * Siehe oc_laufend_fortschreiben(). */
     oc_laufend_fortschreiben($st['regeln'], $slotstart);
 
-    /* ERST JETZT den Zwischenspeicher schreiben - $st ist vollstaendig.
-     * Die Begruendung steht oben an der Stelle, an der der Befehl bis
-     * 1.0.9 stand. */
+    /* ERST JETZT den Zwischenspeicher schreiben - $st ist vollstaendig. */
     @file_put_contents($cache, json_encode($st));
 
     oc_log_if_changed('zustand', 'jetzt=' . $st['cur'] . ' ct rang=' . $st['rank'] . '/' . $st['n']
-        . ' niveau=' . $st['level'] . ' morgen=' . $st['tomorrow_ok'] . ' demo=' . $st['demo']);
+        . ' niveau=' . $st['level'] . ' morgen=' . $st['tomorrow_ok'] . ' demo=' . $st['demo']
+        . ($st['cur_fehlt'] && $st['ok'] ? ' (Ersatzwert: laufende Viertelstunde fehlt)' : ''));
     return $st;
 }
 
@@ -2067,6 +2441,17 @@ function oc_co2($force = false)
     if (!$force && is_file($cache) && time() - filemtime($cache) < 1800) {
         $c = json_decode((string) @file_get_contents($cache), true);
         if (is_array($c) && isset($c['ok'])) { return $c; }
+    }
+    /* O2 (seit 1.1.16): die Oberflaeche fragt energy-charts nicht selbst -
+     * der Zwischenspeicher des Takts, hoechstens sechs Stunden alt, sonst
+     * "unbekannt". Bis 1.1.15 ging jedes Oeffnen ohne Zwischenspeicher dorthin
+     * (rendern.py: "1 Linie wollte ins Netz"). */
+    if (oc_kein_abruf() && !$force) {
+        if (is_file($cache) && time() - (int) filemtime($cache) < 6 * 3600) {
+            $c = json_decode((string) @file_get_contents($cache), true);
+            if (is_array($c) && isset($c['ok'])) { return $c; }
+        }
+        return $aus;
     }
     $r = oc_http('https://api.energy-charts.info/co2eq?country=de', null, array(), 15);
     $d = $r['ok'] ? json_decode($r['body'], true) : null;
@@ -2368,7 +2753,11 @@ function oc_gateway()
     $d = json_decode((string) @file_get_contents($f), true);
     if (!is_array($d)) { return $g; }
     $m = isset($d['Mqtt']) ? $d['Mqtt'] : (isset($d['mqtt']) ? $d['mqtt'] : array());
-    if (!is_array($m)) { return $g; }
+    /* O9 (seit 1.1.16): ohne Mqtt-Abschnitt ist nichts feststellbar -
+     * 'vorhanden' bleibt 0. Bis 1.1.15 stand dann oben "ohne Autostart kommt
+     * nichts am Miniserver an", obwohl der Kommentar an der Ausgabestelle
+     * Stille verspricht (Pruefbericht oberflaeche, Befund 9). */
+    if (!is_array($m) || !$m) { return $g; }
     $hol = function ($m, $a, $b) {
         if (isset($m[$a])) { return $m[$a]; }
         if (isset($m[$b])) { return $m[$b]; }
@@ -2395,6 +2784,9 @@ function oc_themen()
         'ok'            => array('THEMA.OK', ''),
         'demo'          => array('THEMA.DEMO', ''),
         'cur'           => array('THEMA.CUR', 'ct/kWh'),
+        // C2 (seit 1.1.16): 1 = fuer die laufende Viertelstunde steht der
+        // Ersatzwert (Tageshoechstpreis). Name wie in aWATTar (cur_fehlt).
+        'cur_fehlt'     => array('THEMA.CUR_FEHLT', ''),
         'cur_netto'     => array('THEMA.CUR_NETTO', 'ct/kWh'),
         'cur_h'         => array('THEMA.CUR_H', 'ct/kWh'),
         'next'          => array('THEMA.NEXT', 'ct/kWh'),
@@ -2480,6 +2872,8 @@ function oc_themen()
         for ($h = 0; $h < 24; $h++) {
             $t[sprintf('pr%02d', $h)] = array('THEMA.PR', 'ct/kWh', $h, '');
         }
+        // C1 (seit 1.1.16): wie viele der 24 Stunden den Ersatzwert tragen.
+        $t['pr_ersatz'] = array('THEMA.PR_ERSATZ', '');
     }
     return $t;
 }
@@ -2569,6 +2963,7 @@ function oc_werte($st = null)
         'ok'            => $st['ok'],
         'demo'          => $st['demo'],
         'cur'           => $st['cur'],
+        'cur_fehlt'     => isset($st['cur_fehlt']) ? (int) $st['cur_fehlt'] : 0,
         'cur_netto'     => $st['cur_netto'],
         'cur_h'         => $st['cur_h'],
         'next'          => $st['next'],
@@ -2642,14 +3037,15 @@ function oc_werte($st = null)
     $modus = (string) $cfg['profil_ein'];
     if ($modus === 'absolut' || $modus === 'beides') {
         for ($h = 0; $h < 24; $h++) {
-            $w[sprintf('ph%02d', $h)] = isset($st['profil_heute'][$h]) ? $st['profil_heute'][$h] : 0;
-            $w[sprintf('pm%02d', $h)] = isset($st['profil_morgen'][$h]) ? $st['profil_morgen'][$h] : 0;
+            $w[sprintf('ph%02d', $h)] = isset($st['profil_heute'][$h]) ? $st['profil_heute'][$h] : -1;
+            $w[sprintf('pm%02d', $h)] = isset($st['profil_morgen'][$h]) ? $st['profil_morgen'][$h] : -1;
         }
     }
     if ($modus === 'relativ' || $modus === 'beides') {
         for ($h = 0; $h < 24; $h++) {
-            $w[sprintf('pr%02d', $h)] = isset($st['profil_relativ'][$h]) ? $st['profil_relativ'][$h] : 0;
+            $w[sprintf('pr%02d', $h)] = isset($st['profil_relativ'][$h]) ? $st['profil_relativ'][$h] : -1;
         }
+        $w['pr_ersatz'] = isset($st['pr_ersatz']) ? (int) $st['pr_ersatz'] : 0;
     }
     return $w;
 }
@@ -2796,9 +3192,13 @@ function oc_mqtt_frueher_behalten()
  * general.json (Regeln/07, Abschnitt 2); das Kennwort steht nur im
  * CONNECT-Paket, nie in einem Protokoll und nie auf einer Kommandozeile.
  */
-function oc_mqtt_behalten_liste(array $themen)
+function oc_mqtt_behalten_liste(array $themen, $leeren = false)
 {
-    $aus = array('lage' => 'unbekannt', 'belegt' => array());
+    /* $leeren (M1, seit 1.1.16): was der Broker als belegt meldet, wird auf
+     * DERSELBEN Verbindung mit leerer, zurueckbehaltener Nutzlast geloescht
+     * (PUBLISH, Kopfbyte 0x31). 'geleert' nennt die Themen. Nachgelesen wird
+     * vom Aufrufer mit einer neuen Verbindung. */
+    $aus = array('lage' => 'unbekannt', 'belegt' => array(), 'geleert' => array());
     $soll = array();
     foreach ($themen as $t) {
         if ((string) $t !== '') { $soll[(string) $t] = true; }
@@ -2884,7 +3284,10 @@ function oc_mqtt_behalten_liste(array $themen)
         $nutz .= $zk($benutzer);
         if ($kennwort !== '') { $nutz .= $zk($kennwort); }
     }
-    if (@fwrite($s, chr(0x10) . $laenge(strlen($kopf . $nutz)) . $kopf . $nutz) !== false) {
+    /* Laenge statt "!== false" (Bauart B, Regeln/03; seit 1.1.16): eine kurze
+     * Schreibung ist kein CONNECT. */
+    $connect = chr(0x10) . $laenge(strlen($kopf . $nutz)) . $kopf . $nutz;
+    if (@fwrite($s, $connect) === strlen($connect)) {
         $ack = $paket();
         if ($ack !== null && ($ack[0] >> 4) === 2 && strlen($ack[1]) >= 2 && ord($ack[1][1]) === 0) {
             $sub = pack('n', 1);
@@ -2926,6 +3329,41 @@ function oc_mqtt_behalten_liste(array $themen)
                 }
             }
             if ($bestaetigt || $aus['belegt']) { $aus['lage'] = 'ok'; }
+            /* LOESCHEN UEBER DIE SCHON OFFENE TCP-VERBINDUNG (M1, seit 1.1.16).
+             *
+             * Bis 1.1.15 ging die Loeschung nur ueber den UDP-Eingang des
+             * Gateways. Der verwirft unter Last Datagramme: am Geraet blieben am
+             * 30.09.2026 5 von 6 Themen stehen, im Pruefstand mit 70 % Verlust
+             * in 10 von 10 Laeufen 1-4 Themen (Pruefbericht mqtt, M1). TCP
+             * verliert nichts; der Broker loescht ein Thema bei leerer
+             * zurueckbehaltener Nutzlast. Bauform APC-UPS 1.2.15
+             * (broker_leeren) und Chromecast4lox (am Geraet 11 -> 0 bzw.
+             * 2 -> 0). QoS 0: die Bestaetigung ist das Nachlesen.
+             *
+             * Reihenfolge: erst ABBESTELLEN (sonst schickt der Broker jede
+             * Loeschung an uns zurueck), dann die Loeschungen, dann PINGREQ
+             * als Schranke - ein Broker bearbeitet die Pakete einer Verbindung
+             * der Reihe nach; mit PINGRESP sind die Loeschungen durch. Bis
+             * dahin wird alles gelesen: bleibt beim Schliessen Ungelesenes im
+             * Puffer, setzt das System die Verbindung hart zurueck, und der
+             * Broker verwirft, was er noch nicht gelesen hat (unter Windows
+             * gemessen: 2 von 6 geloescht, ohne Schranke). */
+            if ($leeren && $aus['lage'] === 'ok' && $aus['belegt']) {
+                $unsub = pack('n', 2);
+                foreach (array_keys($soll) as $t) { $unsub .= $zk($t); }
+                @fwrite($s, chr(0xA2) . $laenge(strlen($unsub)) . $unsub);
+                foreach (array_keys($aus['belegt']) as $t) {
+                    $rumpf = $zk($t);
+                    $pk = chr(0x31) . $laenge(strlen($rumpf)) . $rumpf;
+                    if (@fwrite($s, $pk) === strlen($pk)) { $aus['geleert'][] = $t; }
+                }
+                @fwrite($s, chr(0xC0) . chr(0));
+                $schranke = microtime(true) + 3.0;
+                while (microtime(true) < $schranke) {
+                    $pk = $paket();
+                    if ($pk === null || ($pk[0] >> 4) === 13) { break; }
+                }
+            }
         }
         @fwrite($s, chr(0xE0) . chr(0));
     }
@@ -3007,15 +3445,14 @@ function oc_mqtt_leer_themen()
  * Aus der Deinstallation (bin/oc_cron.php --mqtt-leeren): die
  * zurueckbehaltenen Themen der Linie leeren.
  *
- * Der Weg ist derselbe wie beim Senden - der UDP-Eingang des Gateways,
- * "retain <thema> " mit leerer Nutzlast (am Geraet belegt: die leere
- * Nachricht geht als Loeschung an den Broker, Regeln/07, Nachtraege vom
- * 19.09.2026). VOR der ersten Runde und nach jeder wird der Broker gefragt
- * (oc_mqtt_behalten_liste()); hinaus geht nur, was dort noch steht, hoechstens
- * $runden Runden. Steht nichts da, geht nichts hinaus. Ist der Broker nicht zu
- * fragen, gehen alle Themen in jeder Runde hinaus, und die Ausgabe sagt, dass
- * nicht nachgelesen wurde - der Eingang verwirft unter Last Datagramme
- * (Regeln/07), ein blosses Senden ist kein Beleg.
+ * SEIT 1.1.16 DIREKT AM BROKER (M1): oc_mqtt_praefix_leeren() fragt den
+ * Broker und loescht, was dort steht, auf derselben TCP-Verbindung; danach
+ * wird nachgelesen, hoechstens $runden Runden. Bis 1.1.15 ging die Loeschung
+ * ueber den UDP-Eingang des Gateways, der unter Last Datagramme verwirft - am
+ * Geraet blieben am 30.09.2026 5 von 6 Themen stehen. Der UDP-Eingang ist nur
+ * noch der Rueckfall, wenn der Broker nicht zu fragen ist; die Ausgabe sagt
+ * dann, dass nicht nachgelesen wurde. Abgeraeumt wird unter dem eingestellten
+ * Praefix und unter jedem frueher eingestellten (M2).
  *
  * Bis 1.1.11 raeumte die Deinstallation nichts ab: die zurueckbehaltenen
  * Themen blieben im Broker, und nach jedem Neustart von Broker oder Gateway
@@ -3030,70 +3467,172 @@ function oc_mqtt_leer_themen()
  */
 function oc_mqtt_leeren($runden = 3, $pause = 1.0)
 {
+    /* Aus der Deinstallation (bin/oc_cron.php --mqtt-leeren): die
+     * zurueckbehaltenen Themen der Linie leeren - unter dem eingestellten
+     * Praefix UND unter jedem frueher eingestellten (M2, seit 1.1.16; die
+     * Liste fuehrt die Oberflaeche beim Praefixwechsel, mqtt_praefixe.json im
+     * Datenordner). Liest die Konfiguration ohne Selbstheilung und schreibt
+     * weder Protokoll noch Datei. Ausgabe im Format der Hakenskripte.
+     * Rueckgabe 0 geleert oder nichts zu leeren, 1 es steht noch etwas bzw.
+     * nicht nachpruefbar, 2 nicht moeglich. */
     oc_nur_lesen(true);
     $cfg = oc_config();
-    $praefix = oc_mqtt_thema_saeubern($cfg['mqtt_topic'], 'octopus');
-    $g = oc_gateway();
-    if (!$g['udpport']) {
-        echo "<INFO> MQTT: in der general.json steht kein UDP-Eingangsport des Gateways - "
-           . "zurueckbehaltene Themen unter " . $praefix . "/ wurden nicht geleert.\n";
-        return 2;
+    $liste = array(oc_mqtt_thema_saeubern($cfg['mqtt_topic'], 'octopus'));
+    foreach (oc_mqtt_praefixe_gemerkt() as $p) {
+        if (!in_array($p, $liste, true)) { $liste[] = $p; }
     }
+    $rc = 0;
+    foreach ($liste as $p) {
+        $e = oc_mqtt_praefix_leeren($p, $runden, $pause);
+        foreach ($e['zeilen'] as $z) { echo $z . "\n"; }
+        $rc = max($rc, (int) $e['rc']);
+    }
+    return $rc;
+}
+
+/**
+ * Die zurueckbehaltenen Themen der Linie unter EINEM Praefix leeren (M1, M2).
+ *
+ * Weg: der Broker selbst (oc_mqtt_behalten_liste() mit $leeren), Runde fuer
+ * Runde nachgelesen, hoechstens $runden Runden. Nur wenn der Broker nicht zu
+ * fragen ist, geht es wie bis 1.1.15 ueber den UDP-Eingang des Gateways -
+ * ohne Beleg, und die Ausgabe sagt das. Nur eigene Themen
+ * (oc_mqtt_leer_themen()), nie ein fremdes unter demselben Praefix.
+ *
+ * Rueckgabe array('rc' => 0|1|2, 'weg' => 'tcp'|'udp'|'-', 'offen' => Liste,
+ * 'geleert' => Anzahl, 'zeilen' => Ausgabezeilen <OK>/<INFO>/<WARNING>).
+ */
+function oc_mqtt_praefix_leeren($praefix, $runden = 3, $pause = 1.0)
+{
+    $praefix = (string) $praefix;
     $alle = array();
     foreach (oc_mqtt_leer_themen() as $t) { $alle[] = $praefix . '/' . $t; }
     $n = count($alle);
-    $f = oc_mqtt_behalten_liste($alle);
-    $nachgelesen = ($f['lage'] === 'ok');
-    $offen = $nachgelesen ? array_keys($f['belegt']) : $alle;
-    if ($nachgelesen && !$offen) {
-        echo "<OK> MQTT: der Broker bestaetigt: keines der " . $n . " Themen unter " . $praefix
-           . "/ steht zurueckbehalten - nichts zu leeren.\n";
-        return 0;
+    $erg = array('rc' => 0, 'weg' => 'tcp', 'offen' => array(), 'geleert' => 0, 'zeilen' => array());
+    $offen = $alle;
+    $gefragt = false;
+    $bestaetigt = false;
+    for ($r = 1; $r <= max(1, (int) $runden); $r++) {
+        if ($r > 1) { usleep((int) (max(0.1, (float) $pause) * 1000000)); }
+        $f = oc_mqtt_behalten_liste($offen, true);
+        if ($f['lage'] !== 'ok') { break; }
+        $gefragt = true;
+        $erg['geleert'] += count($f['geleert']);
+        $offen = array_keys($f['belegt']);
+        if (!$offen) { $bestaetigt = true; break; }
+    }
+    if ($gefragt && !$bestaetigt) {
+        // Nach der letzten Runde noch einmal nur lesen.
+        usleep(300000);
+        $f = oc_mqtt_behalten_liste($offen);
+        if ($f['lage'] === 'ok') {
+            $offen = array_keys($f['belegt']);
+            $bestaetigt = !$offen;
+        } else {
+            $gefragt = false;
+        }
+    }
+    if ($gefragt && $bestaetigt) {
+        $erg['zeilen'][] = $erg['geleert'] > 0
+            ? '<OK> MQTT: ' . $erg['geleert'] . ' zurueckbehaltene Themen unter ' . $praefix
+              . '/ direkt am Broker geloescht; der Broker bestaetigt: keines der ' . $n
+              . ' Themen steht mehr zurueckbehalten.'
+            : '<OK> MQTT: der Broker bestaetigt: keines der ' . $n . ' Themen unter ' . $praefix
+              . '/ steht zurueckbehalten - nichts zu leeren.';
+        return $erg;
+    }
+    if ($gefragt) {
+        $erg['rc'] = 1;
+        $erg['offen'] = $offen;
+        $erg['zeilen'][] = '<WARNING> MQTT: ' . count($offen) . ' Themen stehen noch zurueckbehalten im Broker ('
+            . implode(', ', array_slice($offen, 0, 5)) . (count($offen) > 5 ? ', ...' : '')
+            . '). Von Hand: mosquitto_pub -r -n -t <thema>';
+        return $erg;
+    }
+    /* Rueckfall: der Broker liess sich nicht befragen (keine Verbindung,
+     * Anmeldung abgewiesen, Lesen verweigert). Dann der UDP-Eingang des
+     * Gateways - "retain <thema> " mit leerer Nutzlast, die Form, die das
+     * Gateway als Loeschung liest (Regeln/07, Nachtraege vom 19.09.2026). */
+    $erg['weg'] = 'udp';
+    $g = oc_gateway();
+    if (!$g['udpport']) {
+        $erg['rc'] = 2;
+        $erg['weg'] = '-';
+        $erg['zeilen'][] = '<INFO> MQTT: der Broker liess sich nicht befragen, und in der general.json steht '
+            . 'kein UDP-Eingangsport des Gateways - zurueckbehaltene Themen unter ' . $praefix
+            . '/ wurden nicht geleert.';
+        return $erg;
     }
     $strom = @stream_socket_client('udp://127.0.0.1:' . (int) $g['udpport'], $errno, $errstr, 2);
     if (!$strom) {
-        echo "<WARNING> MQTT: der UDP-Eingang des Gateways war nicht erreichbar - "
-           . "zurueckbehaltene Themen unter " . $praefix . "/ wurden nicht geleert.\n";
-        return 1;
+        $erg['rc'] = 1;
+        $erg['zeilen'][] = '<WARNING> MQTT: weder der Broker noch der UDP-Eingang des Gateways waren '
+            . 'erreichbar - zurueckbehaltene Themen unter ' . $praefix . '/ wurden nicht geleert.';
+        return $erg;
     }
-    $zu_leeren = count($offen);
     $datagramme = 0;
-    for ($r = 1; $r <= max(1, (int) $runden) && $offen; $r++) {
-        if ($r > 1) { usleep((int) ($pause * 1000000)); }
-        foreach ($offen as $t) {
-            // Ein Leerzeichen hinter dem Thema, sonst keine Nutzlast: die
-            // Form, die das Gateway als Loeschung liest.
+    for ($r = 1; $r <= max(1, (int) $runden); $r++) {
+        if ($r > 1) { usleep((int) (max(0.1, (float) $pause) * 1000000)); }
+        foreach ($alle as $t) {
             @fwrite($strom, 'retain ' . $t . ' ');
             $datagramme++;
         }
-        usleep(300000);     // dem Gateway Zeit bis zum Broker lassen
-        $f = oc_mqtt_behalten_liste($offen);
-        if ($f['lage'] === 'ok') {
-            $nachgelesen = true;
-            $offen = array_keys($f['belegt']);
-        } else {
-            $nachgelesen = false;
-        }
     }
     fclose($strom);
-    echo "<INFO> MQTT: " . $zu_leeren . " von " . $n . " Themen unter " . $praefix . "/ mit leerer "
-       . "Nutzlast an den UDP-Eingang " . (int) $g['udpport'] . " des Gateways gesendet ("
-       . $datagramme . " Datagramme).\n";
-    if ($nachgelesen && !$offen) {
-        echo "<OK> MQTT: der Broker bestaetigt: keines der " . $n . " Themen steht mehr "
-           . "zurueckbehalten.\n";
-        return 0;
+    $erg['zeilen'][] = '<INFO> MQTT: der Broker liess sich nicht befragen - ' . $n . ' Themen unter ' . $praefix
+        . '/ mit leerer Nutzlast an den UDP-Eingang ' . (int) $g['udpport'] . ' des Gateways gesendet ('
+        . $datagramme . ' Datagramme), nicht nachgelesen. Der UDP-Eingang verwirft unter Last '
+        . 'Datagramme; was stehen bleibt, laesst sich mit mosquitto_pub -r -n -t <thema> von Hand loeschen.';
+    return $erg;
+}
+
+/** Wo die frueher benutzten Praefixe liegen (M2). */
+function oc_mqtt_praefixe_datei()
+{
+    return oc_paths()['datadir'] . '/mqtt_praefixe.json';
+}
+
+/** Die frueher eingestellten Praefixe, nur solche in der Form eines Themas. */
+function oc_mqtt_praefixe_gemerkt()
+{
+    $f = oc_mqtt_praefixe_datei();
+    $d = is_file($f) ? json_decode((string) @file_get_contents($f), true) : null;
+    $out = array();
+    foreach (is_array($d) ? $d : array() as $p) {
+        if (is_string($p) && strlen($p) <= 64
+            && preg_match('#^[A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*$#', $p)) {
+            $out[$p] = true;
+        }
     }
-    if ($nachgelesen) {
-        echo "<WARNING> MQTT: " . count($offen) . " Themen stehen noch zurueckbehalten im Broker ("
-           . implode(', ', array_slice($offen, 0, 5)) . (count($offen) > 5 ? ', ...' : '')
-           . "). Von Hand: mosquitto_pub -r -n -t <thema>\n";
-        return 1;
-    }
-    echo "<INFO> MQTT: der Broker liess sich nicht befragen - nicht nachgelesen. Der UDP-Eingang "
-       . "verwirft unter Last Datagramme; was stehen bleibt, laesst sich mit "
-       . "mosquitto_pub -r -n -t <thema> von Hand loeschen.\n";
-    return 0;
+    return array_keys($out);
+}
+
+/**
+ * Ein Praefix in die Liste aufnehmen (M2). Die Deinstallation raeumt unter
+ * jedem Eintrag ab. preupgrade.sh sichert die Datei, postupgrade.sh spielt sie
+ * zurueck (der Upgrade raeumt den Datenordner ab).
+ */
+function oc_mqtt_praefix_merken($praefix)
+{
+    $praefix = (string) $praefix;
+    if (!preg_match('#^[A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*$#', $praefix) || strlen($praefix) > 64) { return false; }
+    $l = oc_mqtt_praefixe_gemerkt();
+    if (in_array($praefix, $l, true)) { return true; }
+    $l[] = $praefix;
+    oc_datadir();
+    return oc_datei_schreiben(oc_mqtt_praefixe_datei(), json_encode(array_values(array_slice($l, -20))), 0644);
+}
+
+/** Die Themen, die bei JEDEM Lauf hinausgehen, geaendert oder nicht (M3). */
+function oc_mqtt_jeder_lauf()
+{
+    return array('ok', 'alter');
+}
+
+/** Die Themen, die bei einem Ausfall (ok=0) hinausgehen - nur das Signal (C3). */
+function oc_mqtt_ausfall_themen()
+{
+    return array('ok', 'alter', 'status/ok', 'status/ts', 'status/zaehler');
 }
 
 /** Wo der Merker der zuletzt gesendeten Werte liegt. */
@@ -3164,6 +3703,25 @@ function oc_mqtt_publish($st = null, $nur_lebenszeichen = false, $erzwingen = fa
     } else {
         $werte = oc_werte($st);
     }
+    /* BEI AUSFALL NUR DAS SIGNAL (C3, seit 1.1.16; Regeln/07 "Ueber MQTT geht
+     * bei einer Stoerung nur das Signal hinaus, nicht die Werte").
+     *
+     * Ohne gueltige Preise (ok=0) gehen nur ok, alter, das Lebenszeichen und
+     * regelN_aktiv=0 hinaus. Bis 1.1.15 gingen cur, cur_h, next, avg_heute, min_heute und
+     * fenster_ct als 0.000 hinaus und ueberschrieben in Loxone den letzten
+     * Preis - eine Null ist ein Preis (Pruefbericht code, Befund 3). Die
+     * uebrigen Themen behalten in Loxone ihren letzten Wert; der Merker
+     * behaelt fuer sie den zuletzt GESENDETEN Stand, damit sie nach dem Ausfall
+     * nur bei einer Aenderung erneut hinausgehen. */
+    $ausfall = (!$nur_lebenszeichen && is_array($st) && empty($st['ok']));
+    if ($ausfall) {
+        $werte = array_intersect_key($werte, array_flip(oc_mqtt_ausfall_themen()));
+        /* Dazu die Schaltsignale: regelN_aktiv=0 fuer jede Regel, bei JEDEM
+         * Ausfall-Lauf (Entscheidung des Hausherrn vom 30.09.2026, zu C3).
+         * Ein Schaltsignal darf nicht auf 1 stehen bleiben; der Endpunkt
+         * meldet im Ausfall ebenso aktiv=0. Keine Preise. */
+        for ($oc_ri = 1; $oc_ri <= OC_REGELN; $oc_ri++) { $werte['regel' . $oc_ri . '_aktiv'] = 0; }
+    }
     /* DIESELBE FORMATIERUNG WIE DIE HTTP-ZEILE.
      *
      * oc_wert_formatieren() entscheidet an der EINHEIT, nicht am
@@ -3187,21 +3745,34 @@ function oc_mqtt_publish($st = null, $nur_lebenszeichen = false, $erzwingen = fa
     }
     $merken = null;
     if (!$nur_lebenszeichen) {
-        $merken = array();
+        $alt_merker = array();
+        if (is_file(oc_mqtt_merker())) {
+            $d = json_decode((string) @file_get_contents(oc_mqtt_merker()), true);
+            if (is_array($d)) { $alt_merker = $d; }
+        }
+        // Im Ausfall bleibt der Merker der nicht gesendeten Themen stehen (C3).
+        $merken = $ausfall ? $alt_merker : array();
         foreach ($formatiert as $k => $w) {
             /* 'alter' zaehlt Minuten seit dem Abruf - wie das Lebenszeichen
              * geht es jeden Lauf mit und ist keine Aenderung (Regeln/07:
              * ALTER in der Signatur macht die Bremse wirkungslos; gemessen
-             * bis 1.1.10: jede Neuberechnung des Zustands = 90 Themen). */
-            if (strpos((string) $k, 'status/') !== 0 && $k !== 'alter') { $merken[$k] = (string) $w; }
+             * bis 1.1.10: jede Neuberechnung des Zustands = 90 Themen).
+             *
+             * 'ok' EBENSO (M3, seit 1.1.16; Regeln/07 Z. 272: "Bei jedem
+             * Durchlauf gehen mindestens OK, ALTER und ein Stoerungszaehler
+             * hinaus"). Bis 1.1.15 ging "ok 0" beim Uebergang in den Ausfall
+             * ein einziges Mal hinaus; mit 50 % Verlust am UDP-Eingang kam es
+             * in 4 von 10 Laeufen nicht an, und Loxone stand bis zum
+             * naechsten Vollsatz (30 min) auf ok 1 (Pruefbericht mqtt, M3). */
+            if (strpos((string) $k, 'status/') !== 0 && !in_array($k, oc_mqtt_jeder_lauf(), true)) {
+                $merken[$k] = (string) $w;
+            }
         }
-        $vorher = array();
-        if (!$erzwingen && is_file(oc_mqtt_merker())) {
-            $d = json_decode((string) @file_get_contents(oc_mqtt_merker()), true);
-            if (is_array($d)) { $vorher = $d; }
-        }
-        foreach ($merken as $k => $w) {
-            if (array_key_exists($k, $vorher) && (string) $vorher[$k] === $w) { unset($formatiert[$k]); }
+        $vorher = $erzwingen ? array() : $alt_merker;
+        foreach ($formatiert as $k => $w) {
+            // Im Ausfall geht das Signal bei jedem Lauf hinaus, nicht nur bei Aenderung.
+            if ($ausfall || strpos((string) $k, 'status/') === 0 || in_array($k, oc_mqtt_jeder_lauf(), true)) { continue; }
+            if (array_key_exists($k, $vorher) && (string) $vorher[$k] === (string) $w) { unset($formatiert[$k]); }
         }
     }
     $behalten = 0;
@@ -3480,6 +4051,16 @@ function oc_thema_grenzen($einheit, $schluessel = '')
     $k = (string) $schluessel;
     if ($k === 'rank' || $k === 'rankd' || $k === 'rank_h') { return array(-1, 999); }
     if ($k === 'level') { return array(-1, 3); }
+    /* M5 (seit 1.1.16): die Grenze gegen den rechenbaren Wert. Ein Wert ueber
+     * MaxVal wird im Miniserver zu 0 (Regeln/07). 'alter' traegt ohne je einen
+     * Abruf 9999 und nach einem Tag Ausfall mehr als 1440 - mit MaxVal 1440
+     * stand dann 0, also "frisch". fenster_in reicht ueber den ganzen
+     * bekannten Horizont (bis 48 h), regelN_in und regelN_rest ueber den
+     * Horizont der Regel (bis 48 h): gemessen 1860 bzw. 1800 min gegen
+     * MaxVal 1440 (Pruefbericht mqtt, M5). Die Vorlage muss neu importiert
+     * werden, damit die neuen Grenzen gelten. */
+    if ($k === 'alter') { return array(-1, 9999); }
+    if ($k === 'fenster_in' || preg_match('/^regel[0-9]+_(in|rest)$/', $k)) { return array(-1, 2880); }
     switch ((string) $einheit) {
         case 'ct/kWh': return array(-100, 200);
         case 'kW':     return array(0, 200);
@@ -3585,7 +4166,10 @@ function oc_vorlage($art = 'mqtt_in')
         $cmds[] = array(
             // Der Gateway bildet den Titel aus dem Thema und ersetzt dabei
             // den Schraegstrich - siehe oc_thema_flach().
-            'title'   => $praefix . '_' . oc_thema_flach($k),
+            // M6 (seit 1.1.16): auch der Schraegstrich IM Praefix wird zum
+            // Unterstrich, wie der Gateway den Namen bildet (aus haus/strom
+            // wird haus_strom_cur, nicht haus/strom_cur).
+            'title'   => oc_thema_flach($praefix . '/' . $k),
             'einheit' => isset($info[1]) ? $info[1] : '',
             'min'     => $g[0], 'max' => $g[1],
             /* Kachelname (Regeln/07): kurz, mit Vorsatz. Bis 1.1.10 stand
@@ -3863,6 +4447,19 @@ function oc_sicherung_lesen($roh)
          * eigene Datei mit Rechten 0600 - deshalb hier herausgenommen und
          * dem Aufrufer gesondert zurueckgegeben. */
         if ((string) $k === 'zugang' && is_array($w)) {
+            /* O5 (seit 1.1.16): ein Feld statt einer Zeichenkette wird
+             * beanstandet, nicht zu '' gemacht. Bis 1.1.15 loeschte eine
+             * Sicherung mit zugang.email als Liste die gueltige Adresse, und
+             * die Meldung sagte "uebernommen" (Pruefbericht oberflaeche,
+             * Befund 5). */
+            $oc_zk_falsch = false;
+            foreach (array('email', 'passwort', 'konto') as $oc_zk) {
+                if (isset($w[$oc_zk]) && !is_string($w[$oc_zk])) {
+                    $mangel[] = sprintf(oc_t('EINST.SICH_WERT'), 'zugang.' . $oc_zk);
+                    $oc_zk_falsch = true;
+                }
+            }
+            if ($oc_zk_falsch) { continue; }
             $zugang = array(
                 'email'    => oc_text(isset($w['email']) ? $w['email'] : '', 200),
                 'passwort' => (isset($w['passwort']) && !is_array($w['passwort']))
@@ -4355,6 +4952,11 @@ function oc_verbrauch($force = false)
     if (!$force && is_file($cache) && time() - filemtime($cache) < 900) {
         $c = json_decode((string) @file_get_contents($cache), true);
         if (is_array($c)) { return $c + $leer; }
+    }
+    // O2: die Oberflaeche liest nur, was der Takt geholt hat.
+    if (oc_kein_abruf() && !$force) {
+        $c = is_file($cache) ? json_decode((string) @file_get_contents($cache), true) : null;
+        return is_array($c) ? $c + $leer : $leer;
     }
     $erg = $leer;
     $erg['ts'] = time();

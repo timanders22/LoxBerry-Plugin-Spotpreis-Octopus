@@ -4,7 +4,40 @@
 # Der Preisabruf selbst laeuft nur alle 15 Minuten (Cache), die Ansage und
 # das Meldefenster brauchen aber Minutentakt.
 #
-# Den bin-Pfad des Plugins setzt der Installer in der Befehlszeile ein.
+# Den bin-, Log- und Datenpfad des Plugins setzt der Installer ein.
 # Das Arbeitsskript liegt bewusst NICHT im Webbereich - dort waere
 # es ohne Token ueber HTTP erreichbar.
-php "REPLACELBPBINDIR/oc_cron.php" >/dev/null 2>&1
+#
+# DIE FEHLERAUSGABE GEHT NACH cron.err (I3, seit 1.1.16; Regeln/06).
+# Bis 1.1.15 stand hier "2>&1" nach /dev/null: jeder Abbruch, den oc_cron.php
+# auf stderr schreibt (Bibliothek fehlt, keine Wurzel, PHP-Fatal), war fuer
+# immer unsichtbar (in WSL gemessen, Pruefbericht installer, Befund 4). Das
+# Verzeichnis wird vorher angelegt, sonst scheitert schon die Umlenkung; die
+# Datei wird auf 256 kB gekappt (log/ liegt im Arbeitsspeicher). Ist sie
+# nicht beschreibbar, laeuft der Takt trotzdem. Bauform Docker NG 1.3.7.
+#
+# WAEHREND EINER AKTUALISIERUNG ruht der Takt still (I2, Entscheidung 1):
+# solange die Marke aus preupgrade.sh juenger als 3600 s ist. Sonst schriebe
+# er in der Luecke zwischen Cron-Kopie und Bibliothek einen Fehlalarm nach
+# cron.err. bin/oc_cron.php prueft dieselbe Marke noch einmal.
+MARKE="REPLACELBPDATADIR.upgrade_laeuft"
+if [ -f "$MARKE" ]; then
+    M=$(cat "$MARKE" 2>/dev/null)
+    case "$M" in
+        ''|*[!0-9]*) ;;
+        *) A=$(( $(date +%s) - M ))
+           if [ "$A" -ge 0 ] && [ "$A" -lt 3600 ]; then exit 0; fi ;;
+    esac
+fi
+LOGD="REPLACELBPLOGDIR"
+ERR="$LOGD/cron.err"
+mkdir -p "$LOGD" 2>/dev/null
+if [ -f "$ERR" ] && [ "$(wc -c < "$ERR" 2>/dev/null || echo 0)" -gt 262144 ]; then
+    tail -n 300 "$ERR" > "$ERR.neu" 2>/dev/null && mv -f "$ERR.neu" "$ERR"
+fi
+if [ -e "$ERR" ] && [ ! -w "$ERR" ]; then
+    ERR=/dev/null
+else
+    touch "$ERR" 2>/dev/null || ERR=/dev/null
+fi
+php "REPLACELBPBINDIR/oc_cron.php" >/dev/null 2>>"$ERR"

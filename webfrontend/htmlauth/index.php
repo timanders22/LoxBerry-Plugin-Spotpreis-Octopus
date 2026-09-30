@@ -40,6 +40,18 @@ if (!function_exists('oc_config')) {
     exit;
 }
 
+/* DIE OBERFLAECHE RUFT NICHTS AB (O2, seit 1.1.16).
+ *
+ * Ein Seitenaufruf meldet sich nie bei Kraken an und fragt energy-charts
+ * nicht: angezeigt wird, was der Minutentakt in die Zwischenspeicher gelegt
+ * hat. Bis 1.1.15 erzeugten drei Seitenaufrufe hintereinander 2, 1, 1
+ * Anfragen an api.oeg-kraken.energy - je eine Anmeldung mit dem hinterlegten
+ * Kennwort, auch bei "Plugin aktiv: Nein" -, und schwieg die Gegenstelle,
+ * lud die Seite 30 s (Pruefbericht oberflaeche, Befund 2). Abrufen tun nur
+ * der Takt und die ausdruecklichen Knoepfe im Reiter Test
+ * (oc_test_ausfuehren() hebt den Schalter dort auf). */
+oc_kein_abruf(true);
+
 $oc_p = oc_paths();
 if ($oc_p['home'] && file_exists($oc_p['home'] . '/libs/phplib/loxberry_system.php')) {
     require_once $oc_p['home'] . '/libs/phplib/loxberry_system.php';
@@ -108,10 +120,29 @@ $oc_zug = oc_zugang();
  * Danach wird es nur noch auf ausdruecklichen Wunsch neu gewuerfelt: es
  * steckt in den Adressen im Miniserver.
  */
+/* STILL NUR BEI EINER NEUINSTALLATION (C5, seit 1.1.16; Regeln/05
+ * "Selbstheilung entscheidet nach Inhalt").
+ *
+ * Bis 1.1.15 wurde hier bei JEDEM leeren Token still ein neues gewuerfelt -
+ * auch wenn die Datei Einstellungen trug und nur das Token fehlte. Jede
+ * Adresse im Miniserver bekam danach 403, und nichts stand im Protokoll
+ * (Pruefbericht code, Befund 5). Heute heilt oc_config() eine Datei ohne
+ * Token aus einer Zweitschrift mit Token. Kommt hier trotzdem kein Token an,
+ * gibt es keine Zweitschrift, aus der es kaeme: dann entsteht ein neues -
+ * still nur, wenn es noch gar keine Konfiguration gab (Lage 'vorgabe':
+ * keine Datei oder "{}" ohne Zweitschrift), sonst mit einer Protokollzeile
+ * und einem Hinweis ueber den Reitern. */
 if ((string) $oc_cfg['aktionstoken'] === '') {
     $oc_cfg['aktionstoken'] = oc_token_erzeugen();
-    oc_config_write($oc_cfg);
+    $oc_tok_geschrieben = oc_config_write($oc_cfg);
     $oc_cfg = oc_config();
+    if (oc_konfig_lage() !== 'vorgabe') {
+        oc_log('Aktionstoken fehlte in der Konfiguration (Lage: ' . oc_konfig_lage()
+            . '), und keine Zweitschrift trug eines - ein NEUES wurde erzeugt'
+            . ($oc_tok_geschrieben ? '' : ', liess sich aber nicht speichern')
+            . '. Die Adressen im Miniserver muessen es tragen.');
+        $oc_fehler[] = oc_t('MELDUNG.TOKEN_STILL_NEU');
+    }
 }
 $oc_fmt = oc_formtoken($oc_cfg);
 
@@ -252,113 +283,156 @@ if ($oc_ist_post && isset($_POST['save_zugang'])) {
 
 /* ================= Einstellungen speichern ================= */
 if ($oc_ist_post && isset($_POST['save'])) {
-    $oc_z = function ($k, $vorgabe, $min, $max) {
-        $v = str_replace(',', '.', (string) (isset($_POST[$k]) ? $_POST[$k] : ''));
-        if (!is_numeric($v)) { return $vorgabe; }
-        return max($min, min($max, (float) $v));
+    /* ABWEISEN STATT VERBIEGEN (O3, O6; seit 1.1.16).
+     *
+     * Bis 1.1.15 wurde jede unbrauchbare Eingabe still zurechtgebogen und
+     * gespeichert. Gemessen mit zwoelf Faellen (Pruefbericht oberflaeche,
+     * Befund 3): alle zwoelf verbogen, keine Beanstandung, "Einstellungen
+     * gespeichert" - "1;2" wurde Zone 12, "abc" wurde der Werkswert 20 statt
+     * der bisherigen 25, 2.5 wurde 2, 150 wurde 100, "de-DE" wurde "dede".
+     * Eine Regel mit Beanstandung stand trotzdem in der Datei (Befund 6).
+     *
+     * Jetzt: jeder unbrauchbare Wert wird mit Feld und Grenzen gemeldet, und
+     * dann wird NICHTS gespeichert - der bisherige Stand bleibt ganz, nie der
+     * Werkswert. Die Grenzen sind dieselben wie in oc_schranken() und
+     * oc_config(). Ein Feld, das gar nicht im Formular stand, behaelt still
+     * seinen bisherigen Wert; ein leeres Pflichtfeld ist unbrauchbar. Hinweise
+     * ohne falschen Wert (Feldnamen, Pfad) halten das Speichern nicht auf. */
+    $oc_abweis = array();
+    $oc_roh = function ($k, $i = null) {
+        if (!isset($_POST[$k])) { return null; }
+        $v = $_POST[$k];
+        if ($i !== null) {
+            if (!is_array($v) || !isset($v[$i])) { return null; }
+            $v = $v[$i];
+        }
+        return is_array($v) ? "\0" : trim((string) $v);
     };
-    $oc_g = function ($k, $vorgabe, $min, $max) {
-        $v = (string) (isset($_POST[$k]) ? $_POST[$k] : '');
-        if (!preg_match('/^-?[0-9]+$/', trim($v))) { return $vorgabe; }
-        return max($min, min($max, (int) $v));
+    $oc_pruef = function ($name, $v, $bisher, $min, $max, $ganz) use (&$oc_abweis) {
+        if ($v === null) { return $bisher; }
+        $t = str_replace(',', '.', $v);
+        $gut = ($v !== '' && $v !== "\0" && is_numeric($t)
+                && (!$ganz || preg_match('/^-?[0-9]+$/', $v))
+                && (float) $t >= (float) $min && (float) $t <= (float) $max);
+        if (!$gut) {
+            $oc_abweis[] = sprintf(oc_t('MELDUNG.WERT_ABGEWIESEN'), oc_e($name),
+                oc_e($v === "\0" ? '[]' : $v), oc_e((string) $min), oc_e((string) $max),
+                oc_t($ganz ? 'MELDUNG.GANZE_ZAHL' : 'MELDUNG.ZAHL'));
+            return $bisher;
+        }
+        return $ganz ? (int) $v : (float) $t;
+    };
+    $oc_z = function ($k, $bisher, $min, $max) use ($oc_roh, $oc_pruef) {
+        return $oc_pruef($k, $oc_roh($k), $bisher, $min, $max, false);
+    };
+    $oc_g = function ($k, $bisher, $min, $max) use ($oc_roh, $oc_pruef) {
+        return $oc_pruef($k, $oc_roh($k), $bisher, $min, $max, true);
+    };
+    /* Eine Auswahl aus einer festen Liste: ein fremder Wert ist unbrauchbar. */
+    $oc_wahl = function ($name, $v, $bisher, $liste) use (&$oc_abweis) {
+        if ($v === null) { return $bisher; }
+        if (!in_array($v, $liste, true)) {
+            $oc_abweis[] = sprintf(oc_t('MELDUNG.WAHL_ABGEWIESEN'), oc_e($name), oc_e($v === "\0" ? '[]' : $v));
+            return $bisher;
+        }
+        return $v;
+    };
+    /* Ein Text: Steuerzeichen und Anfuehrungszeichen werden nicht mehr still
+     * entfernt, sondern abgewiesen. */
+    $oc_text = function ($name, $v, $bisher, $max, $mit_apostroph) use (&$oc_abweis) {
+        if ($v === null) { return $bisher; }
+        $muster = $mit_apostroph ? '/[\x00-\x1F\x7F"\']/u' : '/[\x00-\x1F\x7F"]/u';
+        $laenge = function_exists('mb_strlen') ? mb_strlen($v, 'UTF-8') : strlen($v);
+        if ($v === "\0" || preg_match($muster, $v) || $laenge > $max) {
+            $oc_abweis[] = sprintf(oc_t('MELDUNG.TEXT_ABGEWIESEN'), oc_e($name), $max);
+            return $bisher;
+        }
+        return $v;
     };
     $oc_neu = $oc_cfg;
     $oc_neu['enabled']        = isset($_POST['enabled']) ? 1 : 0;
     $oc_neu['demo']           = isset($_POST['demo']) ? 1 : 0;
-    $oc_neu['demo_aufschlag'] = $oc_z('demo_aufschlag', 15.0, 0, 100);
-    $oc_neu['demo_vat']       = $oc_z('demo_vat', 19.0, 0, 30);
-    $oc_neu['cheap']          = $oc_z('cheap', 20.0, 0, 200);
-    $oc_neu['expensive']      = $oc_z('expensive', 35.0, 0, 400);
-    $oc_neu['window']         = $oc_g('window', 3, 1, 12);
-    $oc_pm = (string) (isset($_POST['profil_ein']) ? $_POST['profil_ein'] : 'aus');
-    $oc_neu['profil_ein'] = in_array($oc_pm, array('aus', 'absolut', 'relativ', 'beides'), true) ? $oc_pm : 'aus';
+    $oc_neu['demo_aufschlag'] = $oc_z('demo_aufschlag', $oc_cfg['demo_aufschlag'], 0, 100);
+    $oc_neu['demo_vat']       = $oc_z('demo_vat', $oc_cfg['demo_vat'], 0, 30);
+    $oc_neu['cheap']          = $oc_z('cheap', $oc_cfg['cheap'], 0, 200);
+    $oc_neu['expensive']      = $oc_z('expensive', $oc_cfg['expensive'], 0, 400);
+    $oc_neu['window']         = $oc_g('window', $oc_cfg['window'], 1, 12);
+    $oc_neu['profil_ein'] = $oc_wahl('profil_ein', $oc_roh('profil_ein'), $oc_cfg['profil_ein'],
+        array('aus', 'absolut', 'relativ', 'beides'));
     // ---- Schaltregeln ----
     $oc_neu['regeln'] = array();
     for ($oc_i = 0; $oc_i < OC_REGELN; $oc_i++) {
-        $oc_r = function ($feld, $def = '') use ($oc_i) {
-            $a = isset($_POST[$feld]) ? (array) $_POST[$feld] : array();
-            return isset($a[$oc_i]) ? $a[$oc_i] : $def;
+        $oc_alt = $oc_cfg['regeln'][$oc_i];
+        $oc_rn = function ($feld, $min, $max, $ganz) use ($oc_i, $oc_roh, $oc_pruef, $oc_alt) {
+            return $oc_pruef($feld . '[' . $oc_i . ']', $oc_roh($feld, $oc_i),
+                $oc_alt[substr($feld, 2)], $min, $max, $ganz);
         };
-        $oc_art = (string) $oc_r('r_art', 'fenster');
+        $oc_frist = $oc_wahl('r_frist[' . $oc_i . ']', $oc_roh('r_frist', $oc_i), (string) $oc_alt['frist'],
+            $oc_stunden_wahl);
         $oc_neu['regeln'][$oc_i] = array(
-            'aktiv' => (int) $oc_r('r_aktiv', 0) ? 1 : 0,
-            // Der Name landet im Kommentar der Loxone-Vorlage - deshalb nur
-            // Steuerzeichen und Anfuehrungszeichen raus, nicht hart filtern.
-            'name' => trim(preg_replace('/[\x00-\x1F\x7F"]/', '', (string) $oc_r('r_name'))),
-            'art' => in_array($oc_art, oc_regel_arten(), true) ? $oc_art : 'fenster',
-            'n' => max(1, min(12, (int) $oc_r('r_n', 3))),
-            'von' => max(0, min(23, (int) $oc_r('r_von', 0))),
-            'bis' => max(0, min(23, (int) $oc_r('r_bis', 0))),
-            'horizont' => max(1, min(48, (int) $oc_r('r_horizont', 24))),
-            'schwelle' => max(-100, min(200, (float) str_replace(',', '.', (string) $oc_r('r_schwelle', 20)))),
-            'prozent' => max(0, min(90, (int) $oc_r('r_prozent', 20))),
-            'neg' => (int) $oc_r('r_neg', 0) ? 1 : 0,
+            'aktiv' => $oc_roh('r_aktiv', $oc_i) !== null ? 1 : 0,
+            // Der Name landet im Kommentar der Loxone-Vorlage.
+            'name' => $oc_text('r_name[' . $oc_i . ']', $oc_roh('r_name', $oc_i), $oc_alt['name'], 40, false),
+            'art' => $oc_wahl('r_art[' . $oc_i . ']', $oc_roh('r_art', $oc_i), $oc_alt['art'], oc_regel_arten()),
+            'n' => $oc_rn('r_n', 1, 12, true),
+            'von' => $oc_rn('r_von', 0, 23, true),
+            'bis' => $oc_rn('r_bis', 0, 23, true),
+            'horizont' => $oc_rn('r_horizont', 1, 48, true),
+            'schwelle' => $oc_rn('r_schwelle', -100, 200, false),
+            'prozent' => $oc_rn('r_prozent', 0, 90, true),
+            'neg' => $oc_roh('r_neg', $oc_i) !== null ? 1 : 0,
             // ---- Fahrplaner ----
-            'rang' => max(1, min(99, (int) $oc_r('r_rang', 50))),
-            'leistung' => max(0, min(100, (float) str_replace(',', '.', (string) $oc_r('r_leistung', 0)))),
-            'energie' => max(0, min(500, (float) str_replace(',', '.', (string) $oc_r('r_energie', 0)))),
-            'frist' => in_array((string) $oc_r('r_frist', '-1'), $oc_stunden_wahl, true)
-                       ? (int) $oc_r('r_frist', -1) : -1,
-            'pv_sperre' => max(0, min(500, (float) str_replace(',', '.', (string) $oc_r('r_pv_sperre', 0)))),
-            'soc_min' => max(0, min(100, (int) $oc_r('r_soc_min', 0))),
-            'soc_max' => max(0, min(100, (int) $oc_r('r_soc_max', 0))),
+            'rang' => $oc_rn('r_rang', 1, 99, true),
+            'leistung' => $oc_rn('r_leistung', 0, 100, false),
+            'energie' => $oc_rn('r_energie', 0, 500, false),
+            'frist' => (int) $oc_frist,
+            'pv_sperre' => $oc_rn('r_pv_sperre', 0, 500, false),
+            'soc_min' => $oc_rn('r_soc_min', 0, 100, true),
+            'soc_max' => $oc_rn('r_soc_max', 0, 100, true),
             // ---- Taktschutz ----
-            'min_lauf' => max(0, min(720, (int) $oc_r('r_min_lauf', 0))),
-            'min_pause' => max(0, min(720, (int) $oc_r('r_min_pause', 0))),
+            'min_lauf' => $oc_rn('r_min_lauf', 0, 720, true),
+            'min_pause' => $oc_rn('r_min_pause', 0, 720, true),
         );
         $oc_rw = $oc_neu['regeln'][$oc_i];
+        // O6: eine beanstandete Regel wird nicht gespeichert - gar nichts wird es.
         if ($oc_rw['aktiv'] && $oc_rw['energie'] > 0 && $oc_rw['leistung'] <= 0) {
-            $oc_fehler[] = sprintf(oc_t('REGEL.FEHLER_ENERGIE_OHNE_LEISTUNG'), $oc_i + 1);
+            $oc_abweis[] = sprintf(oc_t('REGEL.FEHLER_ENERGIE_OHNE_LEISTUNG'), $oc_i + 1);
         }
         if ($oc_rw['soc_min'] > 0 && $oc_rw['soc_max'] > 0
             && $oc_rw['soc_min'] >= $oc_rw['soc_max']) {
-            $oc_fehler[] = sprintf(oc_t('REGEL.FEHLER_SOC_REIHE'), $oc_i + 1);
+            $oc_abweis[] = sprintf(oc_t('REGEL.FEHLER_SOC_REIHE'), $oc_i + 1);
         }
     }
     // ---- Fahrplaner, global ----
-    $oc_neu['budget_kw'] = max(0, min(200, (float) str_replace(',', '.', (string) (isset($_POST['budget_kw']) ? $_POST['budget_kw'] : 0))));
-    $oc_neu['pv_bonus'] = max(0, min(100, (float) str_replace(',', '.', (string) (isset($_POST['pv_bonus']) ? $_POST['pv_bonus'] : 0))));
-    $oc_neu['pv_schwelle'] = max(1, min(100000, (int) (isset($_POST['pv_schwelle']) ? $_POST['pv_schwelle'] : 500)));
-    /* Zweites Budget (Paragraf 14a) und Hysterese. Die Schranken sind
-     * dieselben wie in oc_schranken() - stuenden hier andere Zahlen,
-     * gaebe es zwei Wahrheiten, und der Selbsttest im Reiter Test meldet
-     * genau das. */
-    $oc_neu['budget2_kw'] = max(0, min(200, (float) str_replace(',', '.', (string) (isset($_POST['budget2_kw']) ? $_POST['budget2_kw'] : 0))));
-    $oc_neu['budget2_von'] = $oc_g('budget2_von', 0, 0, 23);
-    $oc_neu['budget2_bis'] = $oc_g('budget2_bis', 0, 0, 23);
+    /* Die Schranken sind dieselben wie in oc_schranken() - stuenden hier
+     * andere Zahlen, gaebe es zwei Wahrheiten, und der Selbsttest im Reiter
+     * Test meldet genau das. */
+    $oc_neu['budget_kw'] = $oc_z('budget_kw', $oc_cfg['budget_kw'], 0, 200);
+    $oc_neu['pv_bonus'] = $oc_z('pv_bonus', $oc_cfg['pv_bonus'], 0, 100);
+    $oc_neu['pv_schwelle'] = $oc_g('pv_schwelle', $oc_cfg['pv_schwelle'], 1, 100000);
+    $oc_neu['budget2_kw'] = $oc_z('budget2_kw', $oc_cfg['budget2_kw'], 0, 200);
+    $oc_neu['budget2_von'] = $oc_g('budget2_von', $oc_cfg['budget2_von'], 0, 23);
+    $oc_neu['budget2_bis'] = $oc_g('budget2_bis', $oc_cfg['budget2_bis'], 0, 23);
     $oc_neu['hysterese'] = isset($_POST['hysterese']) ? 1 : 0;
-    $oc_vq = (string) (isset($_POST['verbrauch_quelle']) ? $_POST['verbrauch_quelle'] : '');
-    $oc_neu['verbrauch_quelle'] = in_array($oc_vq, array('', 'objekt', 'liste'), true) ? $oc_vq : '';
-    $oc_ve = (string) (isset($_POST['verbrauch_einheit']) ? $_POST['verbrauch_einheit'] : 'wh');
-    $oc_neu['verbrauch_einheit'] = in_array($oc_ve, array('wh', 'w', 'kw'), true) ? $oc_ve : 'wh';
-    $oc_q = (string) (isset($_POST['pv_quelle']) ? $_POST['pv_quelle'] : '');
-    $oc_neu['pv_quelle'] = in_array($oc_q, array('', 'forecast_solar', 'objekt', 'liste'), true) ? $oc_q : '';
-    $oc_eh = (string) (isset($_POST['pv_einheit']) ? $_POST['pv_einheit'] : 'wh');
-    $oc_neu['pv_einheit'] = in_array($oc_eh, array('wh', 'w', 'kw'), true) ? $oc_eh : 'wh';
-    foreach (array('pv_url', 'pv_pfad', 'pv_zeitfeld', 'pv_wertfeld', 'soc_url', 'soc_pfad',
-                   'verbrauch_url', 'verbrauch_pfad', 'verbrauch_zeitfeld',
-                   'verbrauch_wertfeld') as $oc_f2) {
-        // Nur Steuerzeichen und Anfuehrungszeichen raus - ein hartes Filtern
-        // zerstoert eingefuegte Adressen.
-        $oc_neu[$oc_f2] = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '',
-            (string) (isset($_POST[$oc_f2]) ? $_POST[$oc_f2] : '')));
+    $oc_neu['verbrauch_quelle'] = $oc_wahl('verbrauch_quelle', $oc_roh('verbrauch_quelle'),
+        $oc_cfg['verbrauch_quelle'], array('', 'objekt', 'liste'));
+    $oc_neu['verbrauch_einheit'] = $oc_wahl('verbrauch_einheit', $oc_roh('verbrauch_einheit'),
+        $oc_cfg['verbrauch_einheit'], array('wh', 'w', 'kw'));
+    $oc_neu['pv_quelle'] = $oc_wahl('pv_quelle', $oc_roh('pv_quelle'), $oc_cfg['pv_quelle'],
+        array('', 'forecast_solar', 'objekt', 'liste'));
+    $oc_neu['pv_einheit'] = $oc_wahl('pv_einheit', $oc_roh('pv_einheit'), $oc_cfg['pv_einheit'],
+        array('wh', 'w', 'kw'));
+    foreach (array('pv_url' => 500, 'pv_pfad' => 200, 'pv_zeitfeld' => 200, 'pv_wertfeld' => 200,
+                   'soc_url' => 500, 'soc_pfad' => 200, 'verbrauch_url' => 500, 'verbrauch_pfad' => 200,
+                   'verbrauch_zeitfeld' => 200, 'verbrauch_wertfeld' => 200) as $oc_f2 => $oc_max) {
+        $oc_neu[$oc_f2] = $oc_text($oc_f2, $oc_roh($oc_f2), $oc_cfg[$oc_f2], $oc_max, true);
     }
-    /* EINE BEANSTANDETE ADRESSE WIRD ZURUECKGESETZT, NICHT UEBERNOMMEN.
-     *
-     * Bis 1.1.3 wurde der unbrauchbare Wert gespeichert und nur
-     * beanstandet. Gemessen in drei Absendungen: eine gueltige Adresse
-     * eingetragen, dann 'htp://...' geschickt - die Seite zeigte
-     * gleichzeitig 'Einstellungen gespeichert' UND die Beanstandung, und
-     * in der Konfiguration stand danach 'htp://...'; beim naechsten
-     * Lesen leerte oc_config() das Feld. Wer sich vertippt, verlor also
-     * still seine funktionierende Adresse, und der Fahrplaner rechnete
-     * ohne PV-Prognose weiter.
-     *
-     * Zwei Bloecke weiter unten macht es cheap/expensive seit jeher
-     * richtig - dieselbe Datei, dieselbe Lage, andere Behandlung. */
+    /* EINE BEANSTANDETE ADRESSE WIRD ABGEWIESEN, NICHT UEBERNOMMEN. Bis
+     * 1.1.3 gespeichert und beanstandet, bis 1.1.15 zurueckgesetzt und der
+     * Rest gespeichert; jetzt wie jeder andere unbrauchbare Wert. */
     foreach (array('pv_url', 'soc_url', 'verbrauch_url') as $oc_f2) {
         if ($oc_neu[$oc_f2] === '' || preg_match('#^https?://#i', $oc_neu[$oc_f2])) { continue; }
-        $oc_fehler[] = sprintf(oc_t('PLAN.FEHLER_URL'), $oc_f2 === 'verbrauch_url'
+        $oc_abweis[] = sprintf(oc_t('PLAN.FEHLER_URL'), $oc_f2 === 'verbrauch_url'
             ? oc_t('VERB.L_URL') : oc_t('PLAN.L_' . strtoupper($oc_f2)));
         $oc_neu[$oc_f2] = $oc_cfg[$oc_f2];   // den bisherigen Stand behalten
     }
@@ -378,36 +452,34 @@ if ($oc_ist_post && isset($_POST['save'])) {
         $oc_fehler[] = oc_t('PLAN.FEHLER_PFAD');
     }
     if ($oc_neu['cheap'] >= $oc_neu['expensive']) {
-        $oc_fehler[] = oc_t('MELDUNG.SCHWELLEN');
-        $oc_neu['cheap'] = $oc_cfg['cheap'];
-        $oc_neu['expensive'] = $oc_cfg['expensive'];
+        $oc_abweis[] = oc_t('MELDUNG.SCHWELLEN');
     }
     $oc_neu['co2_enabled']    = isset($_POST['co2_enabled']) ? 1 : 0;
-    $oc_neu['co2_clean']      = $oc_z('co2_clean', 200, 0, 1000);
+    $oc_neu['co2_clean']      = $oc_z('co2_clean', $oc_cfg['co2_clean'], 0, 1000);
 
-    $oc_neu['fixed_price']      = $oc_z('fixed_price', 30.90, 0, 200);
-    $oc_neu['fix_grund']        = $oc_z('fix_grund', 12.90, 0, 500);
-    $oc_neu['dyn_grund']        = $oc_z('dyn_grund', 0.0, 0, 500);
-    $oc_neu['fix_sofortbonus']  = $oc_z('fix_sofortbonus', 0.0, 0, 5000);
-    $oc_neu['fix_neubonus']     = $oc_z('fix_neubonus', 0.0, 0, 5000);
-    $oc_neu['fix_neubonus_pct'] = $oc_z('fix_neubonus_pct', 0.0, 0, 100);
-    $oc_neu['fix_rabatt']       = $oc_z('fix_rabatt', 0.0, 0, 100);
-    $oc_neu['shift_kwh']        = $oc_z('shift_kwh', 3.0, 0, 100);
+    $oc_neu['fixed_price']      = $oc_z('fixed_price', $oc_cfg['fixed_price'], 0, 200);
+    $oc_neu['fix_grund']        = $oc_z('fix_grund', $oc_cfg['fix_grund'], 0, 500);
+    $oc_neu['dyn_grund']        = $oc_z('dyn_grund', $oc_cfg['dyn_grund'], 0, 500);
+    $oc_neu['fix_sofortbonus']  = $oc_z('fix_sofortbonus', $oc_cfg['fix_sofortbonus'], 0, 5000);
+    $oc_neu['fix_neubonus']     = $oc_z('fix_neubonus', $oc_cfg['fix_neubonus'], 0, 5000);
+    $oc_neu['fix_neubonus_pct'] = $oc_z('fix_neubonus_pct', $oc_cfg['fix_neubonus_pct'], 0, 100);
+    $oc_neu['fix_rabatt']       = $oc_z('fix_rabatt', $oc_cfg['fix_rabatt'], 0, 100);
+    $oc_neu['shift_kwh']        = $oc_z('shift_kwh', $oc_cfg['shift_kwh'], 0, 100);
 
-    // Monatsverbraeuche: sobald einer gepflegt ist, ergibt ihre Summe den
-    // Jahresverbrauch (PV-Haushalte: Sommer wenig, Winter viel Zukauf).
+    // Monatsverbraeuche: ein leeres Feld heisst "nicht gepflegt" (0); sobald
+    // einer gepflegt ist, ergibt ihre Summe den Jahresverbrauch.
     $oc_neu['months'] = array();
     $oc_msum = 0.0;
-    $oc_min = isset($_POST['months']) ? (array) $_POST['months'] : array();
     for ($oc_i = 0; $oc_i < 12; $oc_i++) {
-        $oc_v = str_replace(',', '.', (string) (isset($oc_min[$oc_i]) ? $oc_min[$oc_i] : ''));
-        $oc_v = is_numeric($oc_v) ? max(0, min(20000, (float) $oc_v)) : 0.0;
-        $oc_neu['months'][$oc_i] = round($oc_v, 1);
-        $oc_msum += $oc_v;
+        $oc_v = $oc_roh('months', $oc_i);
+        $oc_bisher = isset($oc_cfg['months'][$oc_i]) ? (float) $oc_cfg['months'][$oc_i] : 0.0;
+        $oc_v = ($oc_v === '') ? 0.0 : $oc_pruef('months[' . $oc_i . ']', $oc_v, $oc_bisher, 0, 20000, false);
+        $oc_neu['months'][$oc_i] = round((float) $oc_v, 1);
+        $oc_msum += (float) $oc_v;
     }
     $oc_neu['consumption'] = $oc_msum > 0
         ? (int) round($oc_msum)
-        : $oc_g('consumption', 3500, 100, 100000);
+        : $oc_g('consumption', $oc_cfg['consumption'], 100, 100000);
 
     /* mqtt_enabled und mqtt_topic werden hier NICHT mehr angefasst: sie
      * wohnen im Reiter MQTT und haben dort ein eigenes Formular.
@@ -417,13 +489,15 @@ if ($oc_ist_post && isset($_POST['save'])) {
     // Adressen im Miniserver anpassen - deshalb nur auf ausdruecklichen Wunsch.
     if (isset($_POST['token_neu']) || (string) $oc_neu['aktionstoken'] === '') {
         $oc_neu['aktionstoken'] = oc_token_erzeugen();
-        if (isset($_POST['token_neu'])) { $oc_hinweis = oc_t('MELDUNG.TOKEN_NEU'); }
     }
 
     $oc_std = array();
     foreach ((array) (isset($_POST['hours']) ? $_POST['hours'] : array()) as $oc_h) {
-        $oc_h = (int) $oc_h;
-        if ($oc_h >= 0 && $oc_h <= 23) { $oc_std[] = $oc_h; }
+        if (is_array($oc_h) || !preg_match('/^[0-9]{1,2}$/', (string) $oc_h) || (int) $oc_h > 23) {
+            $oc_abweis[] = sprintf(oc_t('MELDUNG.WAHL_ABGEWIESEN'), 'hours[]', oc_e(is_array($oc_h) ? '[]' : (string) $oc_h));
+            continue;
+        }
+        if (!in_array((int) $oc_h, $oc_std, true)) { $oc_std[] = (int) $oc_h; }
     }
     sort($oc_std);
     $oc_neu['notify'] = array(
@@ -435,36 +509,56 @@ if ($oc_ist_post && isset($_POST['save'])) {
         'tomorrow'   => isset($_POST['notify_tomorrow']) ? 1 : 0,
         // Die Glocke des LoxBerry (ab 1.1.0)
         'lb'         => isset($_POST['notify_lb']) ? 1 : 0,
-        'lb_stunden' => $oc_g('notify_lb_stunden', 6, 1, 72),
+        'lb_stunden' => $oc_g('notify_lb_stunden', $oc_cfg['notify']['lb_stunden'], 1, 72),
     );
-    $oc_modus = (string) (isset($_POST['tts_mode']) ? $_POST['tts_mode'] : 'musicserver');
-    $oc_ttsip = trim(preg_replace('/[\x00-\x1F\x7F"\']+/u', '',
-        (string) (isset($_POST['tts_ip']) ? $_POST['tts_ip'] : '')));
-    if ($oc_ttsip !== '' && !preg_match('/^[A-Za-z0-9._-]+$/', $oc_ttsip)) {
-        $oc_fehler[] = oc_t('MELDUNG.TTS_IP');
+    $oc_ttsip = $oc_roh('tts_ip');
+    if ($oc_ttsip === null) {
+        $oc_ttsip = (string) $oc_cfg['tts']['ip'];
+    } elseif ($oc_ttsip !== '' && !preg_match('/^[A-Za-z0-9._-]+$/', $oc_ttsip)) {
+        $oc_abweis[] = oc_t('MELDUNG.TTS_IP');
         $oc_ttsip = (string) $oc_cfg['tts']['ip'];
     }
+    $oc_zonen = $oc_roh('tts_zones');
+    if ($oc_zonen === null) {
+        $oc_zonen = (string) $oc_cfg['tts']['zones'];
+    } elseif (!preg_match('/^[0-9]+([ ,~]+[0-9]+)*$/', $oc_zonen)) {
+        $oc_abweis[] = sprintf(oc_t('MELDUNG.ZONEN_ABGEWIESEN'), oc_e($oc_zonen === "\0" ? '[]' : $oc_zonen));
+        $oc_zonen = (string) $oc_cfg['tts']['zones'];
+    }
+    $oc_sprache = $oc_roh('tts_lang');
+    if ($oc_sprache === null) {
+        $oc_sprache = (string) $oc_cfg['tts']['lang'];
+    } elseif (!preg_match('/^[a-z]{2,8}$/', $oc_sprache)) {
+        $oc_abweis[] = sprintf(oc_t('MELDUNG.SPRACHE_ABGEWIESEN'), oc_e($oc_sprache === "\0" ? '[]' : $oc_sprache));
+        $oc_sprache = (string) $oc_cfg['tts']['lang'];
+    }
+    $oc_vorlage = $oc_text('tts_template', $oc_roh('tts_template'), (string) $oc_cfg['tts']['template'], 400, false);
+    if ($oc_vorlage !== '' && !preg_match('#^https?://#i', $oc_vorlage)) {
+        $oc_abweis[] = sprintf(oc_t('MELDUNG.WAHL_ABGEWIESEN'), 'tts_template', oc_e($oc_vorlage));
+        $oc_vorlage = (string) $oc_cfg['tts']['template'];
+    }
     $oc_neu['tts'] = array(
-        'mode'     => in_array($oc_modus, array('musicserver', 'ms4h', 'audioserver', 'custom'), true)
-                      ? $oc_modus : 'musicserver',
+        'mode'     => $oc_wahl('tts_mode', $oc_roh('tts_mode'), $oc_cfg['tts']['mode'],
+                               array('musicserver', 'ms4h', 'audioserver', 'custom')),
         'ip'       => $oc_ttsip,
-        'port'     => $oc_g('tts_port', 7091, 1, 65535),
-        'zones'    => trim(preg_replace('/[^0-9,~ ]/', '',
-                      (string) (isset($_POST['tts_zones']) ? $_POST['tts_zones'] : '1'))),
-        'volume'   => $oc_g('tts_volume', 8, 1, 100),
-        'lang'     => preg_replace('/[^a-z]/', '',
-                      strtolower((string) (isset($_POST['tts_lang']) ? $_POST['tts_lang'] : 'de'))) ?: 'de',
-        'template' => trim(preg_replace('/[\x00-\x1F\x7F"]+/u', '',
-                      (string) (isset($_POST['tts_template']) ? $_POST['tts_template'] : ''))),
+        'port'     => $oc_g('tts_port', $oc_cfg['tts']['port'], 1, 65535),
+        'zones'    => $oc_zonen,
+        'volume'   => $oc_g('tts_volume', $oc_cfg['tts']['volume'], 1, 100),
+        'lang'     => $oc_sprache,
+        'template' => $oc_vorlage,
     );
-    if ($oc_neu['tts']['zones'] === '') { $oc_neu['tts']['zones'] = '1'; }
 
-    if (oc_config_write($oc_neu)) {
+    if ($oc_abweis) {
+        foreach ($oc_abweis as $oc_a) { $oc_fehler[] = $oc_a; }
+        $oc_fehler[] = oc_t('MELDUNG.NICHTS_GESPEICHERT');
+    } elseif (oc_config_write($oc_neu)) {
         $oc_gespeichert = true;
         $oc_cfg = oc_config();
+        if (isset($_POST['token_neu'])) { $oc_hinweis = oc_t('MELDUNG.TOKEN_NEU'); }
     } else {
         $oc_fehler[] = str_replace('%F%', oc_e($oc_p['config']), oc_t('MELDUNG.SPEICHERN_FEHLER'));
     }
+    $oc_tab = 'tab-settings';
 }
 
 /* ---------------- MQTT (eigener Reiter, eigenes Formular) ----------------
@@ -474,23 +568,73 @@ if ($oc_ist_post && isset($_POST['save'])) {
  * nicht abgeschickten Formulars per isset() auf 0. */
 if ($oc_ist_post && isset($_POST['save_mqtt'])) {
     $oc_mcfg = oc_config();
+    $oc_alt_praefix = (string) $oc_mcfg['mqtt_topic'];
     $oc_mcfg['mqtt_enabled'] = isset($_POST['mqtt_enabled']) ? 1 : 0;
-    $oc_mprae = preg_replace('#[^A-Za-z0-9_/-]#', '',
-        trim((string) (isset($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : '')));
-    if ($oc_mprae === '') {
-        if (trim((string) (isset($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : '')) !== '') {
-            $oc_fehler[] = oc_t('MELDUNG.TOPIC_UNGUELTIG');
+    /* ABWEISEN STATT ENTFERNEN (O4, seit 1.1.16).
+     *
+     * Bis 1.1.15 wurden unerlaubte Zeichen still entfernt ("haus/strom preis"
+     * wurde "haus/strompreis", "Einstellungen gespeichert"); bei "!!!" stand
+     * "Es wurde octopus eingetragen", gespeichert wurde aber nichts - auch das
+     * zugleich abgewaehlte MQTT nicht -, und ein Schreibfehler blieb stumm
+     * (Pruefbericht oberflaeche, Befund 4). Jetzt: ein unbrauchbares Praefix
+     * wird abgewiesen und das bisherige bleibt; der Haken wird trotzdem
+     * gespeichert, und ein Schreibfehler wird gemeldet. Erlaubt ist, was
+     * oc_wert_pruefen() und die Sicherung als Thema gelten lassen, ohne
+     * Schraegstrich am Rand und ohne leere Stufe. */
+    $oc_mroh = (isset($_POST['mqtt_topic']) && !is_array($_POST['mqtt_topic']))
+        ? trim((string) $_POST['mqtt_topic']) : null;
+    $oc_praefix_abgewiesen = false;
+    if ($oc_mroh !== null && $oc_mroh !== $oc_alt_praefix) {
+        if ($oc_mroh !== '' && strlen($oc_mroh) <= 64
+            && preg_match('#^[A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*$#', $oc_mroh)) {
+            $oc_mcfg['mqtt_topic'] = $oc_mroh;
+        } else {
+            $oc_fehler[] = sprintf(oc_t('MELDUNG.TOPIC_UNGUELTIG'), oc_e($oc_mroh), oc_e($oc_alt_praefix));
+            $oc_praefix_abgewiesen = true;
         }
-        $oc_mprae = 'octopus';
+    } elseif (isset($_POST['mqtt_topic']) && is_array($_POST['mqtt_topic'])) {
+        $oc_fehler[] = sprintf(oc_t('MELDUNG.TOPIC_UNGUELTIG'), '[]', oc_e($oc_alt_praefix));
+        $oc_praefix_abgewiesen = true;
     }
-    $oc_mcfg['mqtt_topic'] = $oc_mprae;
-    if (!$oc_fehler) {
-        if (oc_config_write($oc_mcfg)) {
-            $oc_hinweis = oc_t('MELDUNG.GESPEICHERT');
-            $oc_cfg = oc_config();
-        }
+    if (oc_config_write($oc_mcfg)) {
+        $oc_hinweis = oc_t($oc_praefix_abgewiesen ? 'MELDUNG.MQTT_TEIL' : 'MELDUNG.GESPEICHERT');
+        $oc_cfg = oc_config();
+        list($oc_pm, $oc_pf) = oc_ui_praefix_wechsel($oc_alt_praefix, (string) $oc_cfg['mqtt_topic']);
+        $oc_meldungen = array_merge($oc_meldungen, $oc_pm);
+        $oc_fehler = array_merge($oc_fehler, $oc_pf);
+    } else {
+        $oc_fehler[] = str_replace('%F%', oc_e($oc_p['config']), oc_t('MELDUNG.SPEICHERN_FEHLER'));
     }
     $oc_tab = 'tab-mqtt';
+}
+
+/**
+ * Nach einem Praefixwechsel (M2, seit 1.1.16): die zurueckbehaltenen Themen
+ * unter dem ALTEN Praefix direkt am Broker abraeumen (derselbe Weg wie die
+ * Deinstallation), beide Praefixe merken (die Deinstallation raeumt unter
+ * jedem gemerkten ab) und den Merker der gesendeten Werte verwerfen, damit
+ * der naechste Lauf unter dem neuen Praefix den vollen Satz schickt.
+ * Bis 1.1.15 blieben die sechs Einstellungswerte unter dem alten Praefix
+ * fuer immer im Broker, auch nach der Deinstallation (Pruefbericht mqtt, M2).
+ * Rueckgabe array(Meldungen, Fehler).
+ */
+function oc_ui_praefix_wechsel($alt, $neu)
+{
+    $m = array();
+    $f = array();
+    if ((string) $alt === (string) $neu || (string) $alt === '') { return array($m, $f); }
+    oc_mqtt_praefix_merken($alt);
+    oc_mqtt_praefix_merken($neu);
+    oc_weg(oc_mqtt_merker());
+    oc_weg(oc_tmpdir() . '/mqtt_beat');
+    $e = oc_mqtt_praefix_leeren($alt, 2, 0.5);
+    foreach ($e['zeilen'] as $z) {
+        $t = oc_e(preg_replace('/^<[A-Z]+> /', '', (string) $z));
+        if ((int) $e['rc'] === 0) { $m[] = $t; } else { $f[] = $t . ' ' . oc_t('MELDUNG.PRAEFIX_REST'); }
+    }
+    oc_log('MQTT-Praefix gewechselt von ' . $alt . ' auf ' . $neu . ': '
+        . strip_tags(implode(' ', $e['zeilen'])));
+    return array($m, $f);
 }
 
 
@@ -621,28 +765,38 @@ if ($oc_ist_post && isset($_POST['oc_zurueck'])) {
             $oc_fehler[] = oc_t('EINST.SICH_ABGELEHNT') . ' '
                             . implode(' ', $oc_mangel);
         } else {
-            /* ---- Ein leeres Aktionstoken in der Datei ----
+            /* ---- Das Aktionstoken (C5, O8; seit 1.1.16) ----
              *
-             * Vorkommen kann das: eine Sicherung, die vor dem ersten
-             * Speichern gezogen wurde, traegt einen Leerstring. Die Datei
-             * deswegen ganz abzuweisen waere zu hart - sie ist ja sonst in
-             * Ordnung. Ein leeres Token uebernehmen waere aber schlimmer:
-             * der Endpunkt macht danach richtigerweise zu (403), und
-             * saemtliche Adressen im Miniserver antworten nicht mehr,
-             * ohne dass irgendwo stuende, warum.
-             *
-             * Also: ein neues wuerfeln und es SAGEN. */
-            $oc_token_gewuerfelt = false;
+             * Eine Sicherung mit LEEREM Token behaelt das laufende. Bis 1.1.15
+             * wurde dann still ein neues gewuerfelt, und darunter standen zwei
+             * Saetze, die sich widersprachen: "es wurde ein neues erzeugt" und
+             * "mit der Sicherung kam auch das Aktionstoken" (Pruefbericht
+             * oberflaeche, Befund 8). Jetzt eine Meldung, die stimmt: das
+             * laufende bleibt; ein neues nur, wenn es noch keines gab; der
+             * Hinweis "die Adressen muessen umgestellt werden" nur, wenn die
+             * Datei wirklich ein ANDERES Token brachte. */
+            $oc_tok_alt = (string) $oc_cfg['aktionstoken'];
+            $oc_tok_lage = 'datei';
             if ((string) $oc_neu['aktionstoken'] === '') {
-                $oc_neu['aktionstoken'] = oc_token_erzeugen();
-                $oc_token_gewuerfelt = true;
+                if ($oc_tok_alt !== '') {
+                    $oc_neu['aktionstoken'] = $oc_tok_alt;
+                    $oc_tok_lage = 'behalten';
+                } else {
+                    $oc_neu['aktionstoken'] = oc_token_erzeugen();
+                    $oc_tok_lage = 'neu';
+                }
             }
+            $oc_alt_praefix = (string) $oc_cfg['mqtt_topic'];
             if (!oc_config_write($oc_neu)) {
                 $oc_fehler[] = oc_t('EINST.SICH_SCHREIBFEHLER');
             } else {
                 $oc_meldungen[] = sprintf(oc_t('EINST.SICH_UEBERNOMMEN'), $oc_n);
-                if ($oc_token_gewuerfelt) {
+                if ($oc_tok_lage === 'behalten') {
+                    $oc_meldungen[] = oc_t('EINST.SICH_TOKEN_BEHALTEN');
+                } elseif ($oc_tok_lage === 'neu') {
                     $oc_meldungen[] = oc_t('EINST.SICH_TOKEN_LEER');
+                } elseif ((string) $oc_neu['aktionstoken'] !== $oc_tok_alt) {
+                    $oc_meldungen[] = oc_t('EINST.SICH_TOKEN_NEU');
                 }
 
                 /* Die Zugangsdaten kommen aus derselben Datei, gehen aber
@@ -658,33 +812,62 @@ if ($oc_ist_post && isset($_POST['oc_zurueck'])) {
                     }
                 }
 
-            /* ---- Den Stand NACHZIEHEN ----
-             *
-             * Bis 1.0.9 fehlte das, und der Block "Anzeige vorbereiten"
-             * lief ausserdem VOR diesem Handler. Der Bediener las "42
-             * Werte uebernommen" und sah darunter unveraendert seine alten
-             * Eingaben - das sieht aus wie ein Fehlschlag und ist keiner.
-             *
-             * Der Block steht jetzt hinter allen Handlern; diese drei
-             * Zeilen bleiben trotzdem, denn sie betreffen etwas, das der
-             * Block NICHT neu bildet: das Formularmerkmal. Es haengt am
-             * Aktionstoken, und das kam gerade aus der Datei. Ohne das
-             * Nachziehen truegen alle Formulare der frisch gezeichneten
-             * Seite das Merkmal des ALTEN Tokens, und der naechste
-             * Knopfdruck liefe in den Wachposten. */
                 $oc_cfg = oc_config();
                 $oc_zug = oc_zugang();
                 $oc_fmt = oc_formtoken($oc_cfg);
                 oc_weg(oc_tmpdir() . '/state.json');
                 oc_weg(oc_tmpdir() . '/laufend.json');
-                $oc_meldungen[] = oc_t('EINST.SICH_TOKEN_NEU');
+                // Eine Sicherung kann das Praefix aendern - dann dasselbe Abraeumen (M2).
+                list($oc_pm, $oc_pf) = oc_ui_praefix_wechsel($oc_alt_praefix, (string) $oc_cfg['mqtt_topic']);
+                $oc_meldungen = array_merge($oc_meldungen, $oc_pm);
+                $oc_fehler = array_merge($oc_fehler, $oc_pf);
                 oc_log('Einstellungen zurueckgespielt: ' . $oc_n . ' Werte'
                     . (is_array($oc_neu_zugang) ? ' samt Zugangsdaten' : '')
-                    . '. Der Zustand wird neu gerechnet.');
+                    . ', Aktionstoken: ' . $oc_tok_lage . '. Der Zustand wird neu gerechnet.');
             }
         }
     }
     $oc_tab = 'tab-settings';
+}
+
+/* ================= JEDER POST ENDET MIT EINER UMLEITUNG (O1, seit 1.1.16) =================
+ *
+ * Regeln/04: header('Location: index.php?form=...', true, 303) und exit; das
+ * Ergebnis reist als Einmalmeldung (data/plugins/<ordner>/einmalmeldung.json,
+ * 0600, 120 s gueltig, nur beim GET gelesen und dabei geloescht). Bis 1.1.15
+ * lieferte jeder POST die Seite direkt: F5 wiederholte die Ansage, den
+ * MQTT-Vollversand, den Merker der Test-Pushnachricht und das Speichern
+ * (Pruefbericht oberflaeche, Befund 1). Die Downloads (Vorlage, Sicherung,
+ * Historie) sind oben schon mit exit fertig. Auch die Abweisung durch den
+ * Wachposten geht diesen Weg. */
+if ($oc_ist_post) {
+    if (!oc_meldung_ablegen(array(
+            'meldungen' => array_values($oc_meldungen), 'fehler' => array_values($oc_fehler),
+            'hinweis' => (string) $oc_hinweis, 'gespeichert' => $oc_gespeichert ? 1 : 0,
+            'test_titel' => (string) $oc_test_titel, 'test_text' => (string) $oc_test_text,
+            'plantest' => (string) $oc_plantest))) {
+        oc_log('Die Einmalmeldung liess sich nicht schreiben - das Ergebnis des letzten '
+            . 'Knopfdrucks ist nach der Umleitung nicht zu sehen.');
+    }
+    header('Location: index.php?form=' . substr($oc_tab, 4), true, 303);
+    exit;
+}
+$oc_einmal = oc_meldung_abholen();
+if ($oc_einmal !== null) {
+    $oc_liste = function ($k) use ($oc_einmal) {
+        return (isset($oc_einmal[$k]) && is_array($oc_einmal[$k]))
+            ? array_values(array_filter($oc_einmal[$k], 'is_string')) : array();
+    };
+    $oc_eintext = function ($k) use ($oc_einmal) {
+        return (isset($oc_einmal[$k]) && is_string($oc_einmal[$k])) ? $oc_einmal[$k] : '';
+    };
+    $oc_meldungen = array_merge($oc_meldungen, $oc_liste('meldungen'));
+    $oc_fehler = array_merge($oc_fehler, $oc_liste('fehler'));
+    if ($oc_eintext('hinweis') !== '') { $oc_hinweis = $oc_eintext('hinweis'); }
+    $oc_gespeichert = !empty($oc_einmal['gespeichert']);
+    $oc_test_titel = $oc_eintext('test_titel');
+    $oc_test_text = $oc_eintext('test_text');
+    $oc_plantest = $oc_eintext('plantest');
 }
 
 
@@ -899,7 +1082,9 @@ if (!empty($oc_cfg['mqtt_enabled']) && $oc_gw['vorhanden'] && !$oc_gw['autostart
 <?php if ($oc_st['ok']) { ?>
 <div class="sm-kacheln">
   <div class="sm-kachel"><small><?php echo oc_t('KACHEL.JETZT'); ?></small>
-    <b><?php echo oc_n($oc_st['cur'], 2); ?></b><small>ct/kWh</small></div>
+    <b><?php echo oc_n($oc_st['cur'], 2); ?></b><small>ct/kWh<?php
+    // C2: fuer die laufende Viertelstunde steht der Ersatzwert (Tageshoechstpreis).
+    echo !empty($oc_st['cur_fehlt']) ? ' &middot; ' . oc_t('TEXT.ERSATZWERT') : ''; ?></small></div>
   <div class="sm-kachel"><small><?php echo oc_t('KACHEL.STUNDE'); ?></small>
     <b><?php echo oc_n($oc_st['cur_h'], 2); ?></b><small>ct/kWh</small></div>
   <div class="sm-kachel"><small><?php echo oc_t('KACHEL.RANG'); ?></small>
@@ -1554,9 +1739,13 @@ for ($oc_i = 0; $oc_i < 12; $oc_i++) { ?>
 <table class="sm-tbl">
 <tr><th><?php echo oc_t('MQTT.SP_WAS'); ?></th><th><?php echo oc_t('MQTT.SP_WERT'); ?></th></tr>
 <tr><td><?php echo oc_t('MQTT.AUTOSTART'); ?></td>
-    <td><?php echo $oc_gw['autostart']
+    <td><?php
+    /* O9 (seit 1.1.16): ohne Mqtt-Abschnitt in der general.json ist der
+     * Autostart nicht feststellbar - nicht "nein" (Regeln/04). */
+    echo !$oc_gw['vorhanden'] ? oc_t('MQTT.NICHT_FESTSTELLBAR')
+        : ($oc_gw['autostart']
         ? '<span class="sm-an">' . oc_t('ALLGEMEIN.JA') . '</span>'
-        : '<span class="sm-aus">' . oc_t('ALLGEMEIN.NEIN') . '</span> &mdash; ' . oc_t('MQTT.AUTOSTART_AUS'); ?></td></tr>
+        : '<span class="sm-aus">' . oc_t('ALLGEMEIN.NEIN') . '</span> &mdash; ' . oc_t('MQTT.AUTOSTART_AUS')); ?></td></tr>
 <tr><td><?php echo oc_t('MQTT.BROKER'); ?></td>
     <td><span class="sm-mono"><?php echo oc_e($oc_gw['broker'] . ':' . $oc_gw['port']); ?></span></td></tr>
 <tr><td><?php echo oc_t('MQTT.UDP'); ?></td>
@@ -1639,7 +1828,10 @@ for ($oc_i = 0; $oc_i < 12; $oc_i++) { ?>
 <tr><th><?php echo oc_t('LOX.SP_TITEL'); ?></th><th><?php echo oc_t('LOX.SP_EINHEIT'); ?></th>
     <th><?php echo oc_t('LOX.SP_BEDEUTUNG'); ?></th></tr>
 <?php foreach (oc_themen() as $oc_k => $oc_info) { ?>
-<tr><td><span class="sm-mono"><?php echo oc_e($oc_cfg['mqtt_topic'] . '_' . oc_thema_flach($oc_k)); ?></span></td>
+<tr><td><span class="sm-mono"><?php
+    // M6 (seit 1.1.16): wie der Gateway den Namen bildet - auch der
+    // Schraegstrich IM Praefix wird zum Unterstrich.
+    echo oc_e(oc_thema_flach($oc_cfg['mqtt_topic'] . '/' . $oc_k)); ?></span></td>
     <td><?php echo oc_e($oc_info[1] !== '' ? $oc_info[1] : '-'); ?></td>
     <td><?php echo oc_e(oc_thema_text($oc_info)); ?></td></tr>
 <?php } ?>
@@ -1676,7 +1868,8 @@ for ($oc_i = 0; $oc_i < 12; $oc_i++) { ?>
 <tr><th>#</th><th><?php echo oc_t('LOX.B_TYP'); ?></th><th><?php echo oc_t('LOX.B_NAME'); ?></th>
     <th><?php echo oc_t('LOX.B_PARAM'); ?></th><th><?php echo oc_t('LOX.B_EIN'); ?></th></tr>
 <?php
-$oc_pf = $oc_cfg['mqtt_topic'];
+// M6 (seit 1.1.16): der Name des Eingangs, wie der Gateway ihn bildet.
+$oc_pf = oc_thema_flach($oc_cfg['mqtt_topic']);
 $oc_bausteine = array(
     array(1,  'LOX.T_VE',        'VE_' . $oc_pf . '_cur',        'LOX.P_VE_CUR',    'LOX.E_MQTT'),
     array(2,  'LOX.T_VE',        'VE_' . $oc_pf . '_cur_h',      'LOX.P_VE_CURH',   'LOX.E_MQTT'),
@@ -1968,6 +2161,44 @@ if ($oc_rp_datei !== '') {
 <?php echo oc_e($oc_rp_text); ?>
 </div>
 
+<?php
+/* ===================================================================
+ * Tragen alle Formulare das Merkmal? (O11, seit 1.1.16; Pflichtzeile,
+ * Regeln/04 "Pflichtzeilen jedes Plugins")
+ * ===================================================================
+ *
+ * Gezaehlt im Quelltext der Oberflaeche: jedes Formular-Tag bis zu seinem
+ * Ende muss ein verstecktes Merkmalfeld (fmt) tragen. Ein neues Formular ohne Merkmal
+ * liefe in den Wachposten und fiele erst beim Anwender auf. Die leere Menge
+ * ist kein Haken: ohne gefundenes Formular gibt es ein Kreuz. Bauform
+ * fb_probe_formulare() (Fensterbilanz 0.12.11). */
+$oc_fm_q = '';
+$oc_fm_dateien = 0;
+foreach (array(__FILE__, __DIR__ . '/oc_test.php') as $oc_fm_d) {
+    if (!is_file($oc_fm_d)) { continue; }
+    $oc_fm_q .= (string) @file_get_contents($oc_fm_d) . "\n";
+    $oc_fm_dateien++;
+}
+$oc_fm_gesamt = 0;
+$oc_fm_ohne = 0;
+if (preg_match_all('/<form\s/', $oc_fm_q, $oc_fm_y, PREG_OFFSET_CAPTURE)) {
+    foreach ($oc_fm_y[0] as $oc_fm_f) {
+        $oc_fm_gesamt++;
+        $oc_fm_ende = strpos($oc_fm_q, '</form>', $oc_fm_f[1]);
+        $oc_fm_blk = substr($oc_fm_q, $oc_fm_f[1], $oc_fm_ende === false ? 400 : $oc_fm_ende - $oc_fm_f[1]);
+        if (strpos($oc_fm_blk, 'name="fmt"') === false) { $oc_fm_ohne++; }
+    }
+}
+$oc_fm_ok = ($oc_fm_gesamt > 0 && $oc_fm_ohne === 0);
+?>
+<h3 class="sm-h3"><?php echo oc_t('TEST.H_FORMULARE'); ?></h3>
+<div class="sm-alert <?php echo $oc_fm_ok ? 'sm-ok' : 'sm-err'; ?>">
+<b><?php echo $oc_fm_ok ? '&#10003;' : '&#10007;'; ?></b>
+<?php echo oc_e($oc_fm_gesamt === 0 ? oc_t('TEST.FORMULARE_KEINE')
+    : ($oc_fm_ok ? sprintf(oc_t('TEST.FORMULARE_OK'), $oc_fm_gesamt, $oc_fm_dateien)
+                 : sprintf(oc_t('TEST.FORMULARE_OHNE'), $oc_fm_ohne, $oc_fm_gesamt))); ?>
+</div>
+
 <h3 class="sm-h3"><?php echo oc_t('PLAN.H_SELBSTTEST'); ?></h3>
 <p class="sm-small"><?php echo oc_t('PLAN.SELBSTTEST_TEXT'); ?></p>
 <div class="sm-knopfreihe">
@@ -2057,6 +2288,8 @@ foreach (array_slice($pl_summen, 1) as $pl_e) {
 <h2><?php echo oc_t('LOG.H'); ?></h2>
 <div class="sm-hilfe"><?php echo str_replace('%F%',
     '<span class="sm-mono">' . oc_e($oc_p['log']) . '</span>', oc_t('LOG.DATEI')); ?></div>
+<?php /* O10 (seit 1.1.16, Regeln/04): log/plugins liegt auf einer Ramdisk. */ ?>
+<div class="sm-hinweis"><?php echo oc_t('LOG.RAMDISK'); ?></div>
 <?php
 if (class_exists('LBWeb', false) && method_exists('LBWeb', 'loglist_html')) {
     echo LBWeb::loglist_html();

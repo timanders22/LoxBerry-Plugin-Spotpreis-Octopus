@@ -17,6 +17,17 @@ function oc_zeile($ok, $text, $zusatz = '')
 
 function oc_test_ausfuehren($was)
 {
+    /* DIE AUSDRUECKLICHEN KNOEPFE (O2, C7; seit 1.1.16).
+     *
+     * Die Oberflaeche ruft sonst nichts ab (oc_kein_abruf() in index.php).
+     * "Anmeldung pruefen" und "Preise jetzt abrufen" sind der ausdrueckliche
+     * Wunsch: sie heben den Schalter auf und duerfen die Anmeldebremse
+     * uebergehen - wer das Kennwort gerade berichtigt hat, will nicht 30
+     * Minuten warten. */
+    if ($was === 'anmeldung' || $was === 'abruf') {
+        oc_kein_abruf(false);
+        oc_anmeldung_ausdruecklich(true);
+    }
     switch ($was) {
         case 'selbst':      return oc_test_selbst();
         case 'anmeldung':   return oc_test_anmeldung();
@@ -107,8 +118,16 @@ function oc_test_selbst()
     if (!empty($st['veraltet'])) {
         $h .= '<div class="sm-warnung">' . oc_t('TEST.WARN_VERALTET') . '</div>';
     }
-    $h .= oc_zeile($st['tomorrow_ok'] === 1, oc_t('TEST.MORGEN'),
-        $st['tomorrow_ok'] ? '' : oc_t('TEST.MORGEN_NOCH_NICHT'));
+    /* O7 (seit 1.1.16): ohne Preise fuer heute ist ueber morgen nichts
+     * gemessen - dann ein grauer Strich "nicht geprueft", kein Kreuz mit
+     * falscher Ursache (Fehlerklasse 8; Pruefbericht oberflaeche, Befund 7). */
+    if (empty($st['ok'])) {
+        $h .= '<div><span style="color:#888;">&ndash;</span> ' . oc_t('TEST.MORGEN')
+            . ' &mdash; ' . oc_t('TEST.NICHT_GEPRUEFT') . '</div>';
+    } else {
+        $h .= oc_zeile((int) $st['tomorrow_ok'] === 1, oc_t('TEST.MORGEN'),
+            $st['tomorrow_ok'] ? '' : oc_t('TEST.MORGEN_NOCH_NICHT'));
+    }
     $h .= oc_zeile((string) $cfg['aktionstoken'] !== '', oc_t('TEST.TOKEN'),
         (string) $cfg['aktionstoken'] !== '' ? '' : oc_t('TEST.TOKEN_FEHLT'));
 

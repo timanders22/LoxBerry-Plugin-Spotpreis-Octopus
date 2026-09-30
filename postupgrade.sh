@@ -70,6 +70,16 @@ else
 fi
 echo "<INFO> Sicherungsordner: $SICHERUNG"
 
+# Die Marke aus preupgrade.sh (I1, I2; seit 1.1.16). Dieses Skript ist das
+# letzte Hakenskript einer Aktualisierung; es raeumt sie ab - ueber einen
+# trap, damit auch ein Abbruch sie nicht liegen laesst (der Minutentakt ruhte
+# sonst bis zu einer Stunde). Eine Kommandoersetzung und eine Unterschale
+# loesen den EXIT-Trap nicht aus (Regeln/06).
+MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+UPGRADE=0
+[ -f "$MARKE" ] && UPGRADE=1
+trap 'rm -f "$MARKE" 2>/dev/null' EXIT
+
 # Traegt eine Datei Inhalt? 0 = ja, 1 = nein, 2 = nicht pruefbar (kein php).
 # "konfig": ein Aktionstoken in der Form, die webfrontend/html/oc_lib.php
 # (Normalisierung der Konfiguration) als Token gelten laesst,
@@ -127,6 +137,12 @@ oc_zurueck() {   # $1 Quelle, $2 Ziel, $3 Art (konfig|zugang|-), $4 Bezeichnung
 oc_zurueck "$SICHERUNG/octopus.json" "$CFGDIR/octopus.json" konfig "Konfiguration"
 oc_zurueck "$SICHERUNG/zugang.json"  "$CFGDIR/zugang.json"  zugang "Zugangsdaten"
 oc_zurueck "$SICHERUNG/history.csv"  "$DATADIR/history.csv" -      "Historie"
+# I4 (seit 1.1.16): der Preis-Zwischenspeicher und die Praefixliste (M2) -
+# ohne Inhaltspruefung, nur bei liegender Marke (Entscheidung 1).
+if [ "$UPGRADE" = 1 ]; then
+    oc_zurueck "$SICHERUNG/preise.json"        "$DATADIR/preise.json"        - "Preis-Zwischenspeicher"
+    oc_zurueck "$SICHERUNG/mqtt_praefixe.json" "$DATADIR/mqtt_praefixe.json" - "Liste der MQTT-Praefixe"
+fi
 
 # Selbstheilung wie in postinstall.sh - ebenfalls nur aus einer Zweitschrift
 # mit Inhalt.
@@ -176,4 +192,5 @@ else
     echo "<INFO> Plugin oeffnen, im Reiter Einstellungen die Octopus-Zugangsdaten hinterlegen"
     echo "<INFO> (oder den Demo-Modus einschalten) und einmal speichern."
 fi
+rm -f "$MARKE" 2>/dev/null
 exit 0

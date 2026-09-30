@@ -103,21 +103,49 @@ oc_inhalt() {   # $1 Datei, $2 Art: konfig | zugang
     return "$oc_rc"
 }
 
-# Selbstheilung: bei einer Neuinstallation ueber eine alte Sicherung wird die
-# Konfiguration zurueckgeholt, sofern die aktuelle leer ist - aber nur aus
-# einer Zweitschrift MIT Inhalt. Bis 1.1.12 wurde auch "{}" kopiert und als
-# "wiederhergestellt" gemeldet (gemessen 24.09.2026,
-# Pruefung-Spotpreis-Octopus-1.1.13, Fall c). Ohne php wird wie bisher kopiert.
+# Selbstheilung: die Konfiguration wird aus der Zweitschrift zurueckgeholt,
+# sofern die aktuelle leer ist - aber nur aus einer Zweitschrift MIT Inhalt.
+# Bis 1.1.12 wurde auch "{}" kopiert und als "wiederhergestellt" gemeldet
+# (gemessen 24.09.2026, Pruefung-Spotpreis-Octopus-1.1.13, Fall c). Ohne php
+# wird wie bisher kopiert.
+#
+# SEIT 1.1.16 NUR BEI EINER AKTUALISIERUNG (I1, Entscheidung 1): die erkennt
+# dieses Skript allein an der Marke data/plugins/<ordner>.upgrade_laeuft aus
+# preupgrade.sh - kein Altersvergleich. Die Marke raeumt erst postupgrade.sh
+# ab (es laeuft nach diesem Skript). Bis 1.1.15 spielte eine NEUINSTALLATION
+# eine liegengebliebene Zweitschrift samt altem Aktionstoken ein und meldete
+# "Aktualisierung abgeschlossen" (in WSL gemessen, Pruefbericht installer,
+# Fall I2). Ohne Marke legt preinstall.sh die Zweitschrift nach .alt; lief es
+# nicht, tut es dieses Skript - mit genau einer <WARNING>.
 BK="$BASE/config/plugins/$PFOLDER.backup.json"
 CF="$CFGDIR/octopus.json"
-if [ -f "$BK" ]; then
-    if [ ! -s "$CF" ] || [ "$(cat "$CF" 2>/dev/null)" = "{}" ]; then
-        oc_inhalt "$BK" konfig
-        if [ "$?" = 1 ]; then
-            echo "<INFO> Sicherung ohne Einstellungen - nichts zurueckgespielt."
-        else
-            cp -p "$BK" "$CF" && echo "<OK> Konfiguration aus der Sicherung wiederhergestellt."
+MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+UPGRADE=0
+[ -f "$MARKE" ] && UPGRADE=1
+if [ "$UPGRADE" = 1 ]; then
+    if [ -f "$BK" ]; then
+        if [ ! -s "$CF" ] || [ "$(cat "$CF" 2>/dev/null)" = "{}" ]; then
+            oc_inhalt "$BK" konfig
+            if [ "$?" = 1 ]; then
+                echo "<INFO> Sicherung ohne Einstellungen - nichts zurueckgespielt."
+            else
+                cp -p "$BK" "$CF" && echo "<OK> Konfiguration aus der Sicherung wiederhergestellt."
+            fi
         fi
+    fi
+elif [ -e "$BK" ] || [ -L "$BK" ]; then
+    # Hat der Minutentakt die Zweitschrift schon eingespielt (Luecke vor
+    # diesem Skript, Fall I3), steht hier byteweise dieselbe Datei - zurueck
+    # auf "{}", die Einstellungen gehoeren der frueheren Installation.
+    if [ -f "$CF" ] && cmp -s "$CF" "$BK"; then
+        echo '{}' > "$CF"
+    fi
+    rm -f "${BK:?}.alt" 2>/dev/null
+    if mv -f "$BK" "$BK.alt" 2>/dev/null; then
+        chmod 600 "$BK.alt" 2>/dev/null
+        echo "<WARNING> Neuinstallation: Einstellungen und Aktionstoken einer frueheren Installation werden NICHT eingespielt. Beiseitegelegt: $BK.alt (die Deinstallation raeumt es ab)."
+    else
+        echo "<WARNING> Neuinstallation: die Zweitschrift einer frueheren Installation liess sich nicht beiseitelegen, bitte von Hand entfernen: $BK"
     fi
 fi
 

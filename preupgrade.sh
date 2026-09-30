@@ -78,6 +78,32 @@ if [ -z "$BASE" ]; then
     exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# ZUERST DIE MARKE "AKTUALISIERUNG LAEUFT" (I1, I2; seit 1.1.16; Entscheidung 1)
+#
+# data/plugins/<ordner>.upgrade_laeuft mit der Unixzeit. Sie liegt NEBEN dem
+# Datenordner - purge_installation loescht den Ordner, nicht den Nachbarn mit
+# dem Punkt. Wer sie liest:
+#   preinstall.sh / postinstall.sh  nur mit Marke wird aus der Zweitschrift
+#                                   zurueckgespielt (kein Altersvergleich);
+#   bin/oc_cron.php, cron.01min     der Minutentakt ruht, solange sie juenger
+#                                   als 3600 s ist (Startsperre);
+#   postupgrade.sh                  spielt preise.json und die Praefixliste
+#                                   zurueck und raeumt die Marke ab (trap).
+# Die Deinstallation raeumt eine vergessene Marke mit ab.
+# ---------------------------------------------------------------------------
+case "$PFOLDER" in
+    ''|*/*|*..*)
+        echo "<WARNING> Unzulaessiger Ordnername '$PFOLDER' - keine Marke gesetzt." ;;
+    *)
+        MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+        if date +%s > "$MARKE" 2>/dev/null; then
+            echo "<INFO> Aktualisierung: Marke $MARKE gesetzt."
+        else
+            echo "<WARNING> Die Marke $MARKE liess sich nicht anlegen - die Zweitschrift wird dann nicht zurueckgespielt."
+        fi ;;
+esac
+
 if [ -n "$ARGV6" ] && [ -d "$ARGV6" ]; then
     SICHERUNG="$ARGV6/octopus_upgrade"
 else
@@ -85,6 +111,12 @@ else
     SICHERUNG="${ARGV1:-octopus}_upgrade"
 fi
 
+# Einen alten Bestand wegraeumen, BEVOR ein neuer entsteht (Entscheidung 1,
+# letzter Satz): im Rueckfallweg liegt der Ordner relativ zum Arbeitsordner,
+# und ein Rest eines frueheren Vorgangs wuerde sonst mit eingespielt.
+case "$SICHERUNG" in
+    *octopus_upgrade|*_upgrade) rm -rf "${SICHERUNG:?}" 2>/dev/null ;;
+esac
 mkdir -p "$SICHERUNG" 2>/dev/null
 
 # HIER STAND EIN MERKER .upgrade_pfad IM KONFIGURATIONSORDNER, den
@@ -107,4 +139,12 @@ echo "<INFO> Sicherungsordner: $SICHERUNG"
 cp -p "$BASE/config/plugins/$PFOLDER/octopus.json" "$SICHERUNG/octopus.json" 2>/dev/null
 cp -p "$BASE/config/plugins/$PFOLDER/zugang.json"  "$SICHERUNG/zugang.json"  2>/dev/null
 cp -p "$BASE/data/plugins/$PFOLDER/history.csv"    "$SICHERUNG/history.csv"  2>/dev/null
+# I4 (seit 1.1.16): der Preis-Zwischenspeicher samt 'stand' - ohne ihn meldete
+# der erste gescheiterte Abruf nach einem Update sofort "Seit ? Stunden ist
+# kein Preisabruf mehr gelungen" (in WSL gemessen, Pruefbericht installer,
+# Befund 5). Und die Liste der frueher benutzten MQTT-Praefixe (M2): die
+# Deinstallation raeumt unter jedem ab. cp -p behaelt die Aenderungszeit, und
+# an ihr misst oc_preise() das Alter.
+cp -p "$BASE/data/plugins/$PFOLDER/preise.json"    "$SICHERUNG/preise.json"  2>/dev/null
+cp -p "$BASE/data/plugins/$PFOLDER/mqtt_praefixe.json" "$SICHERUNG/mqtt_praefixe.json" 2>/dev/null
 exit 0

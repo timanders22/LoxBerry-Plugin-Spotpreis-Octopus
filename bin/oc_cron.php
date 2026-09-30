@@ -11,9 +11,11 @@
  * Mit --mqtt-leeren (nur aus uninstall/uninstall): die zurueckbehaltenen
  * MQTT-Themen der Linie leeren und beim Broker nachlesen, sonst nichts.
  *
- * Laeuft ueber die Kommandozeile. cron/cron.01min leitet die Ausgabe nach
- * /dev/null - hier steht deshalb nur eine Zeile auf stdout, und alles,
- * was jemand spaeter lesen soll, geht ueber oc_log() in die Logdatei.
+ * Laeuft ueber die Kommandozeile. cron/cron.01min leitet stdout nach
+ * /dev/null und stderr seit 1.1.16 nach log/plugins/<ordner>/cron.err (I3) -
+ * hier steht deshalb nur eine Zeile auf stdout, Abbrueche stehen in
+ * cron.err, und alles, was jemand spaeter lesen soll, geht ueber oc_log() in
+ * die Logdatei.
  *
  * Bis 1.1.3 stand hier, der Cron leite die Ausgabe in die Logdatei um.
  * Das war falsch, und zwanzig Zeilen weiter unten stand in derselben
@@ -62,6 +64,22 @@ oc_keine_wurzel_abbruch('oc_cron.php');
  * denn zurueckbehalten steht, was je gesendet wurde. */
 if (in_array('--mqtt-leeren', isset($argv) ? (array) $argv : array(), true)) {
     exit(oc_mqtt_leeren());
+}
+
+/* STARTSPERRE WAEHREND EINER AKTUALISIERUNG (I2, seit 1.1.16; Entscheidung 1).
+ *
+ * Solange die Marke data/plugins/<ordner>.upgrade_laeuft aus preupgrade.sh
+ * liegt (juenger als 3600 s), ruht der Takt - still, VOR oc_config(), denn
+ * schon deren Selbstheilung schreibt. Bis 1.1.15 lief der Takt in der Luecke
+ * zwischen dem Kopieren der Oberflaeche und postupgrade.sh: er heilte die
+ * Konfiguration aus der Zweitschrift, fand noch keine zugang.json und schrieb
+ * "keine Kundennummer" mit SEVERITY 3 in die Glocke, 2 s bevor die
+ * Zugangsdaten zurueckkamen (in WSL gemessen, Pruefbericht installer, I4).
+ * postupgrade.sh raeumt die Marke ab. */
+$oc_marke_upgrade = oc_upgrade_marke();
+if ($oc_marke_upgrade !== null && $oc_marke_upgrade['gilt']) {
+    echo "AKTUALISIERUNG\n";
+    exit(0);
 }
 
 $cfg = oc_config();

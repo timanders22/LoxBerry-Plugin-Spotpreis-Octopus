@@ -72,11 +72,12 @@ fi
 # das Praefix steht in der Konfiguration. Bis 1.1.11 blieben sie nach dem
 # Deinstallieren im Broker stehen, und nach jedem Neustart von Broker oder
 # Gateway bekam der Miniserver sie wieder (in WSL gemessen,
-# Pruefung-Spotpreis-Octopus-1.1.12, Faelle U1 bis U7). Geleert wird ueber den
-# Weg der Linie, den UDP-Eingang des Gateways, und beim Broker nachgelesen
-# (oc_mqtt_leeren() in webfrontend/html/oc_lib.php; Bauart Spotpreis-Tibber
-# 0.9.19). Als loxberry, nicht als root; stdin geschlossen, damit su nie auf
-# eine Eingabe wartet.
+# Pruefung-Spotpreis-Octopus-1.1.12, Faelle U1 bis U7). Seit 1.1.16 (M1, M2)
+# direkt am Broker ueber TCP geloescht und nachgelesen - der UDP-Eingang des
+# Gateways ist nur noch der Rueckfall -, und zwar unter dem eingestellten
+# Praefix UND unter jedem frueher eingestellten (oc_mqtt_leeren() in
+# webfrontend/html/oc_lib.php). Als loxberry, nicht als root; stdin
+# geschlossen, damit su nie auf eine Eingabe wartet.
 OC_CRON="$BASE/bin/plugins/$PFOLDER/oc_cron.php"
 if command -v php >/dev/null 2>&1 && [ -f "$OC_CRON" ]; then
     if [ "$(id -u)" = "0" ] && id loxberry >/dev/null 2>&1; then
@@ -100,6 +101,16 @@ if [ -f "$BK" ]; then
     rm -f "$BK" && echo "<OK> Sicherung der Einstellungen entfernt: $PFOLDER.backup.json"
 else
     echo "<INFO> Keine Sicherung ausserhalb des Plugin-Ordners vorhanden."
+fi
+# Seit 1.1.16 (I1, Entscheidung 1): die beiseitegelegte Zweitschrift einer
+# frueheren Installation (preinstall.sh/postinstall.sh) und eine vergessene
+# Upgrade-Marke.
+if [ -f "$BK.alt" ]; then
+    rm -f "$BK.alt" && echo "<OK> Beiseitegelegte Sicherung entfernt: $PFOLDER.backup.json.alt"
+fi
+if [ -f "$BASE/data/plugins/$PFOLDER.upgrade_laeuft" ]; then
+    rm -f "$BASE/data/plugins/$PFOLDER.upgrade_laeuft" \
+        && echo "<OK> Liegengebliebene Upgrade-Marke entfernt: $PFOLDER.upgrade_laeuft"
 fi
 
 echo "<OK> Zugangsdaten und Zwischenspeicher entfernt."
