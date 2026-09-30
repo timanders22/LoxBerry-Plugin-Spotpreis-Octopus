@@ -7,6 +7,25 @@ HTTP-Endpunkt als Rückfallebene.
 
 ---
 
+## Was 1.1.17 behebt
+
+Verbesserungen aus dem Durchgang vom 30.09.2026 (Verbesserungsliste
+`Pruefung-Durchgang-2026-09-29/VERBESSERUNGEN_OFFEN.md`). Gemessen an einer
+Kraken-Attrappe unter PHP 7.4, 8.3 und 8.5; nicht am Gerät.
+
+* **Reiter Test zeigt die letzte Antwort von Kraken, gekürzt:** Anzahl der
+  Einträge, Schrittweite (15 oder 60 min), Zeitzone, die ersten und letzten drei
+  Preise. So ist sichtbar, ob der Tarif in Viertelstunden oder Stunden kommt.
+  Gemerkt wird nur beim Abruf, der ohnehin läuft (Datei mit 0600); Kennwort,
+  Token und E-Mail nie, die Kundennummer nur maskiert.
+* **Nach einer Beanstandung stehen die eingetippten Werte wieder im Formular**
+  (Einstellungen, Zugang, MQTT); die beanstandeten Felder sind rot umrandet. Das
+  Passwort kommt nie zurück, die Haken „Neues Token erzeugen“ und
+  „Zugangsdaten löschen“ stehen wieder aus. Gespeichert bleibt der bisherige Stand.
+* **„Einstellungen sichern“ warnt gelb**, wenn das Zurückspielen genau dieser
+  Datei abgewiesen würde; die Datei trägt dann `_warnung` mit den Namen und wird
+  trotzdem geliefert.
+
 ## Was 1.1.16 behebt
 
 Durchgang vom 30.09.2026 mit vier Prüfern (Code, Oberfläche, Installer, MQTT).
@@ -1151,6 +1170,18 @@ dort — es wäre sonst ohne Token über HTTP erreichbar.
   Prozessliste) und nie angezeigt; im Reiter Test steht nur die Länge.
 * Das **Kraken-Token** ist eine Stunde gültig, wird 55 Minuten gehalten und
   liegt ebenfalls mit 0600 in `data/plugins/octopus/token.json`.
+* Die **letzte Antwort von Kraken** (Reiter Test, gekürzt: Zahl, Schrittweite,
+  Zeitzone, erste und letzte drei Einträge) liegt mit 0600 in
+  `data/plugins/octopus/kraken_antwort.json`. Gemerkt wird sie nur beim
+  Abruf, der ohnehin läuft. Kennwort, Token und E-Mail stehen nie darin, die
+  Kundennummer nur maskiert.
+* Nach einer **Beanstandung** stehen die eingetippten Werte wieder im
+  Formular — nie das Passwort, und die Haken „Neues Token erzeugen“ und
+  „Zugangsdaten löschen“ stehen wieder aus.
+* **Einstellungen sichern** warnt am Knopf (und in der Datei unter
+  `_warnung`), wenn das Zurückspielen genau dieser Datei abgewiesen würde —
+  etwa wegen einer Kundennummer, die nicht zur Form passt, oder eines
+  unbekannten Schlüssels in der Konfiguration. Geliefert wird sie trotzdem.
 * Der **Endpunkt** vergleicht sein Token mit `hash_equals`, also in
   gleichbleibender Zeit. Ein einfaches `==` ließe sich über die Antwortzeit
   Zeichen für Zeichen erraten. Unbekannte Aktionen werden abgewiesen, nicht

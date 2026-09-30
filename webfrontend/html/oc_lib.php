@@ -427,6 +427,198 @@ function oc_meldung_abholen()
     return $d;
 }
 
+/* ==================================================================
+ * Eingaben nach einer Beanstandung (X-2, Regeln/04, Hausregel 30.09.2026)
+ * ==================================================================
+ *
+ * Seit der Umleitung nach jedem POST (O1, 1.1.16) zeigte der GET nach einer
+ * Abweisung die GESPEICHERTEN Werte: wer im Einstellungsformular zehn Felder
+ * richtig und eines falsch eingab, tippte alle elf neu. Jetzt reisen die
+ * Eingaben des beanstandeten Formulars mit der Einmalmeldung (0600,
+ * Datenordner, 120 s, beim GET gelesen und geloescht) - nur die Felder DIESES
+ * Formulars, und nie ein Geheimnis: das Passwort reist nicht mit (sein Feld
+ * bleibt leer und zeigt den Platzhalter), Aktionstoken und Formularmerkmal
+ * ersetzt oc_meldung_ablegen() ohnehin durch ***. Die Aktionshaken "Token neu
+ * wuerfeln" und "Zugangsdaten loeschen" reisen ebenfalls nicht mit: ein
+ * zweites Absenden soll nie eine Aktion wiederholen, die man nicht erneut
+ * angekreuzt hat. Nur nach einer Beanstandung: nach erfolgreichem Speichern
+ * zeigt der GET die gespeicherten Werte.
+ *
+ * Eingesetzt wird am fertigen HTML des Formulars (oc_eingaben_einsetzen()),
+ * nicht Feld fuer Feld im Quelltext: das Einstellungsformular hat rund
+ * hundert Felder, und ein vergessenes waere still wieder "gespeicherter
+ * Wert statt Eingabe".
+ */
+
+/** Die Formulare (Name des versteckten Merkmalfeldes) und was in ihnen NIE zurueckreist. */
+function oc_eingaben_formulare()
+{
+    return array(
+        'save'        => array('token_neu'),
+        'save_zugang' => array('z_passwort', 'zugang_loeschen'),
+        'save_mqtt'   => array(),
+    );
+}
+
+/** Felder, die als Liste name[] abgeschickt werden (Stundenhaken). */
+function oc_eingaben_listen()
+{
+    return array('hours');
+}
+
+/** Taugt der Name als Feldname? name, name[3] oder name[] - sonst nichts. */
+function oc_eingaben_name_ok($k)
+{
+    return is_string($k) && preg_match('/^[a-z][a-z0-9_]{0,40}(\[[0-9]{1,2}\]|\[\])?$/', $k) === 1;
+}
+
+/** Die Eingaben eines abgewiesenen POST fuer die Einmalmeldung. */
+function oc_eingaben_sammeln($formular, $beanstandet)
+{
+    $liste = oc_eingaben_formulare();
+    if (!isset($liste[$formular])) { return array(); }
+    $nie = array_merge($liste[$formular], array('fmt', 'activetab', 'tab', $formular));
+    $werte = array();
+    foreach ($_POST as $k => $v) {
+        if (!is_string($k) || in_array($k, $nie, true) || count($werte) >= 400) { continue; }
+        if (in_array($k, oc_eingaben_listen(), true)) {
+            $l = array();
+            foreach ((array) $v as $w) {
+                if (!is_array($w)) { $l[] = substr((string) $w, 0, 16); }
+            }
+            $werte[$k . '[]'] = array_slice($l, 0, 48);
+            continue;
+        }
+        if (is_array($v)) {
+            foreach ($v as $i => $w) {
+                $n = $k . '[' . $i . ']';
+                if (!is_array($w) && oc_eingaben_name_ok($n)) { $werte[$n] = substr((string) $w, 0, 1000); }
+            }
+            continue;
+        }
+        if (oc_eingaben_name_ok($k)) { $werte[$k] = substr((string) $v, 0, 1000); }
+    }
+    $felder = array();
+    foreach ((array) $beanstandet as $k) {
+        if (oc_eingaben_name_ok($k) && !in_array($k, $nie, true) && !in_array($k, $felder, true)) { $felder[] = $k; }
+    }
+    return array('formular' => $formular, 'werte' => $werte, 'felder' => $felder);
+}
+
+/** Die Eingaben aus der Einmalmeldung - nur, was die Regeln oben zulassen. */
+function oc_eingaben_pruefen($e)
+{
+    $liste = oc_eingaben_formulare();
+    if (!is_array($e) || !isset($e['formular']) || !is_string($e['formular'])
+        || !isset($liste[$e['formular']])) {
+        return array();
+    }
+    $f = $e['formular'];
+    $nie = array_merge($liste[$f], array('fmt', 'activetab', 'tab', $f));
+    $werte = array();
+    if (isset($e['werte']) && is_array($e['werte'])) {
+        foreach ($e['werte'] as $k => $w) {
+            if (!oc_eingaben_name_ok($k) || in_array($k, $nie, true)) { continue; }
+            if (substr($k, -2) === '[]') {
+                if (is_array($w)) { $werte[$k] = array_values(array_filter($w, 'is_string')); }
+            } elseif (is_string($w)) {
+                $werte[$k] = $w;
+            }
+        }
+    }
+    $felder = array();
+    if (isset($e['felder']) && is_array($e['felder'])) {
+        foreach ($e['felder'] as $k) {
+            if (oc_eingaben_name_ok($k) && !in_array($k, $nie, true)) { $felder[] = $k; }
+        }
+    }
+    return array('formular' => $f, 'werte' => $werte, 'felder' => $felder);
+}
+
+/**
+ * Die Eingaben in das fertige HTML EINES Formulars einsetzen und die
+ * beanstandeten Felder markieren. Gehoeren die Eingaben zu einem anderen
+ * Formular (oder gibt es keine), kommt das HTML unveraendert zurueck.
+ * Ein Haken, der nicht abgeschickt wurde, war nicht gesetzt - das Formular
+ * wurde als Ganzes abgeschickt.
+ */
+function oc_eingaben_einsetzen($html, $formular, $e)
+{
+    if (!is_array($e) || !isset($e['formular']) || $e['formular'] !== $formular
+        || !isset($e['werte']) || !is_array($e['werte'])) {
+        return $html;
+    }
+    $werte = $e['werte'];
+    $felder = (isset($e['felder']) && is_array($e['felder'])) ? $e['felder'] : array();
+    $nie = oc_eingaben_formulare();
+    $nie = $nie[$formular];
+    $attr = function ($tag, $name) {
+        return preg_match('/\s' . $name . '="([^"]*)"/', $tag, $m)
+            ? html_entity_decode($m[1], ENT_QUOTES, 'UTF-8') : null;
+    };
+    $marke = function ($tag, $name) use ($felder) {
+        if (!in_array($name, $felder, true)) { return $tag; }
+        if (preg_match('/\sclass="/', $tag)) {
+            $tag = preg_replace('/\sclass="/', ' class="sm-beanstandet ', $tag, 1);
+        } else {
+            $tag = preg_replace('/^<([a-z]+)\b/', '<$1 class="sm-beanstandet"', $tag, 1);
+        }
+        return preg_replace('/^<([a-z]+)\b/', '<$1 aria-invalid="true"', $tag, 1);
+    };
+    $wert_setzen = function ($tag, $wert) {
+        $neu = ' value="' . oc_e($wert) . '"';
+        if (preg_match('/\svalue="[^"]*"/', $tag, $m, PREG_OFFSET_CAPTURE)) {
+            return substr_replace($tag, $neu, $m[0][1], strlen($m[0][0]));
+        }
+        return substr($tag, 0, -1) . $neu . '>';
+    };
+    $html = preg_replace_callback('/<input\b[^>]*>/', function ($m) use ($werte, $nie, $attr, $marke, $wert_setzen) {
+        $tag = $m[0];
+        $name = $attr($tag, 'name');
+        if ($name === null || in_array($name, $nie, true)) { return $tag; }
+        $typ = strtolower((string) $attr($tag, 'type'));
+        if ($typ === '') { $typ = 'text'; }
+        if (in_array($typ, array('hidden', 'submit', 'button', 'file', 'password', 'reset', 'image'), true)) {
+            return $marke($tag, $name);
+        }
+        if ($typ === 'checkbox' || $typ === 'radio') {
+            $v = $attr($tag, 'value');
+            $v = ($v === null) ? 'on' : $v;
+            if (substr($name, -2) === '[]') {
+                $an = isset($werte[$name]) && is_array($werte[$name]) && in_array($v, $werte[$name], true);
+            } elseif ($typ === 'radio') {
+                $an = isset($werte[$name]) && $werte[$name] === $v;
+            } else {
+                $an = isset($werte[$name]);
+            }
+            $tag = preg_replace('/\schecked(="[^"]*")?(?=[\s>\/])/', '', $tag);
+            if ($an) { $tag = rtrim(substr($tag, 0, -1)) . ' checked>'; }
+            return $marke($tag, $name);
+        }
+        if (isset($werte[$name]) && is_string($werte[$name])) { $tag = $wert_setzen($tag, $werte[$name]); }
+        return $marke($tag, $name);
+    }, $html);
+    $html = preg_replace_callback('/(<select\b[^>]*>)(.*?)(<\/select>)/s', function ($m) use ($werte, $nie, $attr, $marke) {
+        $name = $attr($m[1], 'name');
+        if ($name === null || in_array($name, $nie, true)) { return $m[0]; }
+        $innen = $m[2];
+        if (isset($werte[$name]) && is_string($werte[$name])) {
+            $soll = $werte[$name];
+            $innen = preg_replace_callback('/<option\b[^>]*>/', function ($o) use ($soll, $attr) {
+                $t = preg_replace('/\sselected(="[^"]*")?(?=[\s>\/])/', '', $o[0]);
+                $v = $attr($t, 'value');
+                return ($v !== null && $v === $soll) ? rtrim(substr($t, 0, -1)) . ' selected>' : $t;
+            }, $innen);
+        }
+        return $marke($m[1], $name) . $innen . $m[3];
+    }, $html);
+    // Oben im Formular ein Satz, warum die Felder nicht den gespeicherten Stand zeigen.
+    $hinweis = '<div class="sm-warnung">' . oc_t('EINST.EINGABEN_ZURUECK') . '</div>';
+    return preg_replace_callback('/<form\b[^>]*>/', function ($m) use ($hinweis) {
+        return $m[0] . "\n" . $hinweis;
+    }, $html, 1);
+}
+
 /**
  * Eintraege laenger als eine Viertelstunde in Viertelstunden zerlegen (C2).
  *
@@ -1507,6 +1699,10 @@ function oc_kraken_preise($force = false)
 
     $r = oc_http(OC_API, $payload, array('Content-Type: application/json',
                                          'Authorization: ' . $token), 25);
+    /* b1 (Verbesserungsbau 30.09.2026): die Antwort gekuerzt und maskiert
+     * fuer den Reiter Test merken - HIER, wo ohnehin abgerufen wird, und
+     * nirgends sonst. Die Anzeige liest nur die Datei. */
+    oc_rohantwort_merken($r, $token);
     if (!$r['ok'] && $r['body'] === '') { $out['fehler'] = $r['fehler']; return $out; }
 
     $d = oc_json($r['body'], $jf);
@@ -1587,6 +1783,227 @@ function oc_finde_satz($node, &$brutto, &$netto)
             oc_finde_satz($v, $brutto, $netto);
         }
     }
+}
+
+/* ==================================================================
+ * Die letzte Antwort von Kraken (b1, Verbesserungsbau 30.09.2026)
+ *
+ * Wer wissen will, ob Octopus Viertelstunden oder Stunden liefert und in
+ * welcher Zeitzone, musste bisher das Protokoll lesen - und dort steht nur
+ * "96 Preiseintraege von ... bis ...". Jetzt zeigt der Reiter Test die
+ * gekuerzte Rohantwort der LETZTEN Preisabfrage: Zahl der Eintraege,
+ * Schrittweite, Zeitzone der Zeitangaben, die ersten und die letzten drei
+ * Eintraege im Wortlaut, bei einer Ablehnung die Meldung.
+ *
+ * - Gemerkt wird nur in oc_kraken_preise(), also nur, wenn der Minutentakt
+ *   oder ein ausdruecklicher Knopf ohnehin abruft. Es gibt keinen eigenen
+ *   Abruf; die Oberflaeche liest nur diese Datei.
+ * - Datenordner, Rechte 0600, ueber oc_datei_schreiben().
+ * - Nie mit Kennwort, Token, Kundennummer oder E-Mail: maskiert wird ueber
+ *   die vorhandenen Masken - oc_maske_konto() fuer die Kundennummer (wie im
+ *   Protokoll), '***' fuer Kennwort, E-Mail, Kraken-Token, Aktionstoken und
+ *   Formularmerkmal (wie oc_meldung_ablegen()). Dazu jede Adressform
+ *   name@domain und jede weitere Kundennummer der Form A-xxxx. Maskiert
+ *   wird beim Schreiben UND beim Lesen - aendern sich die Zugangsdaten,
+ *   gilt die neue Maske auch fuer eine alte Datei.
+ * ================================================================== */
+
+function oc_rohantwort_datei()
+{
+    return oc_paths()['datadir'] . '/kraken_antwort.json';
+}
+
+/** Die Werte, die nie in Datei oder Seite stehen duerfen => ihre Maske; laengste zuerst. */
+function oc_rohantwort_geheimnisse($token = '')
+{
+    $z = oc_zugang();
+    $c = oc_config(false);
+    $g = array();
+    $kraken = array((string) $token);
+    $tf = oc_paths()['datadir'] . '/token.json';
+    if (is_file($tf)) {
+        $t = json_decode((string) @file_get_contents($tf), true);
+        if (is_array($t) && isset($t['token']) && is_string($t['token'])) { $kraken[] = $t['token']; }
+    }
+    foreach (array_merge(array(
+                 is_string($z['passwort']) ? $z['passwort'] : '',
+                 is_string($z['email']) ? $z['email'] : '',
+                 is_string($c['aktionstoken']) ? $c['aktionstoken'] : '',
+                 oc_formtoken($c)), $kraken) as $w) {
+        if (strlen((string) $w) >= 3) { $g[(string) $w] = '***'; }
+    }
+    if (is_string($z['konto']) && strlen($z['konto']) >= 3) {
+        $g[$z['konto']] = oc_maske_konto($z['konto']);
+    }
+    uksort($g, function ($a, $b) { return strlen($b) - strlen($a); });
+    return $g;
+}
+
+/** Einen Text maskieren (Gross/klein egal). */
+function oc_rohantwort_maskieren($s, $geheim)
+{
+    $s = (string) $s;
+    foreach ($geheim as $w => $m) { $s = str_ireplace((string) $w, $m, $s); }
+    // Jede Adressform, auch eine fremde, und jede weitere Kundennummer.
+    $s = (string) preg_replace('/[A-Za-z0-9._%+\'-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/', '***', $s);
+    $s = (string) preg_replace_callback('/\bA-[A-Za-z0-9]{4,20}\b/', function ($m) {
+        return oc_maske_konto($m[0]);
+    }, $s);
+    return $s;
+}
+
+/** Alle Zeichenketten eines Feldes maskieren, Schluessel und Werte. */
+function oc_rohantwort_feld_maskieren($d, $geheim)
+{
+    if (!is_array($d)) { return is_string($d) ? oc_rohantwort_maskieren($d, $geheim) : $d; }
+    $neu = array();
+    foreach ($d as $k => $v) {
+        $neu[is_string($k) ? oc_rohantwort_maskieren($k, $geheim) : $k] = oc_rohantwort_feld_maskieren($v, $geheim);
+    }
+    return $neu;
+}
+
+/** Rekursiv die Roh-Eintraege mit validFrom/validTo sammeln (wie oc_sammle_preise()). */
+function oc_rohantwort_eintraege($node, &$out)
+{
+    if (!is_array($node)) { return; }
+    if (isset($node['validFrom']) && isset($node['validTo'])) {
+        $out[] = $node;
+        return;
+    }
+    foreach ($node as $kind) {
+        if (is_array($kind)) { oc_rohantwort_eintraege($kind, $out); }
+    }
+}
+
+/**
+ * Die Antwort der Preisabfrage gekuerzt und maskiert ablegen.
+ * $r ist das Ergebnis von oc_http(), $token das Kraken-Token der Anfrage.
+ */
+function oc_rohantwort_merken($r, $token = '')
+{
+    $body = isset($r['body']) ? (string) $r['body'] : '';
+    $e = array('zeit' => time(), 'http' => isset($r['code']) ? (int) $r['code'] : 0,
+               'fehler' => isset($r['fehler']) ? (string) $r['fehler'] : '', 'laenge' => strlen($body),
+               'anzahl' => 0, 'schritte' => array(), 'zonen' => array(),
+               'erste' => array(), 'letzte' => array(), 'meldung' => '');
+    $d = json_decode(ltrim($body), true);
+    if (is_array($d)) {
+        if (!empty($d['errors']) && is_array($d['errors'])) {
+            $m = (isset($d['errors'][0]['message']) && is_string($d['errors'][0]['message']))
+                ? $d['errors'][0]['message'] : 'errors';
+            $e['meldung'] = substr($m, 0, 300);
+        }
+        $roh = array();
+        oc_rohantwort_eintraege(isset($d['data']) ? $d['data'] : $d, $roh);
+        usort($roh, function ($a, $b) {
+            return (int) @strtotime((string) (is_array($a['validFrom']) ? '' : $a['validFrom']))
+                 - (int) @strtotime((string) (is_array($b['validFrom']) ? '' : $b['validFrom']));
+        });
+        $e['anzahl'] = count($roh);
+        foreach ($roh as $n) {
+            $von = is_array($n['validFrom']) ? '' : (string) $n['validFrom'];
+            $bis = is_array($n['validTo']) ? '' : (string) $n['validTo'];
+            $a = @strtotime($von);
+            $b = @strtotime($bis);
+            $min = ($a && $b && $b > $a) ? (string) (int) round(($b - $a) / 60) : '?';
+            $e['schritte'][$min] = isset($e['schritte'][$min]) ? $e['schritte'][$min] + 1 : 1;
+            $zone = preg_match('/(Z|[+-][0-9]{2}:?[0-9]{2})$/', trim($von), $zm) ? $zm[1] : '?';
+            $e['zonen'][$zone] = isset($e['zonen'][$zone]) ? $e['zonen'][$zone] + 1 : 1;
+        }
+        ksort($e['schritte'], SORT_NUMERIC);
+        $zeile = function ($n) {
+            $s = json_encode($n, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PARTIAL_OUTPUT_ON_ERROR);
+            return substr((string) $s, 0, 600);
+        };
+        $geheim = oc_rohantwort_geheimnisse($token);
+        foreach (array_slice($roh, 0, 3) as $n) {
+            $e['erste'][] = $zeile(oc_rohantwort_feld_maskieren($n, $geheim));
+        }
+        foreach (array_slice($roh, max(3, count($roh) - 3)) as $n) {
+            $e['letzte'][] = $zeile(oc_rohantwort_feld_maskieren($n, $geheim));
+        }
+    } elseif ($body !== '') {
+        // Kein JSON (Gateway, HTML): der Anfang, ohne Zeilenumbrueche.
+        $e['meldung'] = substr(trim((string) preg_replace('/\s+/', ' ', $body)), 0, 300);
+    }
+    $e = oc_rohantwort_feld_maskieren($e, oc_rohantwort_geheimnisse($token));
+    $js = json_encode($e, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PARTIAL_OUTPUT_ON_ERROR);
+    if (!is_string($js) || !oc_datei_schreiben(oc_rohantwort_datei(), $js, 0600)) {
+        oc_log_if_changed('rohantwort', 'Die letzte Antwort von Kraken liess sich nicht merken ('
+            . oc_rohantwort_datei() . ') - der Reiter Test zeigt dann eine aeltere oder keine.');
+    }
+}
+
+/** Die gemerkte Antwort lesen und erneut maskieren; null = keine. */
+function oc_rohantwort_lesen()
+{
+    $f = oc_rohantwort_datei();
+    if (!is_file($f)) { return null; }
+    $d = json_decode((string) @file_get_contents($f), true);
+    if (!is_array($d) || !isset($d['zeit'])) { return null; }
+    $d += array('http' => 0, 'fehler' => '', 'laenge' => 0, 'anzahl' => 0, 'schritte' => array(),
+                'zonen' => array(), 'erste' => array(), 'letzte' => array(), 'meldung' => '');
+    foreach (array('schritte', 'zonen', 'erste', 'letzte') as $k) {
+        if (!is_array($d[$k])) { $d[$k] = array(); }
+    }
+    return oc_rohantwort_feld_maskieren($d, oc_rohantwort_geheimnisse());
+}
+
+/** Der Block im Reiter Test (liest nur, fragt nie). */
+function oc_rohantwort_html($cfg)
+{
+    $h = '<h3 class="sm-h3">' . oc_t('TEST.H_ROH') . '</h3>'
+       . '<p class="sm-small">' . oc_t('TEST.ROH_TEXT') . '</p>';
+    if (!empty($cfg['demo'])) {
+        $h .= '<div class="sm-hinweis">' . oc_t('TEST.ROH_DEMO') . '</div>';
+    }
+    $e = oc_rohantwort_lesen();
+    if ($e === null) {
+        return $h . '<div class="sm-hinweis">' . oc_t('TEST.ROH_KEINE') . '</div>';
+    }
+    $zahl = function ($liste) {
+        $t = array();
+        foreach ($liste as $k => $n) { $t[] = $k . ' (' . (int) $n . "\xC3\x97)"; }
+        return implode(', ', $t);
+    };
+    $schritt = '';
+    if (!$e['schritte']) {
+        $schritt = '&ndash;';
+    } elseif (count($e['schritte']) === 1) {
+        $m = (string) key($e['schritte']);
+        $schritt = oc_e($m . ' min');
+        if ($m === '15') { $schritt .= ' &mdash; ' . oc_t('TEST.ROH_S15'); }
+        if ($m === '60') { $schritt .= ' &mdash; ' . oc_t('TEST.ROH_S60'); }
+    } else {
+        $t = array();
+        foreach ($e['schritte'] as $m => $n) { $t[$m . ' min'] = $n; }
+        $schritt = oc_t('TEST.ROH_GEMISCHT') . ': ' . oc_e($zahl($t));
+    }
+    $zonen = array();
+    foreach ($e['zonen'] as $z => $n) {
+        $zonen[] = ($z === 'Z' ? 'UTC (Z)' : ($z === '?' ? oc_t('TEST.ROH_OHNE_ZONE') : 'UTC' . $z));
+    }
+    $r = function ($a, $b) { return '<tr><td>' . $a . '</td><td>' . $b . '</td></tr>'; };
+    $h .= '<table class="sm-tbl"><tr><th>' . oc_t('TEST.SP_WAS') . '</th><th>' . oc_t('TEST.SP_WERT') . '</th></tr>';
+    $h .= $r(oc_t('TEST.ROH_ZEIT'), oc_e(date('d.m.Y H:i:s', (int) $e['zeit'])));
+    $h .= $r(oc_t('TEST.ROH_HTTP'), oc_e('HTTP ' . ((int) $e['http'] ?: '-') . ', '
+        . (int) $e['laenge'] . ' Byte' . ($e['fehler'] !== '' ? ', ' . oc_fehlertext($e['fehler']) : '')));
+    $h .= $r(oc_t('TEST.ROH_ANZAHL'), (string) (int) $e['anzahl']);
+    $h .= $r(oc_t('TEST.ROH_SCHRITT'), $schritt);
+    $h .= $r(oc_t('TEST.ROH_ZONE'), $zonen ? oc_e(implode(', ', $zonen)) : '&ndash;');
+    if ((string) $e['meldung'] !== '') {
+        $h .= $r(oc_t('TEST.ROH_MELDUNG'), '<span class="sm-mono">' . oc_e($e['meldung']) . '</span>');
+    }
+    $h .= '</table>';
+    if ($e['erste']) {
+        $txt = oc_t('TEST.ROH_ERSTE') . "\n" . implode("\n", array_map('strval', $e['erste']));
+        if ($e['letzte']) {
+            $txt .= "\n\n" . oc_t('TEST.ROH_LETZTE') . "\n" . implode("\n", array_map('strval', $e['letzte']));
+        }
+        $h .= '<div class="sm-pre">' . oc_e($txt) . '</div>';
+    }
+    return $h;
 }
 
 /* ==================================================================
@@ -4672,6 +5089,36 @@ function oc_wert_pruefen($k, $w, $schranken = null)
  */
 function oc_sicherung_bauen($mit_zugang = false)
 {
+    /* Kopf und volle Konfiguration (mit dem Haken samt Zugangsdaten) kommen
+     * aus oc_sicherung_teile() - derselben Stelle, die X-3 prueft. */
+    list($kopf, $cfg) = oc_sicherung_teile($mit_zugang);
+    /* X-3 (Verbesserungsbau 30.09.2026): Wuerde das Zurueckspielen genau
+     * dieser Datei abgewiesen, sagt es auch die Datei selbst - als
+     * Kopfschluessel, den das Einlesen uebergeht, und nur mit den Namen der
+     * Schluessel, nie mit Werten. Geliefert wird sie trotzdem. */
+    $mangel = oc_sicherung_altwerte($mit_zugang);
+    if ($mangel) {
+        $kopf['_warnung'] = 'Diese Sicherung wuerde beim Zurueckspielen abgewiesen: '
+            . implode(' ', $mangel) . ' - in der Oberflaeche berichtigen und neu sichern.';
+    }
+    $daten = $kopf + $cfg;
+    $js = json_encode($daten,
+        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    /* json_encode kann false liefern. Ein blankes "echo json_encode(...);
+     * exit;" haette dann eine 0-Byte-Datei geliefert, die wie eine
+     * Sicherung aussieht. Der Aufrufer meldet stattdessen einen Fehler. */
+    return $js === false ? '' : $js;
+}
+
+/**
+ * Kopf und Inhalt der Sicherungsdatei, ohne Warnung (X-3). Der Inhalt ist die
+ * VOLLE Konfiguration, wie oc_config() sie liefert (samt Aktionstoken), und
+ * mit dem Haken die Zugangsdaten - dieselbe Reihenfolge wie bis 1.1.17.
+ * Steht hinter oc_sicherung_bauen(), damit die Ausfuhr die erste Funktion
+ * ihrer Art bleibt (Werkzeuge/sicherung_pruefen.py sieht die erste an).
+ */
+function oc_sicherung_teile($mit_zugang = false)
+{
     $cfg = oc_config();
     $kopf = array(
         '_hinweis' => 'Sicherung der Einstellungen des LoxBerry-Plugins Octopus Dynamic.'
@@ -4682,19 +5129,42 @@ function oc_sicherung_bauen($mit_zugang = false)
         '_stand'   => date('Y-m-d H:i:s'),
         '_zugang'  => $mit_zugang ? 'enthalten' : 'nicht enthalten',
     );
-    $daten = $kopf + $cfg;
     if ($mit_zugang) {
         $z = oc_zugang();
-        $daten['zugang'] = array(
+        $cfg['zugang'] = array(
             'email' => $z['email'], 'passwort' => $z['passwort'], 'konto' => $z['konto'],
         );
     }
-    $js = json_encode($daten,
-        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    /* json_encode kann false liefern. Ein blankes "echo json_encode(...);
-     * exit;" haette dann eine 0-Byte-Datei geliefert, die wie eine
-     * Sicherung aussieht. Der Aufrufer meldet stattdessen einen Fehler. */
-    return $js === false ? '' : $js;
+    return array($kopf, $cfg);
+}
+
+/**
+ * Wuerde das Zurueckspielen der eigenen Sicherung abgewiesen? (X-3)
+ *
+ * DIESELBE Pruefung wie beim Zurueckspielen: oc_sicherung_lesen() ueber
+ * genau die Datei, die der Knopf liefert. Zwei Pruefungen liefen irgendwann
+ * auseinander. Rueckgabe: die Beanstandungen als Klartext (sie nennen nur
+ * Schluessel, nie Werte), leer = die Datei besteht.
+ *
+ * Moeglich ist das, wo oc_config() einen Wert nicht selbst in die Form
+ * bringt: eine Kundennummer oder E-Mail in zugang.json, die nicht zur Form
+ * passt (nur mit dem Haken "Zugangsdaten mitsichern"), und ein fremder
+ * Schluessel in octopus.json - oc_config() laesst ihn stehen (Regeln/05), die
+ * Sicherung nimmt ihn mit, das Zurueckspielen weist ihn ab.
+ */
+function oc_sicherung_altwerte($mit_zugang = false)
+{
+    list($kopf, $cfg) = oc_sicherung_teile($mit_zugang);
+    $js = json_encode($kopf + $cfg, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if (!is_string($js)) { return array(); }   // das meldet der Knopf selbst (SICH_SCHREIBFEHLER)
+    $pr = oc_sicherung_lesen($js);
+    if ($pr[0] !== null) { return array(); }
+    $aus = array();
+    foreach ((array) $pr[1] as $m) {
+        $t = trim(html_entity_decode(strip_tags((string) $m), ENT_QUOTES, 'UTF-8'));
+        if ($t !== '' && !in_array($t, $aus, true)) { $aus[] = $t; }
+    }
+    return $aus;
 }
 
 /* ==================================================================

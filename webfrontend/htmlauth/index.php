@@ -85,6 +85,10 @@ $oc_fehler      = array();   // alle Beanstandungen sammeln, nicht nur die letzt
  * meldete deshalb gar nichts - der Bediener drueckte den Knopf, und
  * sichtbar geschah nichts. */
 $oc_meldungen   = array();
+/* X-2 (Regeln/04): die Eingaben eines abgewiesenen Formulars und die Namen
+ * der beanstandeten Felder - sie reisen mit der Einmalmeldung. */
+$oc_eingaben    = array();
+$oc_bean        = array();
 /* Die erlaubten Werte des Fristfeldes: -1 fuer "keine Frist" und die
  * Stunden 0 bis 23. Als Text, weil das Formular Text liefert. */
 $oc_stunden_wahl = array_merge(array('-1'), array_map('strval', range(0, 23)));
@@ -258,12 +262,14 @@ if ($oc_ist_post && isset($_POST['save_zugang'])) {
 
     if ($oc_mail !== '' && !oc_email_gueltig($oc_mail)) {
         $oc_fehler[] = oc_t('MELDUNG.MAIL_UNGUELTIG');
+        $oc_bean[] = 'z_email';
         $oc_mail = $oc_zug['email'];
     }
     // Die Form der Kundennummer ist bekannt: A- gefolgt von Ziffern und/oder
     // Buchstaben. Was nicht passt, wird abgewiesen statt zurechtgebogen.
     if ($oc_konto !== '' && !oc_konto_gueltig($oc_konto)) {
         $oc_fehler[] = oc_t('MELDUNG.KONTO_UNGUELTIG');
+        $oc_bean[] = 'z_konto';
         $oc_konto = $oc_zug['konto'];
     }
     if (isset($_POST['zugang_loeschen'])) {
@@ -276,7 +282,14 @@ if ($oc_ist_post && isset($_POST['save_zugang'])) {
             $oc_zug = oc_zugang();
         } else {
             $oc_fehler[] = str_replace('%F%', oc_e($oc_p['zugang']), oc_t('MELDUNG.ZUGANG_FEHLER'));
+            // Nicht gespeichert: auch dann bleiben die Eingaben stehen (X-2).
+            $oc_eingaben = oc_eingaben_sammeln('save_zugang', array());
         }
+    }
+    /* X-2: abgewiesen - E-Mail und Kundennummer reisen zurueck ins Formular,
+     * das Passwort nie. */
+    if ($oc_bean && !isset($_POST['zugang_loeschen'])) {
+        $oc_eingaben = oc_eingaben_sammeln('save_zugang', $oc_bean);
     }
     $oc_tab = 'tab-settings';
 }
@@ -308,13 +321,14 @@ if ($oc_ist_post && isset($_POST['save'])) {
         }
         return is_array($v) ? "\0" : trim((string) $v);
     };
-    $oc_pruef = function ($name, $v, $bisher, $min, $max, $ganz) use (&$oc_abweis) {
+    $oc_pruef = function ($name, $v, $bisher, $min, $max, $ganz) use (&$oc_abweis, &$oc_bean) {
         if ($v === null) { return $bisher; }
         $t = str_replace(',', '.', $v);
         $gut = ($v !== '' && $v !== "\0" && is_numeric($t)
                 && (!$ganz || preg_match('/^-?[0-9]+$/', $v))
                 && (float) $t >= (float) $min && (float) $t <= (float) $max);
         if (!$gut) {
+            $oc_bean[] = $name;
             $oc_abweis[] = sprintf(oc_t('MELDUNG.WERT_ABGEWIESEN'), oc_e($name),
                 oc_e($v === "\0" ? '[]' : $v), oc_e((string) $min), oc_e((string) $max),
                 oc_t($ganz ? 'MELDUNG.GANZE_ZAHL' : 'MELDUNG.ZAHL'));
@@ -329,9 +343,10 @@ if ($oc_ist_post && isset($_POST['save'])) {
         return $oc_pruef($k, $oc_roh($k), $bisher, $min, $max, true);
     };
     /* Eine Auswahl aus einer festen Liste: ein fremder Wert ist unbrauchbar. */
-    $oc_wahl = function ($name, $v, $bisher, $liste) use (&$oc_abweis) {
+    $oc_wahl = function ($name, $v, $bisher, $liste) use (&$oc_abweis, &$oc_bean) {
         if ($v === null) { return $bisher; }
         if (!in_array($v, $liste, true)) {
+            $oc_bean[] = $name;
             $oc_abweis[] = sprintf(oc_t('MELDUNG.WAHL_ABGEWIESEN'), oc_e($name), oc_e($v === "\0" ? '[]' : $v));
             return $bisher;
         }
@@ -339,11 +354,12 @@ if ($oc_ist_post && isset($_POST['save'])) {
     };
     /* Ein Text: Steuerzeichen und Anfuehrungszeichen werden nicht mehr still
      * entfernt, sondern abgewiesen. */
-    $oc_text = function ($name, $v, $bisher, $max, $mit_apostroph) use (&$oc_abweis) {
+    $oc_text = function ($name, $v, $bisher, $max, $mit_apostroph) use (&$oc_abweis, &$oc_bean) {
         if ($v === null) { return $bisher; }
         $muster = $mit_apostroph ? '/[\x00-\x1F\x7F"\']/u' : '/[\x00-\x1F\x7F"]/u';
         $laenge = function_exists('mb_strlen') ? mb_strlen($v, 'UTF-8') : strlen($v);
         if ($v === "\0" || preg_match($muster, $v) || $laenge > $max) {
+            $oc_bean[] = $name;
             $oc_abweis[] = sprintf(oc_t('MELDUNG.TEXT_ABGEWIESEN'), oc_e($name), $max);
             return $bisher;
         }
@@ -397,10 +413,14 @@ if ($oc_ist_post && isset($_POST['save'])) {
         // O6: eine beanstandete Regel wird nicht gespeichert - gar nichts wird es.
         if ($oc_rw['aktiv'] && $oc_rw['energie'] > 0 && $oc_rw['leistung'] <= 0) {
             $oc_abweis[] = sprintf(oc_t('REGEL.FEHLER_ENERGIE_OHNE_LEISTUNG'), $oc_i + 1);
+            $oc_bean[] = 'r_energie[' . $oc_i . ']';
+            $oc_bean[] = 'r_leistung[' . $oc_i . ']';
         }
         if ($oc_rw['soc_min'] > 0 && $oc_rw['soc_max'] > 0
             && $oc_rw['soc_min'] >= $oc_rw['soc_max']) {
             $oc_abweis[] = sprintf(oc_t('REGEL.FEHLER_SOC_REIHE'), $oc_i + 1);
+            $oc_bean[] = 'r_soc_min[' . $oc_i . ']';
+            $oc_bean[] = 'r_soc_max[' . $oc_i . ']';
         }
     }
     // ---- Fahrplaner, global ----
@@ -435,6 +455,7 @@ if ($oc_ist_post && isset($_POST['save'])) {
         $oc_abweis[] = sprintf(oc_t('PLAN.FEHLER_URL'), $oc_f2 === 'verbrauch_url'
             ? oc_t('VERB.L_URL') : oc_t('PLAN.L_' . strtoupper($oc_f2)));
         $oc_neu[$oc_f2] = $oc_cfg[$oc_f2];   // den bisherigen Stand behalten
+        $oc_bean[] = $oc_f2;
     }
     if ($oc_neu['verbrauch_quelle'] === 'liste'
         && ($oc_neu['verbrauch_zeitfeld'] === '' || $oc_neu['verbrauch_wertfeld'] === '')) {
@@ -453,6 +474,8 @@ if ($oc_ist_post && isset($_POST['save'])) {
     }
     if ($oc_neu['cheap'] >= $oc_neu['expensive']) {
         $oc_abweis[] = oc_t('MELDUNG.SCHWELLEN');
+        $oc_bean[] = 'cheap';
+        $oc_bean[] = 'expensive';
     }
     $oc_neu['co2_enabled']    = isset($_POST['co2_enabled']) ? 1 : 0;
     $oc_neu['co2_clean']      = $oc_z('co2_clean', $oc_cfg['co2_clean'], 0, 1000);
@@ -494,6 +517,7 @@ if ($oc_ist_post && isset($_POST['save'])) {
     $oc_std = array();
     foreach ((array) (isset($_POST['hours']) ? $_POST['hours'] : array()) as $oc_h) {
         if (is_array($oc_h) || !preg_match('/^[0-9]{1,2}$/', (string) $oc_h) || (int) $oc_h > 23) {
+            $oc_bean[] = 'hours[]';
             $oc_abweis[] = sprintf(oc_t('MELDUNG.WAHL_ABGEWIESEN'), 'hours[]', oc_e(is_array($oc_h) ? '[]' : (string) $oc_h));
             continue;
         }
@@ -516,12 +540,14 @@ if ($oc_ist_post && isset($_POST['save'])) {
         $oc_ttsip = (string) $oc_cfg['tts']['ip'];
     } elseif ($oc_ttsip !== '' && !preg_match('/^[A-Za-z0-9._-]+$/', $oc_ttsip)) {
         $oc_abweis[] = oc_t('MELDUNG.TTS_IP');
+        $oc_bean[] = 'tts_ip';
         $oc_ttsip = (string) $oc_cfg['tts']['ip'];
     }
     $oc_zonen = $oc_roh('tts_zones');
     if ($oc_zonen === null) {
         $oc_zonen = (string) $oc_cfg['tts']['zones'];
     } elseif (!preg_match('/^[0-9]+([ ,~]+[0-9]+)*$/', $oc_zonen)) {
+        $oc_bean[] = 'tts_zones';
         $oc_abweis[] = sprintf(oc_t('MELDUNG.ZONEN_ABGEWIESEN'), oc_e($oc_zonen === "\0" ? '[]' : $oc_zonen));
         $oc_zonen = (string) $oc_cfg['tts']['zones'];
     }
@@ -529,11 +555,13 @@ if ($oc_ist_post && isset($_POST['save'])) {
     if ($oc_sprache === null) {
         $oc_sprache = (string) $oc_cfg['tts']['lang'];
     } elseif (!preg_match('/^[a-z]{2,8}$/', $oc_sprache)) {
+        $oc_bean[] = 'tts_lang';
         $oc_abweis[] = sprintf(oc_t('MELDUNG.SPRACHE_ABGEWIESEN'), oc_e($oc_sprache === "\0" ? '[]' : $oc_sprache));
         $oc_sprache = (string) $oc_cfg['tts']['lang'];
     }
     $oc_vorlage = $oc_text('tts_template', $oc_roh('tts_template'), (string) $oc_cfg['tts']['template'], 400, false);
     if ($oc_vorlage !== '' && !preg_match('#^https?://#i', $oc_vorlage)) {
+        $oc_bean[] = 'tts_template';
         $oc_abweis[] = sprintf(oc_t('MELDUNG.WAHL_ABGEWIESEN'), 'tts_template', oc_e($oc_vorlage));
         $oc_vorlage = (string) $oc_cfg['tts']['template'];
     }
@@ -551,12 +579,16 @@ if ($oc_ist_post && isset($_POST['save'])) {
     if ($oc_abweis) {
         foreach ($oc_abweis as $oc_a) { $oc_fehler[] = $oc_a; }
         $oc_fehler[] = oc_t('MELDUNG.NICHTS_GESPEICHERT');
+        // X-2: die Eingaben reisen zurueck ins Formular, die beanstandeten markiert.
+        $oc_eingaben = oc_eingaben_sammeln('save', $oc_bean);
     } elseif (oc_config_write($oc_neu)) {
         $oc_gespeichert = true;
         $oc_cfg = oc_config();
         if (isset($_POST['token_neu'])) { $oc_hinweis = oc_t('MELDUNG.TOKEN_NEU'); }
     } else {
         $oc_fehler[] = str_replace('%F%', oc_e($oc_p['config']), oc_t('MELDUNG.SPEICHERN_FEHLER'));
+        // Nicht gespeichert: auch dann bleiben die Eingaben stehen (X-2).
+        $oc_eingaben = oc_eingaben_sammeln('save', array());
     }
     $oc_tab = 'tab-settings';
 }
@@ -595,6 +627,10 @@ if ($oc_ist_post && isset($_POST['save_mqtt'])) {
     } elseif (isset($_POST['mqtt_topic']) && is_array($_POST['mqtt_topic'])) {
         $oc_fehler[] = sprintf(oc_t('MELDUNG.TOPIC_UNGUELTIG'), '[]', oc_e($oc_alt_praefix));
         $oc_praefix_abgewiesen = true;
+    }
+    if ($oc_praefix_abgewiesen) {
+        // X-2: das abgewiesene Praefix reist zurueck ins Formular, markiert.
+        $oc_eingaben = oc_eingaben_sammeln('save_mqtt', array('mqtt_topic'));
     }
     if (oc_config_write($oc_mcfg)) {
         $oc_hinweis = oc_t($oc_praefix_abgewiesen ? 'MELDUNG.MQTT_TEIL' : 'MELDUNG.GESPEICHERT');
@@ -845,7 +881,7 @@ if ($oc_ist_post) {
             'meldungen' => array_values($oc_meldungen), 'fehler' => array_values($oc_fehler),
             'hinweis' => (string) $oc_hinweis, 'gespeichert' => $oc_gespeichert ? 1 : 0,
             'test_titel' => (string) $oc_test_titel, 'test_text' => (string) $oc_test_text,
-            'plantest' => (string) $oc_plantest))) {
+            'plantest' => (string) $oc_plantest, 'eingaben' => $oc_eingaben))) {
         oc_log('Die Einmalmeldung liess sich nicht schreiben - das Ergebnis des letzten '
             . 'Knopfdrucks ist nach der Umleitung nicht zu sehen.');
     }
@@ -868,6 +904,8 @@ if ($oc_einmal !== null) {
     $oc_test_titel = $oc_eintext('test_titel');
     $oc_test_text = $oc_eintext('test_text');
     $oc_plantest = $oc_eintext('plantest');
+    // X-2: oc_eingaben_einsetzen() liest sie von hier.
+    $oc_eingaben = oc_eingaben_pruefen(isset($oc_einmal['eingaben']) ? $oc_einmal['eingaben'] : null);
 }
 
 
@@ -966,6 +1004,8 @@ if ($oc_rahmen) {
 .sm-warnung { border: 1px solid #f0c9a0; background: #fdf4ec; border-radius: 6px;
     padding: 10px 12px; margin: 12px 0; font-size: 0.9em; }
 .sm-an  { color: #1a7f1a; font-weight: 700; }
+/* Ein beanstandetes Feld nach der Umleitung (X-2, Regeln/04). */
+.sm-wrap .sm-beanstandet { border: 2px solid #c62828 !important; background: #fff5f5 !important; }
 /* Die vier Klassen des Meldekastens. Sie wurden im Reiter Test seit
  * jeher BENUTZT und waren nirgends definiert - hausstandard_pruefen.py
  * meldete '.sm-alert benutzt, aber nirgends definiert'. Die einzige
@@ -1186,6 +1226,7 @@ $oc_reiter = array(
 
 <h2><?php echo oc_t('EINST.H_ZUGANG'); ?></h2>
 <div class="sm-hinweis"><?php echo oc_t('EINST.ZUGANG_ERKLAERUNG'); ?></div>
+<?php ob_start(); /* X-2: das Formular laeuft durch oc_eingaben_einsetzen() */ ?>
 <form action="index.php" method="post" autocomplete="off">
 <input data-role="none" type="hidden" name="fmt" value="<?php echo oc_e($oc_fmt); ?>">
 <input data-role="none" type="hidden" name="save_zugang" value="1">
@@ -1226,7 +1267,9 @@ $oc_reiter = array(
 <div class="sm-hilfe"><?php echo str_replace('%F%',
     '<span class="sm-mono">' . oc_e($oc_p['zugang']) . '</span>', oc_t('EINST.ZUGANG_DATEI')); ?></div>
 </form>
+<?php echo oc_eingaben_einsetzen(ob_get_clean(), 'save_zugang', $oc_eingaben); ?>
 
+<?php ob_start(); /* X-2 */ ?>
 <form action="index.php" method="post" autocomplete="off">
 <input data-role="none" type="hidden" name="fmt" value="<?php echo oc_e($oc_fmt); ?>">
 <input data-role="none" type="hidden" name="save" value="1">
@@ -1672,10 +1715,28 @@ for ($oc_i = 0; $oc_i < 12; $oc_i++) { ?>
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?php echo oc_t('ALLGEMEIN.SPEICHERN'); ?></button>
 </div>
 </form>
+<?php echo oc_eingaben_einsetzen(ob_get_clean(), 'save', $oc_eingaben); ?>
 
 <h2><?= oc_t('EINST.H_SICHERUNG') ?></h2>
 <div class="sm-hinweis"><?= oc_t('EINST.SICH_ERKLAERUNG') ?></div>
 <div class="sm-warnung"><?= oc_t('EINST.SICH_WARNUNG') ?></div>
+<?php
+/* X-3 (Verbesserungsbau 30.09.2026): Wuerde ein gespeicherter Wert das
+ * Zurueckspielen der eigenen Sicherung nicht bestehen, steht es HIER - am
+ * Knopf, denn der Download selbst kann keine Seitenmeldung tragen. Gelb: die
+ * Sicherung wird trotzdem geliefert. Dieselbe Pruefung wie beim
+ * Zurueckspielen (oc_sicherung_altwerte() ruft oc_sicherung_lesen()). Mit
+ * dem Haken "Zugangsdaten mitsichern" kommen deren Werte dazu - gezeigt wird,
+ * was NUR dann zutrifft, als eigene Zeile. */
+$oc_x3_ohne = oc_sicherung_altwerte(false);
+$oc_x3_mit = ($oc_zug['email'] !== '' || $oc_zug['passwort'] !== '' || $oc_zug['konto'] !== '')
+    ? array_values(array_diff(oc_sicherung_altwerte(true), $oc_x3_ohne)) : array();
+if ($oc_x3_ohne || $oc_x3_mit) { ?>
+<div class="sm-warnung"><?php echo oc_t('EINST.SICH_ALTWERT'); ?>
+<?php if ($oc_x3_ohne) { ?><ul><?php foreach ($oc_x3_ohne as $oc_x3) { ?><li><?php echo oc_e($oc_x3); ?></li><?php } ?></ul><?php } ?>
+<?php if ($oc_x3_mit) { ?><?php echo oc_t('EINST.SICH_ALTWERT_MIT'); ?><ul><?php foreach ($oc_x3_mit as $oc_x3) { ?><li><?php echo oc_e($oc_x3); ?></li><?php } ?></ul><?php } ?>
+<?php echo oc_t('EINST.SICH_ALTWERT_HILFE'); ?></div>
+<?php } ?>
 <div class="sm-knopfreihe">
   <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
        exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
@@ -1712,6 +1773,7 @@ for ($oc_i = 0; $oc_i < 12; $oc_i++) { ?>
 <div class="sm-seite<?php echo $oc_tab === 'tab-mqtt' ? ' sm-active' : ''; ?>" id="tab-mqtt">
 
 <h2>MQTT</h2>
+<?php ob_start(); /* X-2 */ ?>
 <form action="index.php" method="post">
 <input data-role="none" type="hidden" name="fmt" value="<?php echo oc_e($oc_fmt); ?>">
 <input data-role="none" type="hidden" name="save_mqtt" value="1">
@@ -1734,6 +1796,7 @@ for ($oc_i = 0; $oc_i < 12; $oc_i++) { ?>
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?php echo oc_t('ALLGEMEIN.SPEICHERN'); ?></button>
 </div>
 </form>
+<?php echo oc_eingaben_einsetzen(ob_get_clean(), 'save_mqtt', $oc_eingaben); ?>
 <h2><?php echo oc_t('MQTT.H_ZUSTAND'); ?></h2>
 <div class="sm-hinweis"><?php echo oc_t('MQTT.GATEWAY_ERKLAERUNG'); ?></div>
 <table class="sm-tbl">
@@ -2281,6 +2344,12 @@ foreach (array_slice($pl_summen, 1) as $pl_e) {
 <h2><?php echo $oc_test_titel; ?></h2>
 <div class="sm-step"><?php echo $oc_test_text; ?></div>
 <?php } ?>
+<?php
+/* b1 (Verbesserungsbau 30.09.2026): die gekuerzte Rohantwort der letzten
+ * Preisabfrage. Liest nur die Datei, die oc_kraken_preise() beim Abruf des
+ * Takts oder eines Knopfs ablegt - diese Anzeige fragt Octopus nie. */
+echo oc_rohantwort_html($oc_cfg);
+?>
 </div><!-- /tab-test -->
 
 <!-- ==================== Reiter: Logdateien ==================== -->
