@@ -144,10 +144,20 @@ function oc_test_selbst()
     if (!empty($cfg['notify']['audio'])) {
         $url = oc_tts_url('Test');
         $alexa = ($cfg['tts']['mode'] === 'alexang');   // Ansage-2
+        if ($cfg['tts']['mode'] === 'cc4lox') {
+            /* Ansage-3: eigene Zeile - antwortet Chromecast 4 Lox NG, passt das
+             * Sprechtoken? selftest=1 spricht nichts; nur auf diesen Knopf
+             * (hoechstens 10 s), nie beim Seitenaufbau. */
+            list($oc_gok, $oc_gtext) = oc_google_selbsttest();
+            $h .= oc_zeile($oc_gok, oc_t('TEST.TTS_GOOGLE_PRUEF'), oc_e($oc_gtext . ' ' . sprintf(oc_t('TEST.TTS_GOOGLE_ZIEL'),
+                (string) $cfg['tts']['google_geraet'] !== '' ? (string) $cfg['tts']['google_geraet'] : oc_t('TEST.TTS_GOOGLE_STD_GERAET'),
+                (int) $cfg['tts']['google_laut'] >= 0 ? (string) (int) $cfg['tts']['google_laut'] : oc_t('TEST.TTS_GOOGLE_STD_LAUT'))));
+        } else {
         $h .= oc_zeile($url !== '' && $url !== null, oc_t('TEST.TTS'),
             $url === null ? oc_t('TEST.TTS_AUDIOSERVER')
                 : ($url === '' ? oc_t($alexa ? 'TEST.TTS_ALEXA_KEIN_TOKEN' : 'TEST.TTS_KEINE_IP')
                     : oc_t($alexa ? 'TEST.TTS_ALEXA_OK' : 'TEST.TTS_OK')));
+        }
     }
 
     /* ---- Die Schranken gegen die Vorgaben ----
@@ -384,16 +394,22 @@ function oc_test_say($morgen)
             . '<div class="sm-pre">' . oc_e($text) . '</div>');
     }
     $alexa = (oc_config()['tts']['mode'] === 'alexang');   // Ansage-2
+    $google = (oc_config()['tts']['mode'] === 'cc4lox');   // Ansage-3
     if ($url === '') {
         return array(oc_t('TEST.T_SAY'),
-            '<div class="sm-warnung">' . oc_t($alexa ? 'TEST.TTS_ALEXA_KEIN_TOKEN' : 'TEST.TTS_KEINE_IP') . '</div>');
+            '<div class="sm-warnung">' . oc_t($alexa ? 'TEST.TTS_ALEXA_KEIN_TOKEN'
+                : ($google ? 'TEST.TTS_GOOGLE_KEIN_TOKEN' : 'TEST.TTS_KEINE_IP')) . '</div>');
     }
     $ok = oc_say($text);
     /* Bei Alexa-NG nennt die Zeile die Antwort (HTTP-Code bzw. Verbindungs-
      * fehler und GRUND) - nie das Token. */
     return array(oc_t('TEST.T_SAY'),
         oc_zeile($ok, $ok ? oc_t('TEST.SAY_OK') : oc_t('TEST.SAY_FEHLER'),
-            ($alexa && !$ok) ? oc_t('TEST.SAY_ALEXA_FEHLER') . ' ' . oc_e(oc_ansage_letzte()) : '')
+            ($alexa && !$ok) ? oc_t('TEST.SAY_ALEXA_FEHLER') . ' ' . oc_e(oc_ansage_letzte())
+                /* Ansage-3: bei Google steht die Antwort immer da, auch bei
+                 * Erfolg (EINGEREIHT, UNVERAENDERT, TEXT_NULL) - "gesendet",
+                 * nicht "gesprochen". */
+                : ($google ? oc_t('TEST.SAY_GOOGLE_ANTWORT') . ' ' . oc_e(oc_ansage_letzte()) : ''))
         . '<div class="sm-pre">' . oc_e($text) . '</div>');
 }
 

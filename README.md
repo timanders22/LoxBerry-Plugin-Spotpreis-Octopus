@@ -7,6 +7,15 @@ HTTP-Endpunkt als Rückfallebene.
 
 ---
 
+## Was 1.1.19 behebt
+
+Ansage-3: Ausgabe über Google-Lautsprecher. Gemessen an einer Attrappe und am echten Endpunkt aus Chromecast 4 Lox NG 1.3.15 (Dienst-Attrappe) unter PHP 7.4 und 8.5; die Ausgabe über Alexa NG und alle übrigen Ausgabearten messen vorher = nachher gleich. Nicht am Gerät, nicht an echten Lautsprechern.
+
+* **Neue Ausgabeart „Google-Lautsprecher (Chromecast 4 Lox NG)“** für Ansagen über Chromecast-/Nest-Lautsprecher, ab Werk nicht gewählt. Voraussetzung ist das Plugin [Chromecast 4 Lox NG](https://github.com/timanders22/LoxBerry-Plugin-Chromecast4lox) ab 1.3.15 mit eingeschalteter „Sprachausgabe für andere Plugins“.
+* Eigenes **Sprechtoken** (getrennt vom Alexa-NG-Token), wahlweise Gerät (leer = Standardgerät) und Lautstärke (leer = Ansagelautstärke des Chromecast-Plugins). Das Token wird wie ein Kennwort behandelt: nie in einer Adresse, nie im Protokoll, nicht in „Einstellungen sichern“; beim Zurückspielen bleibt das hinterlegte.
+* Als gesendet gilt nur HTTP 200 mit `SPRECHEN;OK=1`. Bei einem Ausfall (Plugin fehlt oder zu alt, Sprachausgabe dort aus, Dienst aus, kein Lautsprecher verbunden, falsches Token) entfällt die Ansage – kein Wiederholen, kein Wechsel auf einen anderen Lautsprecher. Testansage und Protokoll nennen Code und Grund; der Knopf „Selbsttest“ im Reiter Test prüft das Token, ohne zu sprechen.
+* Bei dieser Ausgabeart steht der Ansagetext nicht im Protokoll, nur seine Länge.
+
 ## Was 1.1.18 behebt
 
 Verbesserungen aus dem Durchgang (Verbesserungsliste
@@ -1119,6 +1128,20 @@ auf demselben LoxBerry laufen. Octopus schickt die Ansage per POST an
 Gerät, Text); nur `SPRECHEN;OK=1` gilt als gesendet, sonst nennen Testansage
 und Protokoll Code und Grund. Ab Werk ist der Weg nicht gewählt.
 
+Für Ansagen über Google-Lautsprecher (Chromecast, Nest) gibt es die Ausgabeart
+**Google-Lautsprecher (Chromecast 4 Lox NG)** – dafür muss das Plugin
+[Chromecast 4 Lox NG](https://github.com/timanders22/LoxBerry-Plugin-Chromecast4lox)
+ab 1.3.15 auf demselben LoxBerry laufen, mit eingeschalteter „Sprachausgabe für
+andere Plugins“ und einem dort festgelegten **eigenen Sprechtoken**. Octopus
+schickt die Ansage per POST an
+`http://127.0.0.1:<Webport>/plugins/chromecast-4lox-ng/index.php`
+(`aktion=sprechen`, Sprechtoken, wahlweise Gerät und Lautstärke, Text). Als
+gesendet gilt nur HTTP 200 mit `SPRECHEN;OK=1`. Bei einem Ausfall (Plugin fehlt,
+Dienst aus, kein Lautsprecher verbunden, falsches Token) entfällt die Ansage –
+kein Wiederholen, kein stiller Wechsel auf einen anderen Lautsprecher;
+Testansage und Protokoll nennen Code und Grund, der Selbsttest im Reiter Test
+prüft das Token. Ab Werk ist die Ausgabeart nicht gewählt.
+
 ---
 
 ## Die Preisrechnung
@@ -1215,9 +1238,11 @@ dort — es wäre sonst ohne Token über HTTP erreichbar.
   Zeichen für Zeichen erraten. Unbekannte Aktionen werden abgewiesen, nicht
   zurechtgebogen.
 * Ein leeres Passwortfeld **löscht nichts**. Zum Löschen gibt es einen
-  eigenen Haken. Dasselbe gilt für das **Sprechtoken von Alexa-NG**; es steht
-  nie in einer Adresse, nie im Protokoll, nie in der Sicherung und kommt nie
-  ins Formular zurück.
+  eigenen Haken. Dasselbe gilt für das **Sprechtoken von Alexa-NG** und das
+  eigene **Sprechtoken für Chromecast 4 Lox NG**; sie stehen nie in einer
+  Adresse, nie im Protokoll, nie in der Sicherung und kommen nie ins Formular
+  zurück. Bei der Ausgabeart Google-Lautsprecher steht auch der Ansagetext
+  nicht im Protokoll, nur seine Länge.
 * Bei einer **Beanstandung wird nichts gespeichert** – in keinem Formular,
   auch nicht die übrigen richtigen Felder. Dazu zählt, was früher still
   zurechtgebogen wurde: fehlende Feldnamen oder ein fehlender Pfad einer

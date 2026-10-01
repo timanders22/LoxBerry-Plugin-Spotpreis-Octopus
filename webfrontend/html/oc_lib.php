@@ -409,6 +409,8 @@ function oc_meldung_ablegen($daten)
     }
     // Das Sprechtoken fuer Alexa-NG (Ansage-2) - wie ein Kennwort.
     if ((string) $c['tts']['alexa_token'] !== '') { $geheim[] = (string) $c['tts']['alexa_token']; }
+    // Ebenso das Sprechtoken fuer Chromecast 4 Lox NG (Ansage-3).
+    if ((string) $c['tts']['google_token'] !== '') { $geheim[] = (string) $c['tts']['google_token']; }
     array_walk_recursive($daten, function (&$w) use ($geheim) {
         if (is_string($w)) {
             foreach ($geheim as $g) { if ($g !== '') { $w = str_replace($g, '***', $w); } }
@@ -456,7 +458,8 @@ function oc_meldung_abholen()
 function oc_eingaben_formulare()
 {
     return array(
-        'save'        => array('token_neu', 'tts_alexa_token', 'tts_alexa_token_weg'),
+        'save'        => array('token_neu', 'tts_alexa_token', 'tts_alexa_token_weg',
+                                'tts_google_token', 'tts_google_token_weg'),
         'save_zugang' => array('z_passwort', 'zugang_loeschen'),
         'save_mqtt'   => array(),
     );
@@ -1095,12 +1098,15 @@ function oc_config($heilen = null)
     $cfg['tts'] += array('mode' => 'musicserver', 'ip' => '', 'port' => 7091,
                          'zones' => '1', 'volume' => 8, 'lang' => 'de', 'template' => '',
                          // Ansage-2 (01.10.2026): Ausgabeweg Alexa-NG, ab Werk nicht gewaehlt.
-                         'alexa_token' => '', 'alexa_geraet' => '');
+                         'alexa_token' => '', 'alexa_geraet' => '',
+                         // Ansage-3 (01.10.2026): Google-Lautsprecher ueber Chromecast 4 Lox NG,
+                         // ab Werk nicht gewaehlt; laut -1 = Ansagelautstaerke des Chromecast-Plugins.
+                         'google_token' => '', 'google_geraet' => '', 'google_laut' => -1);
     /* Auch die Ansage-Angaben kommen aus der Sicherungsdatei, wenn eine
      * zurueckgespielt wurde. Die Vorlage traegt eine Adresse - eine
      * ungeprueft uebernommene schickte den Ansagetext an einen fremden
      * Rechner. */
-    if (!in_array($cfg['tts']['mode'], array('musicserver', 'ms4h', 'audioserver', 'custom', 'alexang'), true)) {
+    if (!in_array($cfg['tts']['mode'], array('musicserver', 'ms4h', 'audioserver', 'custom', 'alexang', 'cc4lox'), true)) {
         $cfg['tts']['mode'] = 'musicserver';
     }
     $cfg['tts']['ip'] = oc_text($cfg['tts']['ip'], 100);
@@ -1124,6 +1130,15 @@ function oc_config($heilen = null)
      * dann leer, und die Ansage sagt, dass es fehlt. */
     if (!oc_alexa_token_ok($cfg['tts']['alexa_token'])) { $cfg['tts']['alexa_token'] = ''; }
     $cfg['tts']['alexa_geraet'] = oc_text($cfg['tts']['alexa_geraet'], 200);
+    /* Google-Lautsprecher (Ansage-3): Token und Geraet wie bei Alexa-NG. Eine
+     * Lautstaerke ausserhalb 0-100 heisst "Ansagelautstaerke des
+     * Chromecast-Plugins" (-1) - nie geklemmt, denn lauter als gewollt waere
+     * schlimmer als die Vorgabe. */
+    if (!oc_google_token_ok($cfg['tts']['google_token'])) { $cfg['tts']['google_token'] = ''; }
+    $cfg['tts']['google_geraet'] = oc_text($cfg['tts']['google_geraet'], 200);
+    $oc_gl = $cfg['tts']['google_laut'];
+    $cfg['tts']['google_laut'] = ((is_int($oc_gl) || (is_string($oc_gl) && preg_match('/^[0-9]{1,3}\z/', $oc_gl)))
+        && (int) $oc_gl >= 0 && (int) $oc_gl <= 100) ? (int) $oc_gl : -1;
 
     if (!is_array($cfg['months'])) { $cfg['months'] = array(); }
     for ($i = 0; $i < 12; $i++) {
@@ -1466,8 +1481,12 @@ function oc_email_gueltig($m)
  * Accept-Encoding an JEDER Anfrage.
  * ================================================================== */
 
-function oc_http($url, $post = null, $extra = array(), $timeout = 20)
+function oc_http($url, $post = null, $extra = array(), $timeout = 20, $lokal = false)
 {
+    /* $lokal (Ansage-3, 01.10.2026): ein Endpunkt auf DIESEM LoxBerry
+     * (Chromecast 4 Lox NG nimmt nur 127.0.0.1 an) - nie ueber einen Proxy aus
+     * der Umgebung, keiner Umleitung folgen, 3 s Verbindungsfrist. Ohne den
+     * Parameter bleibt alles wie bisher. */
     $kopf = array(
         'User-Agent: LoxBerry-Plugin-Octopus/1.0 (+https://wiki.loxberry.de)',
         'Accept: application/json, text/plain;q=0.8, */*;q=0.5',
@@ -1480,7 +1499,11 @@ function oc_http($url, $post = null, $extra = array(), $timeout = 20)
         $kopf[] = 'Accept-Encoding: gzip, deflate';
         $ch = curl_init($url);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, min(10, $timeout));
+        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, $lokal ? min(3, $timeout) : min(10, $timeout));
+        if ($lokal) {
+            curl_setopt($ch, CURLOPT_NOPROXY, '127.0.0.1');
+            curl_setopt($ch, CURLOPT_FOLLOWLOCATION, false);
+        }
         curl_setopt($ch, CURLOPT_TIMEOUT, $timeout);
         curl_setopt($ch, CURLOPT_ENCODING, '');       // entpackt gzip selbst
         curl_setopt($ch, CURLOPT_HTTPHEADER, $kopf);
@@ -1510,6 +1533,7 @@ function oc_http($url, $post = null, $extra = array(), $timeout = 20)
             'timeout'       => $timeout,
             'ignore_errors' => true,
         ));
+        if ($lokal) { $opt['http']['follow_location'] = 0; }
         if ($post !== null) { $opt['http']['content'] = $post; }
         /* C6 (seit 1.1.16): die Kopfzeilen kommen aus
          * stream_get_meta_data()['wrapper_data'], und es gilt die LETZTE
@@ -4264,39 +4288,184 @@ function oc_ansage_letzte($setzen = null)
 function oc_alexa_sprechen($text)
 {
     $cfg = oc_config();
-    $tok = (string) $cfg['tts']['alexa_token'];
-    $geraet = (string) $cfg['tts']['alexa_geraet'];
+    /* Seit Ansage-3 ueber den gemeinsamen Teil; die Parameter halten das
+     * Verhalten von Ansage-2 (Adresse fest, Umgebungsproxy, Erfolg ohne
+     * HTTP-200-Pflicht, Text im Protokoll). */
+    return oc_sprechen_an(array(
+        'name'    => 'Alexa-NG',
+        'adresse' => OC_ALEXANG_ADRESSE,
+        'token'   => (string) $cfg['tts']['alexa_token'],
+        'geraet'  => (string) $cfg['tts']['alexa_geraet'],
+        'laut'    => -1,
+        'lokal'   => false,
+        'text_ins_protokoll' => true,
+        'fehlt'   => '',
+        'fehlt_log' => '',
+    ), $text);
+}
+
+/**
+ * Gemeinsamer Teil der Ausgabewege Alexa-NG (Ansage-2) und
+ * Google-Lautsprecher ueber Chromecast 4 Lox NG (Ansage-3): EIN POST an den
+ * Sprech-Endpunkt eines anderen Plugins auf diesem LoxBerry. Beide haben
+ * dieselbe Schnittstelle (aktion=sprechen, token, geraet, laut, text; Antwort
+ * SPRECHEN;OK=1;...;GRUND=...). $z traegt, was sich unterscheidet:
+ *   name, adresse, token, geraet, laut (-1 = nicht mitschicken),
+ *   lokal (ohne Proxy, 3 s, keine Umleitung, Erfolg nur bei HTTP 200),
+ *   text_ins_protokoll (false: nur die Laenge), fehlt/fehlt_log (Satz fuer
+ *   404 ohne GRUND, '' = keiner).
+ * Das Token steht NIE in einer Adresse und nie im Protokoll. Rueckgabe true
+ * nur bei Erfolg; oc_ansage_letzte() traegt das Ergebnis fuer die Testansage.
+ */
+function oc_sprechen_an(array $z, $text)
+{
+    $tok = (string) $z['token'];
+    $geraet = (string) $z['geraet'];
     if ($tok === '') {
         oc_ansage_letzte('kein Sprechtoken hinterlegt');
-        oc_log('Ansage uebersprungen: Ausgabeweg Alexa-NG, aber kein Sprechtoken hinterlegt');
+        oc_log('Ansage uebersprungen: Ausgabeweg ' . $z['name'] . ', aber kein Sprechtoken hinterlegt');
         return false;
     }
+    $laut = (int) $z['laut'];
     $felder = array('aktion' => 'sprechen', 'token' => $tok);
     if ($geraet !== '') { $felder['geraet'] = $geraet; }
+    if ($laut >= 0 && $laut <= 100) { $felder['laut'] = $laut; }
     $felder['text'] = (string) $text;
-    $r = oc_http(OC_ALEXANG_ADRESSE, http_build_query($felder, '', '&'),
-        array('Content-Type: application/x-www-form-urlencoded'), 10);
-    $rumpf = trim(str_replace($tok, '***', (string) $r['body']));
-    $ok = $r['ok'] && strpos($rumpf, 'SPRECHEN;OK=1') === 0;
-    $anzeige = 'OK';
-    if ($ok) {
-        $was = 'OK';
-    } else {
-        $grund = preg_match('/(?:^|;)GRUND=([A-Za-z0-9_]{1,40})/', $rumpf, $m) ? $m[1] : '';
-        $was = ((int) $r['code'] > 0 ? 'HTTP ' . (int) $r['code']
-                : ((string) $r['fehler'] !== '' ? (string) $r['fehler'] : 'keine Antwort'))
-             . ($grund !== '' ? ', GRUND=' . $grund : '');
-        if ($grund === '' && $rumpf !== '') {
-            $was .= ', Antwort "' . substr(preg_replace('/[^A-Za-z0-9;=_.:*-]/', '', $rumpf), 0, 60) . '"';
-        }
-        // Fuer die Testansage: ein Verbindungsfehler als Satz (das Protokoll behaelt den Schluessel).
-        $anzeige = ((int) $r['code'] === 0 && (string) $r['fehler'] !== '')
-            ? oc_fehlertext((string) $r['fehler']) . ' (' . $was . ')' : $was;
-    }
+    $r = oc_http($z['adresse'], http_build_query($felder, '', '&'),
+        array('Content-Type: application/x-www-form-urlencoded'), 10, (bool) $z['lokal']);
+    list($ok, $was, $anzeige) = oc_sprechen_bewerten($r, $tok, 'SPRECHEN', $z);
     oc_ansage_letzte($anzeige);
-    oc_log('Ansage an Alexa-NG' . ($geraet !== '' ? ' (Geraet ' . $geraet . ')' : '')
-        . ': "' . $text . '" -> ' . ($ok ? 'OK' : 'FEHLER ' . $was));
+    $wo = array();
+    if ($geraet !== '') { $wo[] = 'Geraet ' . $geraet; }
+    if (isset($felder['laut'])) { $wo[] = 'Lautstaerke ' . $laut; }
+    $laenge = function_exists('mb_strlen') ? mb_strlen((string) $text, 'UTF-8') : strlen((string) $text);
+    oc_log('Ansage an ' . $z['name'] . ($wo ? ' (' . implode(', ', $wo) . ')' : '')
+        . ($z['text_ins_protokoll'] ? ': "' . $text . '"' : ': ' . $laenge . ' Zeichen')
+        . ' -> ' . ($ok ? $was : 'FEHLER ' . $was));
     return $ok;
+}
+
+/**
+ * Antwort eines Sprech-Endpunkts bewerten: array(ok, Text fuers Protokoll,
+ * Anzeige fuer die Testansage). Erfolg nur bei einer Antwort, die mit
+ * "<KOPF>;OK=1" beginnt; bei $z['lokal'] (Chromecast 4 Lox NG, Schnittstelle
+ * Abschnitt 4) zusaetzlich nur bei HTTP 200 - dann nennen auch Erfolgszeilen
+ * Code und GRUND (EINGEREIHT, UNVERAENDERT, TEXT_NULL). Das Token wird aus
+ * der Antwort vorsorglich ersetzt.
+ */
+function oc_sprechen_bewerten(array $r, $tok, $kopf, array $z)
+{
+    $rumpf = trim(str_replace((string) $tok, '***', (string) $r['body']));
+    $ok = $r['ok'] && strpos($rumpf, $kopf . ';OK=1') === 0
+        && (!$z['lokal'] || (int) $r['code'] === 200);
+    $grund = preg_match('/(?:^|;)GRUND=([A-Za-z0-9_]{1,40})/', $rumpf, $m) ? $m[1] : '';
+    if ($ok) {
+        if (!$z['lokal']) { return array(true, 'OK', 'OK'); }
+        $was = 'HTTP 200' . ($grund !== '' ? ', GRUND=' . $grund : '');
+        return array(true, 'OK, ' . $was, $was);
+    }
+    $was = ((int) $r['code'] > 0 ? 'HTTP ' . (int) $r['code']
+            : ((string) $r['fehler'] !== '' ? (string) $r['fehler'] : 'keine Antwort'))
+         . ($grund !== '' ? ', GRUND=' . $grund : '');
+    if ($grund === '' && (int) $r['code'] === 404 && (string) $z['fehlt'] !== '') {
+        // 404 ohne GRUND kommt vom Webserver selbst: das Plugin fehlt oder ist zu alt.
+        return array(false, $was . ' ohne GRUND - ' . $z['fehlt_log'], oc_t($z['fehlt']) . ' (' . $was . ')');
+    }
+    if ($grund === '' && $rumpf !== '') {
+        $was .= ', Antwort "' . substr(preg_replace('/[^A-Za-z0-9;=_.:*-]/', '', $rumpf), 0, 60) . '"';
+    }
+    // Fuer die Testansage: ein Verbindungsfehler als Satz (das Protokoll behaelt den Schluessel).
+    $anzeige = ((int) $r['code'] === 0 && (string) $r['fehler'] !== '')
+        ? oc_fehlertext((string) $r['fehler']) . ' (' . $was . ')' : $was;
+    return array(false, $was, $anzeige);
+}
+
+/* ---- Ausgabeart "Google-Lautsprecher (Chromecast 4 Lox NG)" (Ansage-3, 01.10.2026) ----
+ *
+ * Das Plugin Chromecast 4 Lox NG (https://github.com/timanders22/LoxBerry-Plugin-Chromecast4lox)
+ * nimmt ab seiner Fassung mit "Sprachausgabe fuer andere Plugins" Ansagen
+ * an - mit DERSELBEN Schnittstelle wie Alexa-NG. Anders sind nur die Adresse
+ * (Ordner chromecast-4lox-ng, Webport dieses LoxBerry), die Geraetenamen
+ * (aus dessen Geraeteliste) und das Sprechtoken (ein eigenes, dort im Reiter
+ * Einstellungen festgelegt). Angenommen wird nur von 127.0.0.1. Ab Werk
+ * nicht gewaehlt. Der Ansagetext steht fuer diesen Weg nie im Protokoll. */
+
+/** Port des Webservers dieses LoxBerry (general.json), sonst 80. */
+function oc_webport()
+{
+    static $port = null;
+    if ($port !== null) { return $port; }
+    $port = 80;
+    $f = (string) oc_paths()['general'];
+    if ($f !== '' && is_file($f)) {
+        $g = json_decode((string) @file_get_contents($f), true);
+        foreach (array('Webserver', 'WEBSERVER') as $ab) {
+            if (isset($g[$ab]['Port']) && is_scalar($g[$ab]['Port'])
+                && (int) $g[$ab]['Port'] > 0 && (int) $g[$ab]['Port'] <= 65535) {
+                $port = (int) $g[$ab]['Port'];
+                break;
+            }
+        }
+    }
+    return $port;
+}
+
+/** Adresse des Sprech-Endpunkts von Chromecast 4 Lox NG - immer 127.0.0.1, nie die LAN-Adresse. */
+function oc_google_adresse()
+{
+    return 'http://127.0.0.1:' . oc_webport() . '/plugins/chromecast-4lox-ng/index.php';
+}
+
+/** Form des Sprechtokens: 8 bis 128 Zeichen aus A-Z a-z 0-9 _ - (das Chromecast-Plugin selbst verlangt 16). */
+function oc_google_token_ok($t)
+{
+    return is_string($t) && (bool) preg_match('/^[A-Za-z0-9_\-]{8,128}\z/', $t);
+}
+
+/** Die Parameter des gemeinsamen Teils fuer Chromecast 4 Lox NG. */
+function oc_google_ziel()
+{
+    $cfg = oc_config();
+    return array(
+        'name'    => 'Chromecast 4 Lox NG',
+        'adresse' => oc_google_adresse(),
+        'token'   => (string) $cfg['tts']['google_token'],
+        'geraet'  => (string) $cfg['tts']['google_geraet'],
+        'laut'    => (int) $cfg['tts']['google_laut'],
+        'lokal'   => true,
+        'text_ins_protokoll' => false,
+        'fehlt'   => 'TEST.GOOGLE_FEHLT',
+        'fehlt_log' => 'Chromecast 4 Lox NG fehlt oder ist zu alt (ab 1.3.15)',
+    );
+}
+
+/** Eine Ansage ueber Chromecast 4 Lox NG. Rueckgabe true nur bei HTTP 200 und SPRECHEN;OK=1. */
+function oc_google_sprechen($text)
+{
+    return oc_sprechen_an(oc_google_ziel(), $text);
+}
+
+/**
+ * Selbsttest gegen Chromecast 4 Lox NG (Reiter Test, Knopf Selbsttest):
+ * POST selftest=1 mit dem Token - prueft nur das Token, spricht nichts.
+ * Rueckgabe array(ok, Klartext ohne HTML). SPRECHEN=0/DIENST=0 sind
+ * Zusatzfelder: das Token passt, aber Ansagen gingen jetzt nicht durch -
+ * dann rot mit Hinweis.
+ */
+function oc_google_selbsttest()
+{
+    $z = oc_google_ziel();
+    if ($z['token'] === '') { return array(false, oc_t('TEST.TTS_GOOGLE_KEIN_TOKEN')); }
+    $r = oc_http($z['adresse'], http_build_query(array('selftest' => '1', 'token' => $z['token']), '', '&'),
+        array('Content-Type: application/x-www-form-urlencoded'), 10, true);
+    list($ok, $was, $anzeige) = oc_sprechen_bewerten($r, $z['token'], 'SELFTEST', $z);
+    if (!$ok) { return array(false, $anzeige); }
+    $zeile = (string) strtok(trim((string) $r['body']), "\n");
+    $hinweis = array();
+    if (preg_match('/;SPRECHEN=0(;|$)/', $zeile)) { $hinweis[] = oc_t('TEST.GOOGLE_SPRECHEN_AUS'); }
+    if (preg_match('/;DIENST=0(;|$)/', $zeile)) { $hinweis[] = oc_t('TEST.GOOGLE_DIENST_AUS'); }
+    return array(!$hinweis, oc_t('TEST.TTS_GOOGLE_OK') . ' (' . $anzeige . ')'
+        . ($hinweis ? ' ' . implode(' ', $hinweis) : ''));
 }
 
 /** TTS-Adresse bauen. Bei mode=audioserver gibt es keine - dann null. */
@@ -4310,6 +4479,10 @@ function oc_tts_url($text)
     if ($t['mode'] === 'alexang') {
         // Die feste Adresse ohne Token; '' heisst: kein Sprechtoken hinterlegt.
         return (string) $t['alexa_token'] === '' ? '' : OC_ALEXANG_ADRESSE;
+    }
+    if ($t['mode'] === 'cc4lox') {
+        // Ansage-3: ebenso fuer Chromecast 4 Lox NG.
+        return (string) $t['google_token'] === '' ? '' : oc_google_adresse();
     }
     if ($t['mode'] === 'musicserver' && (string) $t['ip'] === '') {
         return '';   // ohne IP laesst sich die Music-Server-Adresse nicht bauen
@@ -4355,6 +4528,7 @@ function oc_say($text)
 {
     $cfg = oc_config();
     if ($cfg['tts']['mode'] === 'alexang') { return oc_alexa_sprechen($text); }
+    if ($cfg['tts']['mode'] === 'cc4lox') { return oc_google_sprechen($text); }
     $url = oc_tts_url($text);
     if ($url === null) {
         oc_log('Ansage: Modus "Original Loxone Audioserver" - die Sprachausgabe erfolgt in Loxone Config');
@@ -5235,10 +5409,13 @@ function oc_sicherung_teile($mit_zugang = false)
      * Sprachsteuerung): es ist ein Kennwort des anderen Plugins, und das
      * Zurueckspielen behaelt das laufende. */
     unset($cfg['tts']['alexa_token']);
+    unset($cfg['tts']['google_token']);   // ebenso das Google-Sprechtoken (Ansage-3)
     $kopf = array(
         '_hinweis' => 'Sicherung der Einstellungen des LoxBerry-Plugins Octopus Dynamic.'
                     . ' Im Reiter Einstellungen unter "Einstellungen zurueckspielen"'
-                    . ' wieder einlesen.',
+                    . ' wieder einlesen. Die Sprechtoken fuer Alexa-NG und'
+                    . ' Chromecast 4 Lox NG stehen nie darin; beim Zurueckspielen'
+                    . ' bleiben die hinterlegten.',
         '_plugin'  => 'octopus',
         '_fassung' => oc_version(),
         '_stand'   => date('Y-m-d H:i:s'),
@@ -5363,13 +5540,16 @@ function oc_sicherung_feld_mangel($k, $w)
         }
     } elseif ($k === 'tts') {
         $pruefe('tts', $w, array(
-            'mode' => array('w', array('musicserver', 'ms4h', 'audioserver', 'custom', 'alexang')),
+            'mode' => array('w', array('musicserver', 'ms4h', 'audioserver', 'custom', 'alexang', 'cc4lox')),
             'ip' => array('t', 100, '/^[A-Za-z0-9._-]+$/'),
             'port' => array('g', 1, 65535),
             'volume' => array('g', 1, 100),
             'lang' => array('t', 8, '/^[a-z]{2,8}$/'),
             'template' => array('t', 400, '#^https?://#i'),
             'alexa_geraet' => array('t', 200),
+            // Ansage-3: Google-Lautsprecher (-1 = Ansagelautstaerke des Chromecast-Plugins)
+            'google_geraet' => array('t', 200),
+            'google_laut' => array('g', -1, 100),
         ));
         // Zonen: Pflicht, dieselbe Form wie im Formular.
         if (array_key_exists('zones', $w)
@@ -5382,6 +5562,8 @@ function oc_sicherung_feld_mangel($k, $w)
          * Zurueckspielen behaelt das laufende. Traegt eine Datei trotzdem eines,
          * wuerde es still verworfen - deshalb beanstandet. */
         if (array_key_exists('alexa_token', $w) && $w['alexa_token'] !== '') { $aus[] = 'tts.alexa_token'; }
+        // Ebenso das Google-Sprechtoken (Ansage-3); eine Liste ist auch "nicht leer".
+        if (array_key_exists('google_token', $w) && $w['google_token'] !== '') { $aus[] = 'tts.google_token'; }
     }
     return array_values(array_unique($aus));
 }
