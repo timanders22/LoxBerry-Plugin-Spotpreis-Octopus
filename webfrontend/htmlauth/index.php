@@ -234,9 +234,15 @@ if ($oc_ist_post && isset($_POST['test'])) {
 
 /* ================= Zugangsdaten speichern ================= */
 if ($oc_ist_post && isset($_POST['save_zugang'])) {
-    // Nur Steuerzeichen und Anfuehrungszeichen entfernen. Ein Filter, der
-    // alles ausser einer Positivliste wegwirft, zerstoert gueltige Eingaben.
-    /* NUR STEUERZEICHEN RAUS - keine gueltigen Zeichen.
+    /* NICHTS MEHR ENTFERNEN (Nr. 19, B-Nachzug 01.10.2026).
+     *
+     * Bis 1.1.18 strich $oc_saeubern Steuerzeichen und Anfuehrungszeichen
+     * still heraus: 'A-12"34AB' wurde 'A-1234AB' und gespeichert. Jetzt wird
+     * nur Leerraum am Rand abgeschnitten; ein Steuer- oder
+     * Anfuehrungszeichen macht die Angabe unbrauchbar, und dann wird NICHTS
+     * gespeichert (Entscheidung 16).
+     *
+     * Die Geschichte davor:
      *
      * Bis 1.1.3 strich diese Funktion auch den Apostroph, und sie lief
      * ueber die E-Mail-Adresse. Gemessen an einer Adresse mit Apostroph
@@ -250,32 +256,50 @@ if ($oc_ist_post && isset($_POST['save_zugang'])) {
      *
      * Das Anfuehrungszeichen bleibt draussen: es hat in keiner der drei
      * Angaben etwas verloren und wuerde die JSON-Ablage belasten. */
-    $oc_saeubern = function ($s) {
-        return trim(preg_replace('/[\x00-\x1F\x7F"]+/u', '', (string) $s));
+    $oc_zroh = function ($k) {
+        if (!isset($_POST[$k])) { return ''; }
+        return is_array($_POST[$k]) ? "\0" : trim((string) $_POST[$k]);
     };
-    $oc_mail  = $oc_saeubern(isset($_POST['z_email']) ? $_POST['z_email'] : '');
-    $oc_konto = $oc_saeubern(isset($_POST['z_konto']) ? $_POST['z_konto'] : '');
+    $oc_zfalsch = function ($s, $max) {
+        return $s === "\0" || strlen($s) > $max || preg_match('/[\x00-\x1F\x7F"]/', $s);
+    };
+    $oc_mail  = $oc_zroh('z_email');
+    $oc_konto = $oc_zroh('z_konto');
+    $oc_zabweis = false;
     // Ein leeres Passwortfeld loescht NICHTS - sonst stuende irgendwann ein
     // Benutzername ohne Passwort in der Datei, und das sieht man von aussen nicht.
-    $oc_pw = (string) (isset($_POST['z_passwort']) ? $_POST['z_passwort'] : '');
+    $oc_pw = (isset($_POST['z_passwort']) && !is_array($_POST['z_passwort'])) ? (string) $_POST['z_passwort'] : '';
     if ($oc_pw === '') { $oc_pw = $oc_zug['passwort']; }
+    /* Nr. 19: ein Passwortfeld als Liste (z_passwort[]=x) wurde bis 1.1.18 zu
+     * "Array" - mit PHP-Warnung - und als Passwort gespeichert. */
+    if (isset($_POST['z_passwort']) && is_array($_POST['z_passwort'])) {
+        $oc_fehler[] = sprintf(oc_t('MELDUNG.WAHL_ABGEWIESEN'), 'z_passwort', '[]');
+        $oc_bean[] = 'z_passwort';
+        $oc_zabweis = true;
+    }
 
-    if ($oc_mail !== '' && !oc_email_gueltig($oc_mail)) {
+    if ($oc_mail !== '' && ($oc_zfalsch($oc_mail, 200) || !oc_email_gueltig($oc_mail))) {
         $oc_fehler[] = oc_t('MELDUNG.MAIL_UNGUELTIG');
         $oc_bean[] = 'z_email';
-        $oc_mail = $oc_zug['email'];
+        $oc_zabweis = true;
     }
     // Die Form der Kundennummer ist bekannt: A- gefolgt von Ziffern und/oder
     // Buchstaben. Was nicht passt, wird abgewiesen statt zurechtgebogen.
-    if ($oc_konto !== '' && !oc_konto_gueltig($oc_konto)) {
+    if ($oc_konto !== '' && ($oc_zfalsch($oc_konto, 40) || !oc_konto_gueltig($oc_konto))) {
         $oc_fehler[] = oc_t('MELDUNG.KONTO_UNGUELTIG');
         $oc_bean[] = 'z_konto';
-        $oc_konto = $oc_zug['konto'];
+        $oc_zabweis = true;
     }
     if (isset($_POST['zugang_loeschen'])) {
         $oc_mail = ''; $oc_pw = ''; $oc_konto = '';
+    } elseif ($oc_zabweis) {
+        // Nr. 16: abgewiesen - nichts gespeichert, auch nicht die richtigen Angaben.
+        $oc_fehler[] = oc_t('MELDUNG.NICHTS_GESPEICHERT');
     }
-    if (!$oc_fehler || isset($_POST['zugang_loeschen'])) {
+    /* Entschieden wird an den Beanstandungen DIESES Formulars. Bis 1.1.18
+     * stand hier !$oc_fehler - eine Meldung von weiter oben (etwa "Token
+     * fehlte, neu erzeugt") hielt das Speichern still auf. */
+    if (!$oc_zabweis || isset($_POST['zugang_loeschen'])) {
         if (oc_zugang_write($oc_mail, $oc_pw, $oc_konto)) {
             $oc_hinweis = isset($_POST['zugang_loeschen'])
                 ? oc_t('MELDUNG.ZUGANG_GELOESCHT') : oc_t('MELDUNG.ZUGANG_GESPEICHERT');
@@ -309,8 +333,10 @@ if ($oc_ist_post && isset($_POST['save'])) {
      * dann wird NICHTS gespeichert - der bisherige Stand bleibt ganz, nie der
      * Werkswert. Die Grenzen sind dieselben wie in oc_schranken() und
      * oc_config(). Ein Feld, das gar nicht im Formular stand, behaelt still
-     * seinen bisherigen Wert; ein leeres Pflichtfeld ist unbrauchbar. Hinweise
-     * ohne falschen Wert (Feldnamen, Pfad) halten das Speichern nicht auf. */
+     * seinen bisherigen Wert; ein leeres Pflichtfeld ist unbrauchbar. Seit dem
+     * B-Nachzug (01.10.2026, Entscheidung 16) halten auch die fehlenden
+     * Feldnamen und der fehlende Pfad einer Quelle das Speichern auf - bis
+     * 1.1.18 standen sie nur als Hinweis da, und der Rest wurde gespeichert. */
     $oc_abweis = array();
     $oc_roh = function ($k, $i = null) {
         if (!isset($_POST[$k])) { return null; }
@@ -353,12 +379,15 @@ if ($oc_ist_post && isset($_POST['save'])) {
         return $v;
     };
     /* Ein Text: Steuerzeichen und Anfuehrungszeichen werden nicht mehr still
-     * entfernt, sondern abgewiesen. */
+     * entfernt, sondern abgewiesen. Nr. 19 (B-Nachzug 01.10.2026): ebenso,
+     * was oc_config() beim Lesen veraendern wuerde - doppelte Leerzeichen
+     * fasst oc_text() zusammen, und "Wallbox  Garage" stand bis 1.1.18
+     * gespeichert und danach als "Wallbox Garage" da. */
     $oc_text = function ($name, $v, $bisher, $max, $mit_apostroph) use (&$oc_abweis, &$oc_bean) {
         if ($v === null) { return $bisher; }
         $muster = $mit_apostroph ? '/[\x00-\x1F\x7F"\']/u' : '/[\x00-\x1F\x7F"]/u';
         $laenge = function_exists('mb_strlen') ? mb_strlen($v, 'UTF-8') : strlen($v);
-        if ($v === "\0" || preg_match($muster, $v) || $laenge > $max) {
+        if ($v === "\0" || preg_match($muster, $v) || $laenge > $max || oc_text($v, $max) !== $v) {
             $oc_bean[] = $name;
             $oc_abweis[] = sprintf(oc_t('MELDUNG.TEXT_ABGEWIESEN'), oc_e($name), $max);
             return $bisher;
@@ -457,20 +486,28 @@ if ($oc_ist_post && isset($_POST['save'])) {
         $oc_neu[$oc_f2] = $oc_cfg[$oc_f2];   // den bisherigen Stand behalten
         $oc_bean[] = $oc_f2;
     }
-    if ($oc_neu['verbrauch_quelle'] === 'liste'
-        && ($oc_neu['verbrauch_zeitfeld'] === '' || $oc_neu['verbrauch_wertfeld'] === '')) {
-        $oc_fehler[] = oc_t('PLAN.FEHLER_FELDNAMEN');
-    }
-    if ($oc_neu['verbrauch_quelle'] !== '' && $oc_neu['verbrauch_pfad'] === '') {
-        $oc_fehler[] = oc_t('PLAN.FEHLER_PFAD');
-    }
-    if ($oc_neu['pv_quelle'] === 'liste'
-        && ($oc_neu['pv_zeitfeld'] === '' || $oc_neu['pv_wertfeld'] === '')) {
-        $oc_fehler[] = oc_t('PLAN.FEHLER_FELDNAMEN');
-    }
-    if ($oc_neu['pv_quelle'] !== '' && $oc_neu['pv_quelle'] !== 'forecast_solar'
-        && $oc_neu['pv_pfad'] === '') {
-        $oc_fehler[] = oc_t('PLAN.FEHLER_PFAD');
+    /* NR. 16 (B-Nachzug 01.10.2026): fehlende Feldnamen und ein fehlender
+     * Pfad sind eine Beanstandung wie jede andere - NICHTS wird gespeichert,
+     * das leere Feld ist markiert, die Eingaben kommen zurueck (X-2). Bis
+     * 1.1.18 standen beide Saetze nur in $oc_fehler, und der Rest wurde
+     * gespeichert. Die Meldung nennt den Abschnitt: dieselben Saetze gelten
+     * fuer die PV-Prognose und fuer den echten Verbrauch. */
+    foreach (array('verbrauch' => oc_t('VERB.H_TITEL'), 'pv' => oc_t('PLAN.L_PV_QUELLE')) as $oc_qa => $oc_qt) {
+        $oc_q = $oc_neu[$oc_qa . '_quelle'];
+        if ($oc_q === 'liste') {
+            $oc_qleer = array();
+            foreach (array('_zeitfeld', '_wertfeld') as $oc_qf) {
+                if ($oc_neu[$oc_qa . $oc_qf] === '') { $oc_qleer[] = $oc_qa . $oc_qf; }
+            }
+            if ($oc_qleer) {
+                $oc_abweis[] = $oc_qt . ': ' . oc_t('PLAN.FEHLER_FELDNAMEN');
+                foreach ($oc_qleer as $oc_qf) { $oc_bean[] = $oc_qf; }
+            }
+        }
+        if ($oc_q !== '' && $oc_q !== 'forecast_solar' && $oc_neu[$oc_qa . '_pfad'] === '') {
+            $oc_abweis[] = $oc_qt . ': ' . oc_t('PLAN.FEHLER_PFAD');
+            $oc_bean[] = $oc_qa . '_pfad';
+        }
     }
     if ($oc_neu['cheap'] >= $oc_neu['expensive']) {
         $oc_abweis[] = oc_t('MELDUNG.SCHWELLEN');
@@ -491,18 +528,22 @@ if ($oc_ist_post && isset($_POST['save'])) {
 
     // Monatsverbraeuche: ein leeres Feld heisst "nicht gepflegt" (0); sobald
     // einer gepflegt ist, ergibt ihre Summe den Jahresverbrauch.
+    /* Nr. 19 (B-Nachzug 01.10.2026): gespeichert wie getippt. Bis 1.1.18
+     * rundete round(..., 1) still - aus 100.45 wurde 100.5. */
     $oc_neu['months'] = array();
     $oc_msum = 0.0;
     for ($oc_i = 0; $oc_i < 12; $oc_i++) {
         $oc_v = $oc_roh('months', $oc_i);
         $oc_bisher = isset($oc_cfg['months'][$oc_i]) ? (float) $oc_cfg['months'][$oc_i] : 0.0;
         $oc_v = ($oc_v === '') ? 0.0 : $oc_pruef('months[' . $oc_i . ']', $oc_v, $oc_bisher, 0, 20000, false);
-        $oc_neu['months'][$oc_i] = round((float) $oc_v, 1);
+        $oc_neu['months'][$oc_i] = (float) $oc_v;
         $oc_msum += (float) $oc_v;
     }
-    $oc_neu['consumption'] = $oc_msum > 0
-        ? (int) round($oc_msum)
-        : $oc_g('consumption', $oc_cfg['consumption'], 100, 100000);
+    /* Nr. 19: das Feld wird IMMER geprueft. Bis 1.1.18 wurde es bei
+     * gepflegten Monaten gar nicht angesehen - "abc" verschwand still. Der
+     * gespeicherte Wert bleibt bei gepflegten Monaten deren Summe (Hilfe). */
+    $oc_jahr = $oc_g('consumption', $oc_cfg['consumption'], 100, 100000);
+    $oc_neu['consumption'] = $oc_msum > 0 ? (int) round($oc_msum) : $oc_jahr;
 
     /* mqtt_enabled und mqtt_topic werden hier NICHT mehr angefasst: sie
      * wohnen im Reiter MQTT und haben dort ein eigenes Formular.
@@ -538,7 +579,8 @@ if ($oc_ist_post && isset($_POST['save'])) {
     $oc_ttsip = $oc_roh('tts_ip');
     if ($oc_ttsip === null) {
         $oc_ttsip = (string) $oc_cfg['tts']['ip'];
-    } elseif ($oc_ttsip !== '' && !preg_match('/^[A-Za-z0-9._-]+$/', $oc_ttsip)) {
+    } elseif ($oc_ttsip !== '' && (strlen($oc_ttsip) > 100 || !preg_match('/^[A-Za-z0-9._-]+$/', $oc_ttsip))) {
+        // Nr. 19: laenger als 100 Zeichen kuerzte oc_config() bis 1.1.18 still.
         $oc_abweis[] = oc_t('MELDUNG.TTS_IP');
         $oc_bean[] = 'tts_ip';
         $oc_ttsip = (string) $oc_cfg['tts']['ip'];
@@ -565,15 +607,39 @@ if ($oc_ist_post && isset($_POST['save'])) {
         $oc_abweis[] = sprintf(oc_t('MELDUNG.WAHL_ABGEWIESEN'), 'tts_template', oc_e($oc_vorlage));
         $oc_vorlage = (string) $oc_cfg['tts']['template'];
     }
+    $oc_tmodus = $oc_wahl('tts_mode', $oc_roh('tts_mode'), $oc_cfg['tts']['mode'],
+                          array('musicserver', 'ms4h', 'audioserver', 'custom', 'alexang'));
+    /* Alexa-NG (Ansage-2): das Sprechtoken ist ein Kennwort - leer heisst
+     * unveraendert, der Haken loescht es, eine falsche Form wird abgewiesen
+     * (nichts gespeichert). Ohne Token ist der Ausgabeweg Alexa-NG unbrauchbar. */
+    $oc_atok = (string) $oc_cfg['tts']['alexa_token'];
+    $oc_atok_roh = $oc_roh('tts_alexa_token');
+    if (isset($_POST['tts_alexa_token_weg'])) {
+        $oc_atok = '';
+    } elseif ($oc_atok_roh !== null && $oc_atok_roh !== '') {
+        if (oc_alexa_token_ok($oc_atok_roh)) {
+            $oc_atok = $oc_atok_roh;
+        } else {
+            $oc_abweis[] = oc_t('MELDUNG.ALEXA_TOKEN_FORM');
+            $oc_bean[] = 'tts_alexa_token';
+        }
+    }
+    if ($oc_tmodus === 'alexang' && $oc_atok === '' && !in_array('tts_alexa_token', $oc_bean, true)) {
+        $oc_abweis[] = oc_t('MELDUNG.ALEXA_TOKEN_FEHLT');
+        $oc_bean[] = 'tts_alexa_token';
+    }
+    $oc_ageraet = $oc_text('tts_alexa_geraet', $oc_roh('tts_alexa_geraet'),
+        (string) $oc_cfg['tts']['alexa_geraet'], 200, false);
     $oc_neu['tts'] = array(
-        'mode'     => $oc_wahl('tts_mode', $oc_roh('tts_mode'), $oc_cfg['tts']['mode'],
-                               array('musicserver', 'ms4h', 'audioserver', 'custom')),
+        'mode'     => $oc_tmodus,
         'ip'       => $oc_ttsip,
         'port'     => $oc_g('tts_port', $oc_cfg['tts']['port'], 1, 65535),
         'zones'    => $oc_zonen,
         'volume'   => $oc_g('tts_volume', $oc_cfg['tts']['volume'], 1, 100),
         'lang'     => $oc_sprache,
         'template' => $oc_vorlage,
+        'alexa_token'  => $oc_atok,
+        'alexa_geraet' => $oc_ageraet,
     );
 
     if ($oc_abweis) {
@@ -609,8 +675,10 @@ if ($oc_ist_post && isset($_POST['save_mqtt'])) {
      * "Es wurde octopus eingetragen", gespeichert wurde aber nichts - auch das
      * zugleich abgewaehlte MQTT nicht -, und ein Schreibfehler blieb stumm
      * (Pruefbericht oberflaeche, Befund 4). Jetzt: ein unbrauchbares Praefix
-     * wird abgewiesen und das bisherige bleibt; der Haken wird trotzdem
-     * gespeichert, und ein Schreibfehler wird gemeldet. Erlaubt ist, was
+     * wird abgewiesen, und es wird NICHTS gespeichert - auch der Haken nicht
+     * (Entscheidung 16, B-Nachzug 01.10.2026; bis 1.1.18 wurde der Haken
+     * trotzdem gespeichert, "MQTT_TEIL"). Die Eingaben kommen zurueck (X-2),
+     * ein Schreibfehler wird gemeldet. Erlaubt ist, was
      * oc_wert_pruefen() und die Sicherung als Thema gelten lassen, ohne
      * Schraegstrich am Rand und ohne leere Stufe. */
     $oc_mroh = (isset($_POST['mqtt_topic']) && !is_array($_POST['mqtt_topic']))
@@ -629,17 +697,20 @@ if ($oc_ist_post && isset($_POST['save_mqtt'])) {
         $oc_praefix_abgewiesen = true;
     }
     if ($oc_praefix_abgewiesen) {
-        // X-2: das abgewiesene Praefix reist zurueck ins Formular, markiert.
+        // Nr. 16: nichts speichern, auch den Haken nicht. X-2: die Eingaben
+        // (Praefix markiert, Haken wie abgeschickt) reisen zurueck ins Formular.
+        $oc_fehler[] = oc_t('MELDUNG.NICHTS_GESPEICHERT');
         $oc_eingaben = oc_eingaben_sammeln('save_mqtt', array('mqtt_topic'));
-    }
-    if (oc_config_write($oc_mcfg)) {
-        $oc_hinweis = oc_t($oc_praefix_abgewiesen ? 'MELDUNG.MQTT_TEIL' : 'MELDUNG.GESPEICHERT');
+    } elseif (oc_config_write($oc_mcfg)) {
+        $oc_hinweis = oc_t('MELDUNG.GESPEICHERT');
         $oc_cfg = oc_config();
         list($oc_pm, $oc_pf) = oc_ui_praefix_wechsel($oc_alt_praefix, (string) $oc_cfg['mqtt_topic']);
         $oc_meldungen = array_merge($oc_meldungen, $oc_pm);
         $oc_fehler = array_merge($oc_fehler, $oc_pf);
     } else {
         $oc_fehler[] = str_replace('%F%', oc_e($oc_p['config']), oc_t('MELDUNG.SPEICHERN_FEHLER'));
+        // Nicht gespeichert: auch dann bleiben die Eingaben stehen (X-2).
+        $oc_eingaben = oc_eingaben_sammeln('save_mqtt', array());
     }
     $oc_tab = 'tab-mqtt';
 }
@@ -823,6 +894,12 @@ if ($oc_ist_post && isset($_POST['oc_zurueck'])) {
                 }
             }
             $oc_alt_praefix = (string) $oc_cfg['mqtt_topic'];
+            /* Alexa-NG (Ansage-2): das Sprechtoken steht nie in einer
+             * Sicherung (eine Datei, die eines traegt, weist die Pruefung ab) -
+             * das laufende bleibt. */
+            if (is_array($oc_neu['tts'])) {
+                $oc_neu['tts']['alexa_token'] = (string) $oc_cfg['tts']['alexa_token'];
+            }
             if (!oc_config_write($oc_neu)) {
                 $oc_fehler[] = oc_t('EINST.SICH_SCHREIBFEHLER');
             } else {
@@ -1604,6 +1681,7 @@ foreach (oc_regel_arten() as $oc_a) { ?>
       <option value="ms4h" <?php echo $oc_tts['mode'] === 'ms4h' ? 'selected' : ''; ?>><?php echo oc_t('EINST.TTS_MS4H'); ?></option>
       <option value="audioserver" <?php echo $oc_tts['mode'] === 'audioserver' ? 'selected' : ''; ?>><?php echo oc_t('EINST.TTS_AS'); ?></option>
       <option value="custom" <?php echo $oc_tts['mode'] === 'custom' ? 'selected' : ''; ?>><?php echo oc_t('EINST.TTS_CUSTOM'); ?></option>
+      <option value="alexang" <?php echo $oc_tts['mode'] === 'alexang' ? 'selected' : ''; ?>><?php echo oc_t('EINST.TTS_ALEXA'); ?></option>
     </select>
   </div>
   <div>
@@ -1634,6 +1712,24 @@ foreach (oc_regel_arten() as $oc_a) { ?>
          placeholder="http://{ip}:{port}/tts?text={text}&amp;zone={zones}&amp;vol={vol}">
   <div class="sm-hilfe"><?php echo oc_t('EINST.TTS_TEMPLATE_HILFE'); ?></div>
 </div>
+<?php /* Ansage-2: Ausgabeweg Alexa-NG. Das Token kommt nie in die Seite -
+         das Feld ist immer leer, der Platzhalter sagt, ob eines hinterlegt ist. */ ?>
+<div class="sm-reihe">
+  <div>
+    <label><?php echo oc_t('EINST.TTS_ALEXA_GERAET'); ?></label>
+    <input data-role="none" type="text" name="tts_alexa_geraet" value="<?php echo oc_e($oc_tts['alexa_geraet']); ?>" placeholder="kueche">
+    <div class="sm-hilfe"><?php echo oc_t('EINST.TTS_ALEXA_GERAET_HILFE'); ?></div>
+  </div>
+  <div>
+    <label><?php echo oc_t('EINST.TTS_ALEXA_TOKEN'); ?></label>
+    <input data-role="none" type="password" name="tts_alexa_token" value="" autocomplete="new-password" placeholder="<?php echo oc_e(oc_t((string) $oc_tts['alexa_token'] !== '' ? 'EINST.TTS_ALEXA_TOKEN_DA' : 'EINST.TTS_ALEXA_TOKEN_LEER')); ?>">
+    <label style="display:inline-flex;align-items:center;gap:6px;margin-top:4px;">
+      <input data-role="none" type="checkbox" name="tts_alexa_token_weg" value="1">
+      <?php echo oc_t('EINST.TTS_ALEXA_TOKEN_WEG'); ?>
+    </label>
+  </div>
+</div>
+<div class="sm-hilfe"><?php echo oc_t('EINST.TTS_ALEXA_HILFE'); ?></div>
 
 <?php /* MQTT stand hier bis zu dieser Fassung. Es wohnt jetzt
          vollstaendig im Reiter MQTT - eine Sache, eine Stelle. */ ?>

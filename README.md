@@ -7,6 +7,25 @@ HTTP-Endpunkt als Rückfallebene.
 
 ---
 
+## Was 1.1.18 behebt
+
+Verbesserungen aus dem Durchgang (Verbesserungsliste
+`Pruefung-Durchgang-2026-09-29/VERBESSERUNGEN_OFFEN.md`, Entscheidungen 16 und 19).
+Gemessen an Attrappen unter PHP 7.4 und 8.5; nicht am Gerät.
+
+* **Neue Ausgabeart „Alexa-NG“** für Ansagen über Amazon-Echo-Geräte, ab Werk
+  nicht gewählt. Voraussetzung ist das Plugin
+  [Alexa-NG](https://github.com/timanders22/LoxBerry-Plugin-Alexa-NG). Das
+  Sprechtoken wird wie ein Kennwort behandelt: nie in einer Adresse, nie im
+  Protokoll, nicht in „Einstellungen sichern“.
+* **Nach einer Beanstandung wird nichts gespeichert,** auch nicht bei fehlenden
+  Feldnamen oder fehlendem Pfad einer Quelle und bei einem abgewiesenen
+  MQTT-Präfix. Was bisher still zurechtgebogen wurde (Kundennummer, E-Mail,
+  doppelte Leerzeichen, Jahresverbrauch, TTS-Adresse), wird beanstandet.
+* Das Zurückspielen einer Sicherung prüft die Innereien (Regeln, Monate,
+  Benachrichtigung, Ansage) wie das Formular.
+* „Einstellungen sichern“ nimmt nur bekannte Einstellungen mit.
+
 ## Was 1.1.17 behebt
 
 Verbesserungen aus dem Durchgang vom 30.09.2026 (Verbesserungsliste
@@ -1093,6 +1112,13 @@ in dem Fall meldet der Reiter Test, dass kein Bruttopreis gefunden wurde.
 
 Ohne Vertrag lässt sich alles über den **Demo-Modus** durchspielen.
 
+Für Ansagen über Echo-Geräte gibt es den Ausgabeweg **Alexa-NG** – dafür muss
+das Plugin [Alexa-NG](https://github.com/timanders22/LoxBerry-Plugin-Alexa-NG)
+auf demselben LoxBerry laufen. Octopus schickt die Ansage per POST an
+`http://127.0.0.1/plugins/alexang/index.php` (`aktion=sprechen`, Sprechtoken,
+Gerät, Text); nur `SPRECHEN;OK=1` gilt als gesendet, sonst nennen Testansage
+und Protokoll Code und Grund. Ab Werk ist der Weg nicht gewählt.
+
 ---
 
 ## Die Preisrechnung
@@ -1180,14 +1206,27 @@ dort — es wäre sonst ohne Token über HTTP erreichbar.
   „Zugangsdaten löschen“ stehen wieder aus.
 * **Einstellungen sichern** warnt am Knopf (und in der Datei unter
   `_warnung`), wenn das Zurückspielen genau dieser Datei abgewiesen würde —
-  etwa wegen einer Kundennummer, die nicht zur Form passt, oder eines
-  unbekannten Schlüssels in der Konfiguration. Geliefert wird sie trotzdem.
+  etwa wegen einer Kundennummer, die nicht zur Form passt. Geliefert wird sie
+  trotzdem. Die Datei trägt nur die Einstellungen, die das Plugin kennt; ein
+  fremder Schlüssel in der Konfiguration (Rest einer Handbearbeitung) geht
+  nicht mit, der Reiter Test nennt ihn.
 * Der **Endpunkt** vergleicht sein Token mit `hash_equals`, also in
   gleichbleibender Zeit. Ein einfaches `==` ließe sich über die Antwortzeit
   Zeichen für Zeichen erraten. Unbekannte Aktionen werden abgewiesen, nicht
   zurechtgebogen.
 * Ein leeres Passwortfeld **löscht nichts**. Zum Löschen gibt es einen
-  eigenen Haken.
+  eigenen Haken. Dasselbe gilt für das **Sprechtoken von Alexa-NG**; es steht
+  nie in einer Adresse, nie im Protokoll, nie in der Sicherung und kommt nie
+  ins Formular zurück.
+* Bei einer **Beanstandung wird nichts gespeichert** – in keinem Formular,
+  auch nicht die übrigen richtigen Felder. Dazu zählt, was früher still
+  zurechtgebogen wurde: fehlende Feldnamen oder ein fehlender Pfad einer
+  Quelle, ein abgewiesener MQTT-Präfix (auch der Haken „MQTT“ bleibt dann
+  ungespeichert), Anführungs- oder Steuerzeichen in E-Mail und Kundennummer,
+  doppelte Leerzeichen in Textfeldern. Monatswerte werden gespeichert wie
+  getippt. Beim Zurückspielen einer Sicherung werden auch die Einträge in
+  Regeln, Monaten, Meldungen und Sprachausgabe mit denselben Grenzen geprüft
+  wie im Formular, statt still geklemmt zu werden.
 * Eine Kundennummer, die nicht zur bekannten Form passt (`A-` gefolgt von
   Ziffern und/oder Buchstaben), wird **abgewiesen und gemeldet** — nicht
   stillschweigend zurechtgeschnitten.

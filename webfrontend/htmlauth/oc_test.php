@@ -143,9 +143,11 @@ function oc_test_selbst()
     }
     if (!empty($cfg['notify']['audio'])) {
         $url = oc_tts_url('Test');
+        $alexa = ($cfg['tts']['mode'] === 'alexang');   // Ansage-2
         $h .= oc_zeile($url !== '' && $url !== null, oc_t('TEST.TTS'),
             $url === null ? oc_t('TEST.TTS_AUDIOSERVER')
-                : ($url === '' ? oc_t('TEST.TTS_KEINE_IP') : oc_t('TEST.TTS_OK')));
+                : ($url === '' ? oc_t($alexa ? 'TEST.TTS_ALEXA_KEIN_TOKEN' : 'TEST.TTS_KEINE_IP')
+                    : oc_t($alexa ? 'TEST.TTS_ALEXA_OK' : 'TEST.TTS_OK')));
     }
 
     /* ---- Die Schranken gegen die Vorgaben ----
@@ -381,13 +383,17 @@ function oc_test_say($morgen)
             '<div class="sm-hinweis">' . oc_t('TEST.TTS_AUDIOSERVER') . '</div>'
             . '<div class="sm-pre">' . oc_e($text) . '</div>');
     }
+    $alexa = (oc_config()['tts']['mode'] === 'alexang');   // Ansage-2
     if ($url === '') {
         return array(oc_t('TEST.T_SAY'),
-            '<div class="sm-warnung">' . oc_t('TEST.TTS_KEINE_IP') . '</div>');
+            '<div class="sm-warnung">' . oc_t($alexa ? 'TEST.TTS_ALEXA_KEIN_TOKEN' : 'TEST.TTS_KEINE_IP') . '</div>');
     }
     $ok = oc_say($text);
+    /* Bei Alexa-NG nennt die Zeile die Antwort (HTTP-Code bzw. Verbindungs-
+     * fehler und GRUND) - nie das Token. */
     return array(oc_t('TEST.T_SAY'),
-        oc_zeile($ok, $ok ? oc_t('TEST.SAY_OK') : oc_t('TEST.SAY_FEHLER'))
+        oc_zeile($ok, $ok ? oc_t('TEST.SAY_OK') : oc_t('TEST.SAY_FEHLER'),
+            ($alexa && !$ok) ? oc_t('TEST.SAY_ALEXA_FEHLER') . ' ' . oc_e(oc_ansage_letzte()) : '')
         . '<div class="sm-pre">' . oc_e($text) . '</div>');
 }
 

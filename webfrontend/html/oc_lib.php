@@ -407,6 +407,8 @@ function oc_meldung_ablegen($daten)
         $geheim[] = (string) $c['aktionstoken'];
         $geheim[] = oc_formtoken($c);
     }
+    // Das Sprechtoken fuer Alexa-NG (Ansage-2) - wie ein Kennwort.
+    if ((string) $c['tts']['alexa_token'] !== '') { $geheim[] = (string) $c['tts']['alexa_token']; }
     array_walk_recursive($daten, function (&$w) use ($geheim) {
         if (is_string($w)) {
             foreach ($geheim as $g) { if ($g !== '') { $w = str_replace($g, '***', $w); } }
@@ -454,7 +456,7 @@ function oc_meldung_abholen()
 function oc_eingaben_formulare()
 {
     return array(
-        'save'        => array('token_neu'),
+        'save'        => array('token_neu', 'tts_alexa_token', 'tts_alexa_token_weg'),
         'save_zugang' => array('z_passwort', 'zugang_loeschen'),
         'save_mqtt'   => array(),
     );
@@ -1091,12 +1093,14 @@ function oc_config($heilen = null)
 
     if (!is_array($cfg['tts'])) { $cfg['tts'] = array(); }
     $cfg['tts'] += array('mode' => 'musicserver', 'ip' => '', 'port' => 7091,
-                         'zones' => '1', 'volume' => 8, 'lang' => 'de', 'template' => '');
+                         'zones' => '1', 'volume' => 8, 'lang' => 'de', 'template' => '',
+                         // Ansage-2 (01.10.2026): Ausgabeweg Alexa-NG, ab Werk nicht gewaehlt.
+                         'alexa_token' => '', 'alexa_geraet' => '');
     /* Auch die Ansage-Angaben kommen aus der Sicherungsdatei, wenn eine
      * zurueckgespielt wurde. Die Vorlage traegt eine Adresse - eine
      * ungeprueft uebernommene schickte den Ansagetext an einen fremden
      * Rechner. */
-    if (!in_array($cfg['tts']['mode'], array('musicserver', 'ms4h', 'audioserver', 'custom'), true)) {
+    if (!in_array($cfg['tts']['mode'], array('musicserver', 'ms4h', 'audioserver', 'custom', 'alexang'), true)) {
         $cfg['tts']['mode'] = 'musicserver';
     }
     $cfg['tts']['ip'] = oc_text($cfg['tts']['ip'], 100);
@@ -1116,6 +1120,10 @@ function oc_config($heilen = null)
         && !preg_match('#^https?://#i', $cfg['tts']['template'])) {
         $cfg['tts']['template'] = '';
     }
+    /* Alexa-NG (Ansage-2): ein Token, das nicht seine Form hat, ist keines -
+     * dann leer, und die Ansage sagt, dass es fehlt. */
+    if (!oc_alexa_token_ok($cfg['tts']['alexa_token'])) { $cfg['tts']['alexa_token'] = ''; }
+    $cfg['tts']['alexa_geraet'] = oc_text($cfg['tts']['alexa_geraet'], 200);
 
     if (!is_array($cfg['months'])) { $cfg['months'] = array(); }
     for ($i = 0; $i < 12; $i++) {
@@ -4225,6 +4233,72 @@ function oc_mqtt_publish($st = null, $nur_lebenszeichen = false, $erzwingen = fa
  * Ansage (TTS) und Meldungen
  * ================================================================== */
 
+/* ---- Ausgabeweg Alexa-NG (Ansage-2, Auftrag des Hausherrn 01.10.2026) ----
+ *
+ * Das eigene Plugin des Hausherrn (https://github.com/timanders22/LoxBerry-Plugin-Alexa-NG)
+ * laesst Echo-Geraete sprechen. Octopus schickt die Ansage per POST an dessen
+ * Endpunkt auf demselben LoxBerry: aktion=sprechen, token, geraet (leer =
+ * Standardgeraet, dann nicht mitgeschickt), text. Das Token steht NIE in einer
+ * Adresse (Adressen landen in Protokollen von Webservern). Erfolg ist nur eine
+ * Antwort, die mit SPRECHEN;OK=1 beginnt. Die Adresse ist fest; ein Pruefstand
+ * kann sie vor dem Laden der Bibliothek setzen. */
+if (!defined('OC_ALEXANG_ADRESSE')) {
+    define('OC_ALEXANG_ADRESSE', 'http://127.0.0.1/plugins/alexang/index.php');
+}
+
+/** Form des Sprechtokens von Alexa-NG: 8 bis 128 Zeichen aus A-Z a-z 0-9 _ -. */
+function oc_alexa_token_ok($t)
+{
+    return is_string($t) && (bool) preg_match('/^[A-Za-z0-9_-]{8,128}$/', $t);
+}
+
+/** Ergebnis der letzten Ansage dieses Aufrufs (fuer die Testansage), nie mit Token. */
+function oc_ansage_letzte($setzen = null)
+{
+    static $letzte = '';
+    if ($setzen !== null) { $letzte = (string) $setzen; }
+    return $letzte;
+}
+
+/** Eine Ansage ueber Alexa-NG. Rueckgabe true nur bei SPRECHEN;OK=1. */
+function oc_alexa_sprechen($text)
+{
+    $cfg = oc_config();
+    $tok = (string) $cfg['tts']['alexa_token'];
+    $geraet = (string) $cfg['tts']['alexa_geraet'];
+    if ($tok === '') {
+        oc_ansage_letzte('kein Sprechtoken hinterlegt');
+        oc_log('Ansage uebersprungen: Ausgabeweg Alexa-NG, aber kein Sprechtoken hinterlegt');
+        return false;
+    }
+    $felder = array('aktion' => 'sprechen', 'token' => $tok);
+    if ($geraet !== '') { $felder['geraet'] = $geraet; }
+    $felder['text'] = (string) $text;
+    $r = oc_http(OC_ALEXANG_ADRESSE, http_build_query($felder, '', '&'),
+        array('Content-Type: application/x-www-form-urlencoded'), 10);
+    $rumpf = trim(str_replace($tok, '***', (string) $r['body']));
+    $ok = $r['ok'] && strpos($rumpf, 'SPRECHEN;OK=1') === 0;
+    $anzeige = 'OK';
+    if ($ok) {
+        $was = 'OK';
+    } else {
+        $grund = preg_match('/(?:^|;)GRUND=([A-Za-z0-9_]{1,40})/', $rumpf, $m) ? $m[1] : '';
+        $was = ((int) $r['code'] > 0 ? 'HTTP ' . (int) $r['code']
+                : ((string) $r['fehler'] !== '' ? (string) $r['fehler'] : 'keine Antwort'))
+             . ($grund !== '' ? ', GRUND=' . $grund : '');
+        if ($grund === '' && $rumpf !== '') {
+            $was .= ', Antwort "' . substr(preg_replace('/[^A-Za-z0-9;=_.:*-]/', '', $rumpf), 0, 60) . '"';
+        }
+        // Fuer die Testansage: ein Verbindungsfehler als Satz (das Protokoll behaelt den Schluessel).
+        $anzeige = ((int) $r['code'] === 0 && (string) $r['fehler'] !== '')
+            ? oc_fehlertext((string) $r['fehler']) . ' (' . $was . ')' : $was;
+    }
+    oc_ansage_letzte($anzeige);
+    oc_log('Ansage an Alexa-NG' . ($geraet !== '' ? ' (Geraet ' . $geraet . ')' : '')
+        . ': "' . $text . '" -> ' . ($ok ? 'OK' : 'FEHLER ' . $was));
+    return $ok;
+}
+
 /** TTS-Adresse bauen. Bei mode=audioserver gibt es keine - dann null. */
 function oc_tts_url($text)
 {
@@ -4232,6 +4306,10 @@ function oc_tts_url($text)
     $t = $cfg['tts'];
     if ($t['mode'] === 'audioserver') {
         return null;    // Original Loxone Audioserver: Ansage nur ueber Loxone Config
+    }
+    if ($t['mode'] === 'alexang') {
+        // Die feste Adresse ohne Token; '' heisst: kein Sprechtoken hinterlegt.
+        return (string) $t['alexa_token'] === '' ? '' : OC_ALEXANG_ADRESSE;
     }
     if ($t['mode'] === 'musicserver' && (string) $t['ip'] === '') {
         return '';   // ohne IP laesst sich die Music-Server-Adresse nicht bauen
@@ -4275,6 +4353,8 @@ function oc_tts_url($text)
 
 function oc_say($text)
 {
+    $cfg = oc_config();
+    if ($cfg['tts']['mode'] === 'alexang') { return oc_alexa_sprechen($text); }
     $url = oc_tts_url($text);
     if ($url === null) {
         oc_log('Ansage: Modus "Original Loxone Audioserver" - die Sprachausgabe erfolgt in Loxone Config');
@@ -4883,10 +4963,15 @@ function oc_sicherung_lesen($roh)
                               ? (string) $w['passwort'] : '',
                 'konto'    => oc_text(isset($w['konto']) ? $w['konto'] : '', 40),
             );
-            if ($zugang['email'] !== '' && !oc_email_gueltig($zugang['email'])) {
+            /* Nr. 19 (B-Nachzug 01.10.2026): was oc_text() veraendert hat
+             * (gekuerzt, Leerzeichen zusammengefasst, Steuerzeichen), ist nicht
+             * mehr der Wert aus der Datei - beanstandet statt still uebernommen. */
+            if (($zugang['email'] !== '' && !oc_email_gueltig($zugang['email']))
+                || (isset($w['email']) && $zugang['email'] !== trim($w['email']))) {
                 $mangel[] = sprintf(oc_t('EINST.SICH_WERT'), 'zugang.email');
             }
-            if ($zugang['konto'] !== '' && !oc_konto_gueltig($zugang['konto'])) {
+            if (($zugang['konto'] !== '' && !oc_konto_gueltig($zugang['konto']))
+                || (isset($w['konto']) && $zugang['konto'] !== trim($w['konto']))) {
                 $mangel[] = sprintf(oc_t('EINST.SICH_WERT'), 'zugang.konto');
             }
             $anzahl++;
@@ -4919,6 +5004,17 @@ function oc_sicherung_lesen($roh)
         if (oc_wert_pruefen($k, $w, $schranken) !== '') {
             $mangel[] = sprintf(oc_t('EINST.SICH_WERT'),
                                  htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
+            continue;
+        }
+        /* Nr. 19 (B-Nachzug 01.10.2026): auch die Innereien der vier Felder.
+         * Bis 1.1.18 zaehlte nur, DASS es ein Feld ist; oc_config() klemmte
+         * danach still (regeln.0.n = 99 wurde 12, tts.volume = 500 wurde 100). */
+        $oc_innen = oc_sicherung_feld_mangel($k, $w);
+        if ($oc_innen) {
+            foreach ($oc_innen as $oc_in) {
+                $mangel[] = sprintf(oc_t('EINST.SICH_WERT'),
+                                     htmlspecialchars($oc_in, ENT_QUOTES, 'UTF-8'));
+            }
             continue;
         }
         $neu[$k] = $w;
@@ -5049,8 +5145,17 @@ function oc_wert_pruefen($k, $w, $schranken = null)
         if (substr($k, -4) === '_url' && $t !== '' && !preg_match('#^https?://#i', $t)) {
             return 'keine_adresse';
         }
-        if ($k === 'mqtt_topic' && $t !== '' && !preg_match('#^[A-Za-z0-9_/-]+$#', $t)) {
+        /* Nr. 19 (B-Nachzug 01.10.2026): dieselbe Form wie im Reiter MQTT. Bis
+         * 1.1.18 ging "/octopus/" durch und wurde still "octopus", ein leeres
+         * Praefix still "octopus". */
+        if ($k === 'mqtt_topic' && !preg_match('#^[A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*$#', $t)) {
             return 'kein_thema';
+        }
+        /* Was oc_text() beim Lesen veraendern wuerde (doppelte Leerzeichen,
+         * Laenge), waere nach dem Zurueckspielen ein anderer Wert. Leerraum
+         * am Rand darf still fallen (Ausnahme der Entscheidung 19). */
+        if (oc_text($t, (int) $s[1]) !== trim($t)) {
+            return 'nicht_sauber';
         }
         if ($k === 'aktionstoken' && $t !== '' && !preg_match('/^[A-Za-z0-9]{8,64}$/', $t)) {
             return 'kein_token';
@@ -5112,14 +5217,24 @@ function oc_sicherung_bauen($mit_zugang = false)
 
 /**
  * Kopf und Inhalt der Sicherungsdatei, ohne Warnung (X-3). Der Inhalt ist die
- * VOLLE Konfiguration, wie oc_config() sie liefert (samt Aktionstoken), und
- * mit dem Haken die Zugangsdaten - dieselbe Reihenfolge wie bis 1.1.17.
+ * Konfiguration, wie oc_config() sie liefert (samt Aktionstoken), und mit dem
+ * Haken die Zugangsdaten - dieselbe Reihenfolge wie bis 1.1.17.
+ *
+ * NUR BEKANNTE SCHLUESSEL (Octopus-S1, Entscheidung 16; B-Nachzug
+ * 01.10.2026): array_intersect_key() mit oc_vorgaben(), wie EVCC. Bis 1.1.18
+ * nahm die Sicherung auch einen fremden Schluessel mit, den oc_config() nach
+ * Regeln/05 stehen laesst - und das Zurueckspielen wies die EIGENE Datei
+ * damit ab. Der Reiter Test nennt fremde Schluessel weiterhin.
  * Steht hinter oc_sicherung_bauen(), damit die Ausfuhr die erste Funktion
  * ihrer Art bleibt (Werkzeuge/sicherung_pruefen.py sieht die erste an).
  */
 function oc_sicherung_teile($mit_zugang = false)
 {
-    $cfg = oc_config();
+    $cfg = array_intersect_key(oc_config(), oc_vorgaben());
+    /* Das Sprechtoken fuer Alexa-NG geht nie mit (Ansage-2, wie in der
+     * Sprachsteuerung): es ist ein Kennwort des anderen Plugins, und das
+     * Zurueckspielen behaelt das laufende. */
+    unset($cfg['tts']['alexa_token']);
     $kopf = array(
         '_hinweis' => 'Sicherung der Einstellungen des LoxBerry-Plugins Octopus Dynamic.'
                     . ' Im Reiter Einstellungen unter "Einstellungen zurueckspielen"'
@@ -5148,9 +5263,10 @@ function oc_sicherung_teile($mit_zugang = false)
  *
  * Moeglich ist das, wo oc_config() einen Wert nicht selbst in die Form
  * bringt: eine Kundennummer oder E-Mail in zugang.json, die nicht zur Form
- * passt (nur mit dem Haken "Zugangsdaten mitsichern"), und ein fremder
- * Schluessel in octopus.json - oc_config() laesst ihn stehen (Regeln/05), die
- * Sicherung nimmt ihn mit, das Zurueckspielen weist ihn ab.
+ * passt (nur mit dem Haken "Zugangsdaten mitsichern"), oder ein von Hand
+ * eingetragener Wert, den oc_config() stehen laesst, das Formular aber nicht
+ * annaehme (etwa doppelte Leerzeichen, Zonen "1,"). Ein fremder Schluessel
+ * gehoert seit S1 nicht mehr dazu: die Sicherung nimmt ihn nicht mit.
  */
 function oc_sicherung_altwerte($mit_zugang = false)
 {
@@ -5165,6 +5281,109 @@ function oc_sicherung_altwerte($mit_zugang = false)
         if ($t !== '' && !in_array($t, $aus, true)) { $aus[] = $t; }
     }
     return $aus;
+}
+
+/**
+ * Die Innereien der vier Felder einer Sicherung pruefen (Nr. 19, B-Nachzug
+ * 01.10.2026) - mit denselben Grenzen wie das Formular. Rueckgabe: die Namen
+ * der unbrauchbaren Eintraege (regeln.0.n, tts.volume ...), leer = in Ordnung.
+ *
+ * Fehlende innere Schluessel sind erlaubt: eine Sicherung einer aelteren
+ * Fassung kennt etwa min_lauf noch nicht, und oc_config() setzt die Vorgabe -
+ * das ist kein Zurechtbiegen eines Werts, den jemand gewaehlt hat. Fremde
+ * innere Schluessel werden uebergangen. Das Sprechtoken fuer Alexa-NG steht
+ * nie in einer Sicherung; das Zurueckspielen behaelt das laufende.
+ */
+function oc_sicherung_feld_mangel($k, $w)
+{
+    if (!is_array($w)) { return array(); }
+    $aus = array();
+    $zahl = function ($v, $min, $max, $ganz) {
+        if (is_bool($v) || $v === null || is_array($v)) { return false; }
+        $roh = trim((string) $v);
+        $t = str_replace(',', '.', $roh);
+        if (!is_numeric($t) || ($ganz && !preg_match('/^-?[0-9]+$/', $roh))) { return false; }
+        return (float) $t >= (float) $min && (float) $t <= (float) $max;
+    };
+    $haken = function ($v) {
+        return is_bool($v) || ((is_int($v) || is_string($v)) && in_array((string) $v, array('0', '1'), true));
+    };
+    $text = function ($v, $max, $muster = null) {
+        if (!is_string($v) || oc_text($v, $max) !== trim($v) || preg_match('/[\x00-\x1F\x7F"]/', $v)) { return false; }
+        $v = trim($v);   // Leerraum am Rand darf still fallen
+        return $v === '' || $muster === null || (bool) preg_match($muster, $v);
+    };
+    /* Je Schluessel: array(Art, ...). z/g Zahl, b Haken, w Wahl, t Text. */
+    $pruefe = function ($wo, $feld, $spec) use (&$aus, $zahl, $haken, $text) {
+        foreach ($spec as $sk => $s) {
+            if (!array_key_exists($sk, $feld)) { continue; }
+            $v = $feld[$sk];
+            if ($s[0] === 'z' || $s[0] === 'g') { $gut = $zahl($v, $s[1], $s[2], $s[0] === 'g'); }
+            elseif ($s[0] === 'b') { $gut = $haken($v); }
+            elseif ($s[0] === 'w') { $gut = is_string($v) && in_array($v, $s[1], true); }
+            else { $gut = $text($v, $s[1], isset($s[2]) ? $s[2] : null); }
+            if (!$gut) { $aus[] = $wo . '.' . $sk; }
+        }
+    };
+    if ($k === 'months') {
+        foreach ($w as $i => $v) {
+            if (!is_int($i) || $i < 0 || $i > 11 || !$zahl($v, 0, 20000, false)) { $aus[] = 'months.' . $i; }
+        }
+    } elseif ($k === 'regeln') {
+        $spec = array(
+            'aktiv' => array('b'), 'neg' => array('b'), 'name' => array('t', 40),
+            'art' => array('w', oc_regel_arten()),
+            'n' => array('g', 1, 12), 'von' => array('g', 0, 23), 'bis' => array('g', 0, 23),
+            'horizont' => array('g', 1, 48), 'schwelle' => array('z', -100, 200),
+            'prozent' => array('g', 0, 90), 'rang' => array('g', 1, 99),
+            'leistung' => array('z', 0, 100), 'energie' => array('z', 0, 500),
+            'frist' => array('g', -1, 23), 'pv_sperre' => array('z', 0, 500),
+            'soc_min' => array('g', 0, 100), 'soc_max' => array('g', 0, 100),
+            'min_lauf' => array('g', 0, 720), 'min_pause' => array('g', 0, 720),
+        );
+        foreach ($w as $i => $r) {
+            if (!is_int($i) || $i < 0 || $i >= OC_REGELN) { $aus[] = 'regeln.' . $i; continue; }
+            if (is_array($r)) { $pruefe('regeln.' . $i, $r, $spec); }   // kein Feld: meldet die Stelle weiter unten
+        }
+    } elseif ($k === 'notify') {
+        $pruefe('notify', $w, array(
+            'audio' => array('b'), 'push' => array('b'), 'only_cheap' => array('b'),
+            'negative' => array('b'), 'tomorrow' => array('b'), 'lb' => array('b'),
+            'lb_stunden' => array('g', 1, 72),
+        ));
+        if (array_key_exists('hours', $w)) {
+            $gesehen = array();
+            foreach ((is_array($w['hours']) ? $w['hours'] : array(null)) as $h) {
+                if (!$zahl($h, 0, 23, true) || in_array((int) $h, $gesehen, true)) {
+                    $aus[] = 'notify.hours';
+                    break;
+                }
+                $gesehen[] = (int) $h;
+            }
+        }
+    } elseif ($k === 'tts') {
+        $pruefe('tts', $w, array(
+            'mode' => array('w', array('musicserver', 'ms4h', 'audioserver', 'custom', 'alexang')),
+            'ip' => array('t', 100, '/^[A-Za-z0-9._-]+$/'),
+            'port' => array('g', 1, 65535),
+            'volume' => array('g', 1, 100),
+            'lang' => array('t', 8, '/^[a-z]{2,8}$/'),
+            'template' => array('t', 400, '#^https?://#i'),
+            'alexa_geraet' => array('t', 200),
+        ));
+        // Zonen: Pflicht, dieselbe Form wie im Formular.
+        if (array_key_exists('zones', $w)
+            && !(is_string($w['zones']) && preg_match('/^[0-9]+([ ,~]+[0-9]+)*$/', trim($w['zones'])))) {
+            $aus[] = 'tts.zones';
+        }
+        // Die Sprache darf nicht leer sein (das Formular verlangt 2 bis 8 Buchstaben).
+        if (array_key_exists('lang', $w) && is_string($w['lang']) && trim($w['lang']) === '') { $aus[] = 'tts.lang'; }
+        /* Das Sprechtoken fuer Alexa-NG geht nie in eine Sicherung, und das
+         * Zurueckspielen behaelt das laufende. Traegt eine Datei trotzdem eines,
+         * wuerde es still verworfen - deshalb beanstandet. */
+        if (array_key_exists('alexa_token', $w) && $w['alexa_token'] !== '') { $aus[] = 'tts.alexa_token'; }
+    }
+    return array_values(array_unique($aus));
 }
 
 /* ==================================================================
