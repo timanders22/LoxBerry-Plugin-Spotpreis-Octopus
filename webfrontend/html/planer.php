@@ -185,8 +185,40 @@
  *        haengt, misst das Geraet und nicht die Rechnung. Er setzt die
  *        Zeitzone jetzt selbst und stellt sie am Ende zurueck; die
  *        Kopfzeile nennt beide, damit niemand seinen LoxBerry fuer
- *        umgestellt haelt. An der Rechnung aendert sich nichts. */
-define('PLAN_FASSUNG', '1.1.7');
+ *        umgestellt haelt. An der Rechnung aendert sich nichts.
+ *
+ * 1.1.8: Zwei Befunde aus dem Durchgang ab 29.09.2026, je mit eigenen
+ *        Prueffaellen, und jeder in beide Richtungen geeicht.
+ *
+ *        - Ein Rang braucht Preise (Entscheidung Nr. 30 des Hausherrn vom
+ *          01.10.2026). Die Regelarten 'fenster', 'stunden' und 'scheiben'
+ *          waehlen die GUENSTIGSTEN Scheiben - das ist ein Rang, und ein
+ *          Rang ueber vier bekannte Stunden ist keiner. Gemessen in
+ *          aWATTar (Pruefbericht code, Befund 4): um 20:15 ohne die Preise
+ *          fuer morgen waren noch vier Stunden bekannt, die teure
+ *          Abendstunde galt als die guenstigste, und die Regel schaltete
+ *          ein. Jetzt bleibt eine solche Regel aus, mit dem Grund
+ *          'horizont', solange weniger als PLAN_RANG_MIN_STUNDEN kuenftige
+ *          Preisstunden bekannt sind. Sie bucht dann auch kein
+ *          Leistungsbudget. 'schwelle' und 'mittel' fragen nach keinem Rang
+ *          und rechnen wie bisher.
+ *        - plan_pv_lesen() nimmt nur endliche Werte an, und fuer eine
+ *          PV-Prognose keine negativen (aWATTar, Pruefbericht code,
+ *          Befund 9). Zwei Werte 1e308 in derselben Stunde ergaben INF,
+ *          json_encode() scheiterte daran, und der Zwischenspeicher wurde
+ *          nie mehr geschrieben. Eine solche Antwort wird jetzt ganz
+ *          abgewiesen und mit WERTE_UNGUELTIG gemeldet - nicht still
+ *          zurechtgebogen. Ein Lastgang darf negative Werte weiter
+ *          liefern; das sagt der Aufrufer mit dem letzten Argument. */
+define('PLAN_FASSUNG', '1.1.8');
+
+/** Entscheidung Nr. 30 (01.10.2026): eine Regel der Arten 'fenster',
+ *  'stunden' und 'scheiben' urteilt nur, wenn mindestens so viele kuenftige
+ *  Preisstunden bekannt sind - die laufende Scheibe mitgezaehlt, hoechstens
+ *  die naechsten 24 Stunden (plan_preisstunden()). 12 passt zur
+ *  Hoechstzahl der Ladestunden. Eine andere Entscheidung ist diese eine
+ *  Zeile; die Linien lesen dieselbe Konstante auch fuer ihren eigenen Rang. */
+define('PLAN_RANG_MIN_STUNDEN', 12);
 
 /* ==================================================================
  * Runden, das in jeder PHP-Fassung dasselbe ergibt
@@ -994,8 +1026,21 @@ function plan_nach_wh($wert, $einheit, $slotlen)
  *
  * Rueckgabe: array(Werte, Meldung). Bei einem Fehler ist Werte leer und
  * die Meldung sagt, woran es lag.
+ *
+ * WERTE_UNGUELTIG (ab 1.1.8): ein Wert ist nicht endlich (INF - etwa
+ * "1e400", oder zwei Werte 1e308 in derselben Scheibe), oder er ist
+ * negativ, obwohl $nur_positiv gilt. Dann wird die GANZE Antwort
+ * abgewiesen: eine Quelle, die so etwas liefert, ist kaputt, und eine
+ * halb uebernommene Prognose sieht aus wie eine ganze. Bis 1.1.7 nahm
+ * die Funktion jede Zahl; INF liess json_encode() scheitern, und der
+ * Zwischenspeicher des aufrufenden Plugins wurde nie mehr geschrieben.
+ *
+ * $nur_positiv  true fuer eine PV-Prognose (eine Erzeugung ist nie
+ *               negativ). Ein Lastgang gibt false an: dort steht eine
+ *               Einspeisung als negativer Wert, und was damit geschieht,
+ *               entscheidet das Plugin.
  */
-function plan_pv_lesen($daten, $art, $pfad, $zeitfeld, $wertfeld, $einheit, $slotlen)
+function plan_pv_lesen($daten, $art, $pfad, $zeitfeld, $wertfeld, $einheit, $slotlen, $nur_positiv = true)
 {
     if (!is_array($daten)) {
         return array(array(), 'KEINE_ANTWORT');
@@ -1031,12 +1076,26 @@ function plan_pv_lesen($daten, $art, $pfad, $zeitfeld, $wertfeld, $einheit, $slo
 
     $out = array();
     $unlesbar = 0;
+    $ungueltig = 0;
+    $betrag = 0.0;
     foreach ($paare as $p) {
         $ts = is_numeric($p[0]) ? (int) $p[0] : strtotime((string) $p[0]);
         if ($ts === false || $ts <= 0 || !is_numeric($p[1])) { $unlesbar++; continue; }
         $scheibe = $ts - ($ts % $slotlen);
         $wh = plan_nach_wh($p[1], $einheit, $slotlen);
+        if ($nur_positiv && $wh < 0) { $ungueltig++; continue; }
+        /* EINE Pruefung auf Endlichkeit, und zwar ueber die Summe der
+         * Betraege: ist sie endlich, ist es jeder Einzelwert und jede
+         * Teilsumme auch - je Scheibe hier wie ueber 24 Stunden in
+         * plan_pv_summe(). Zwei Werte 1e308 sind einzeln endlich und
+         * zusammen nicht; ein Einzelwert INF ("1e400") faellt hier
+         * ebenso auf. Eine zweite Abfrage je Wert fing nichts, was diese
+         * nicht faengt (gemessen mit dem Rueckbau, proben/rueckbau.py). */
+        $betrag += abs($wh);
         $out[$scheibe] = (isset($out[$scheibe]) ? $out[$scheibe] : 0.0) + $wh;
+    }
+    if ($ungueltig > 0 || !is_finite($betrag)) {
+        return array(array(), 'WERTE_UNGUELTIG');
     }
     ksort($out);
     if (!$out) {
@@ -1080,6 +1139,30 @@ function plan_soc_lesen($daten, $pfad)
  * ================================================================== */
 
 /**
+ * Wie viele kuenftige Preisstunden sind bekannt? (Entscheidung Nr. 30)
+ *
+ * Gezaehlt werden die Scheiben mit Preis von $jetzt an, hoechstens die
+ * naechsten 24 Stunden, umgerechnet in Stunden; die laufende Scheibe
+ * zaehlt mit. Bei Viertelstunden sind 47 Scheiben 11,75 Stunden und damit
+ * zu wenig - es wird nicht aufgerundet.
+ *
+ * Eine eigene Funktion, damit jede Linie ihren Grund mit derselben Zahl
+ * nennt, mit der hier entschieden wird.
+ */
+function plan_preisstunden($preise, $jetzt, $slotlen)
+{
+    $slotlen = max(1, (int) $slotlen);
+    $jetzt = (int) $jetzt;
+    $n = 0;
+    if (is_array($preise)) {
+        foreach ($preise as $ts => $ct) {
+            if ($ts >= $jetzt && $ts < $jetzt + 24 * 3600) { $n++; }
+        }
+    }
+    return plan_runde($n * $slotlen / 3600.0, 2);
+}
+
+/**
  * Alle Regeln in Rangfolge planen.
  *
  * $preise   array(ts => ct/kWh), aufsteigend
@@ -1091,6 +1174,10 @@ function plan_soc_lesen($daten, $pfad)
  *                 'laufend' => array(regel_index => bis_ts))
  * $g        array('budget_kw','pv_bonus','pv_schwelle',
  *                 'budget2_kw','budget2_von','budget2_bis')
+ * $rang_min Mindestzahl kuenftiger Preisstunden fuer einen Rang (Nr. 30).
+ *           Weglassen heisst PLAN_RANG_MIN_STUNDEN. Nur der Selbsttest gibt
+ *           0 an: seine Preisreihen sind von Hand gesetzt und kuerzer als
+ *           zwoelf Stunden, und sie pruefen die Auswahl, nicht den Rang.
  *
  * Rueckgabe je Regel: nr, aktiv, in, rest, ct, start, startmin, grund,
  * slots, anzahl, noetig, fehlt, verdraengt, gesperrt, rang, leistung,
@@ -1116,11 +1203,16 @@ function plan_soc_lesen($daten, $pfad)
  *   laeuft     laeuft nur noch, weil der Block schon begonnen hat
  *              (Hysterese)
  *   negativ    laeuft, weil der Preis negativ ist
+ *   horizont   (ab 1.1.8) die Regelart waehlt die guenstigsten Scheiben,
+ *              aber es sind weniger als PLAN_RANG_MIN_STUNDEN kuenftige
+ *              Preisstunden bekannt - ohne sie gibt es keinen Rang
+ *              (Entscheidung Nr. 30). Gilt fuer fenster, stunden und
+ *              scheiben, auch bei negativem Preis.
  *   fenster | stunden | scheiben | schwelle | mittel
  *              laeuft aus dem Grund, den die Regelart nennt
  * ------------------------------------------------------------------
  */
-function plan_rechnen($preise, $slotlen, $jetzt, $regeln, $umwelt, $g)
+function plan_rechnen($preise, $slotlen, $jetzt, $regeln, $umwelt, $g, $rang_min = null)
 {
     $slotlen = max(1, (int) $slotlen);
     $jetzt = (int) $jetzt;
@@ -1146,6 +1238,10 @@ function plan_rechnen($preise, $slotlen, $jetzt, $regeln, $umwelt, $g)
         ? $umwelt['laufend'] : array();
 
     $reihe = plan_reihenfolge($regeln);
+
+    /* Entscheidung Nr. 30: reichen die bekannten Preise fuer einen Rang? */
+    $rang_min = ($rang_min === null) ? PLAN_RANG_MIN_STUNDEN : (float) $rang_min;
+    $rang_ok = plan_preisstunden($preise, $jetzt, $slotlen) >= $rang_min;
 
     $belegt = array();
     $erg = array();
@@ -1189,6 +1285,22 @@ function plan_rechnen($preise, $slotlen, $jetzt, $regeln, $umwelt, $g)
         $e['mangel'] = implode(',', $maengel);
 
         if (empty($r['aktiv'])) { $erg[$i] = $e; continue; }
+
+        /* Entscheidung Nr. 30: die guenstigsten Scheiben sind ein Rang, und
+         * ohne PLAN_RANG_MIN_STUNDEN kuenftige Preisstunden gibt es keinen.
+         * Die Regel bleibt aus und bucht nichts - auch bei negativem Preis
+         * nicht ("die Regeln stehen auf 0"). Eine Sperre wird trotzdem
+         * genannt, damit die Anzeige beides sagen kann; 'noetig' und 'fehlt'
+         * nennen, was ungeplant bleibt. */
+        $art_r = isset($r['art']) ? (string) $r['art'] : 'fenster';
+        if (!$rang_ok && in_array($art_r, array('fenster', 'stunden', 'scheiben'), true)) {
+            $e['gesperrt'] = plan_gesperrt($r, $umwelt);
+            $e['noetig'] = plan_slots_noetig($r, $slotlen);
+            $e['fehlt'] = $e['noetig'];
+            $e['grund'] = 'horizont';
+            $erg[$i] = $e;
+            continue;
+        }
 
         $sperre = plan_gesperrt($r, $umwelt);
         if ($sperre !== '') {
@@ -1667,6 +1779,17 @@ function plan_selbsttest()
     $g0 = array('budget_kw' => 0.0, 'pv_bonus' => 0.0, 'pv_schwelle' => 500);
     $u0 = array('pv' => null, 'pv_summe' => null, 'soc' => null, 'neg' => 0, 'mittel' => 20.0);
 
+    /* Die Faelle bis 1.1.7 rechnen mit Preisreihen von acht Stunden, von
+     * Hand gesetzt, damit sich jeder Wert nachzaehlen laesst. Mit der
+     * Horizontregel (Nr. 30, ab 1.1.8) waeren 'fenster', 'stunden' und
+     * 'scheiben' darin alle aus. Sie pruefen die AUSWAHL, nicht den Rang -
+     * deshalb rechnen sie ueber $plan_alt ohne die Regel. Die Regel selbst
+     * pruefen die Faelle unter "Entscheidung Nr. 30" weiter unten, und zwar
+     * ueber plan_rechnen() mit dem Vorgabewert, so wie die Linien es tun. */
+    $plan_alt = function ($p, $s, $j, $r, $u, $g) {
+        return plan_rechnen($p, $s, $j, $r, $u, $g, 0);
+    };
+
     /* ---------- Helfer ---------- */
     $pruefe('pro Stunde bei 3600 s', plan_pro_stunde(3600), 1);
     $pruefe('pro Stunde bei 900 s', plan_pro_stunde(900), 4);
@@ -1788,7 +1911,7 @@ function plan_selbsttest()
      * Preise ab Mitternacht: 30 30 10 10 30 30 ...
      * Zwei Stunden am Stueck muessen 02:00 und 03:00 sein. */
     $preise = plan_test_reihe($t0, array(30, 30, 10, 10, 30, 30, 30, 30));
-    $fp = plan_rechnen($preise, 3600, $t0,
+    $fp = $plan_alt($preise, 3600, $t0,
         array(plan_test_regel(array('art' => 'fenster', 'n' => 2))), $u0, $g0);
     $pruefe('Fenster: 2 Stunden am Stueck ab 02:00',
         array($fp[0]['start'], $fp[0]['anzahl'], $fp[0]['in']), array(2, 2, 120));
@@ -1797,7 +1920,7 @@ function plan_selbsttest()
     /* ---------- Frist verkuerzt das Fenster ----------
      * Dieselbe Reihe, aber Frist 2 Uhr: dann sind nur 00:00 und 01:00
      * erreichbar, obwohl 02:00/03:00 billiger waeren. */
-    $fp = plan_rechnen($preise, 3600, $t0,
+    $fp = $plan_alt($preise, 3600, $t0,
         array(plan_test_regel(array('art' => 'fenster', 'n' => 2, 'frist' => 2))), $u0, $g0);
     $pruefe('Frist 2 Uhr: nimmt 00:00, obwohl 02:00 billiger waere',
         array($fp[0]['start'], $fp[0]['anzahl'], $fp[0]['aktiv']), array(0, 2, 1));
@@ -1813,14 +1936,14 @@ function plan_selbsttest()
         plan_test_regel(array('art' => 'fenster', 'n' => 1, 'leistung' => 3.7, 'rang' => 1, 'name' => 'A')),
         plan_test_regel(array('art' => 'fenster', 'n' => 1, 'leistung' => 3.7, 'rang' => 2, 'name' => 'B')),
     );
-    $fp = plan_rechnen($preise2, 3600, $t0, $regeln, $u0, $g1);
+    $fp = $plan_alt($preise2, 3600, $t0, $regeln, $u0, $g1);
     $pruefe('Budget: Rang 1 bekommt die billigste Stunde (02:00)', $fp[0]['start'], 2);
     $pruefe('Budget: Rang 2 weicht auf die zweitbeste aus (03:00)', $fp[1]['start'], 3);
     $pruefe('Budget: Rang 2 meldet Verdraengung', $fp[1]['verdraengt'] > 0, true);
     $pruefe('Budget: Rang 1 wird nicht verdraengt', $fp[0]['verdraengt'], 0);
 
     /* Dieselben zwei Regeln ohne Budget: beide nehmen dieselbe Stunde. */
-    $fp = plan_rechnen($preise2, 3600, $t0, $regeln, $u0, $g0);
+    $fp = $plan_alt($preise2, 3600, $t0, $regeln, $u0, $g0);
     $pruefe('Ohne Budget nehmen beide dieselbe Stunde',
         array($fp[0]['start'], $fp[1]['start']), array(2, 2));
 
@@ -1829,7 +1952,7 @@ function plan_selbsttest()
         plan_test_regel(array('art' => 'fenster', 'n' => 1, 'leistung' => 3.7, 'rang' => 9, 'name' => 'A')),
         plan_test_regel(array('art' => 'fenster', 'n' => 1, 'leistung' => 3.7, 'rang' => 1, 'name' => 'B')),
     );
-    $fp = plan_rechnen($preise2, 3600, $t0, $regeln2, $u0, $g1);
+    $fp = $plan_alt($preise2, 3600, $t0, $regeln2, $u0, $g1);
     $pruefe('Rang entscheidet, nicht die Reihenfolge in der Liste',
         array($fp[0]['start'], $fp[1]['start']), array(3, 2));
 
@@ -1839,34 +1962,34 @@ function plan_selbsttest()
 
     /* ---------- Sperren ---------- */
     $u_pv = array_merge($u0, array('pv_summe' => 30.0));
-    $fp = plan_rechnen($preise, 3600, $t0,
+    $fp = $plan_alt($preise, 3600, $t0,
         array(plan_test_regel(array('art' => 'schwelle', 'schwelle' => 99, 'pv_sperre' => 25.0))),
         $u_pv, $g0);
     $pruefe('PV-Sperre greift bei 30 kWh Prognose und Schwelle 25',
         array($fp[0]['aktiv'], $fp[0]['gesperrt']), array(0, 'pv'));
 
     $u_pv2 = array_merge($u0, array('pv_summe' => 5.0));
-    $fp = plan_rechnen($preise, 3600, $t0,
+    $fp = $plan_alt($preise, 3600, $t0,
         array(plan_test_regel(array('art' => 'schwelle', 'schwelle' => 99, 'pv_sperre' => 25.0))),
         $u_pv2, $g0);
     $pruefe('PV-Sperre greift NICHT bei 5 kWh Prognose', $fp[0]['aktiv'], 1);
 
     $u_soc = array_merge($u0, array('soc' => 90.0));
-    $fp = plan_rechnen($preise, 3600, $t0,
+    $fp = $plan_alt($preise, 3600, $t0,
         array(plan_test_regel(array('art' => 'schwelle', 'schwelle' => 99, 'soc_max' => 80))),
         $u_soc, $g0);
     $pruefe('Speicher voll: soc_max sperrt',
         array($fp[0]['aktiv'], $fp[0]['gesperrt']), array(0, 'soc_max'));
 
     $u_soc2 = array_merge($u0, array('soc' => 10.0));
-    $fp = plan_rechnen($preise, 3600, $t0,
+    $fp = $plan_alt($preise, 3600, $t0,
         array(plan_test_regel(array('art' => 'schwelle', 'schwelle' => 99, 'soc_min' => 20))),
         $u_soc2, $g0);
     $pruefe('Speicher leer: soc_min sperrt', $fp[0]['gesperrt'], 'soc_min');
 
     /* Ohne Speicherwert wird nicht gesperrt - eine fehlende Auskunft ist
      * kein Grund, die Anlage stillzulegen. */
-    $fp = plan_rechnen($preise, 3600, $t0,
+    $fp = $plan_alt($preise, 3600, $t0,
         array(plan_test_regel(array('art' => 'schwelle', 'schwelle' => 99,
                                     'soc_min' => 20, 'soc_max' => 80))), $u0, $g0);
     $pruefe('Ohne Speicherwert keine Sperre', $fp[0]['gesperrt'], '');
@@ -1881,7 +2004,7 @@ function plan_selbsttest()
         plan_test_regel(array('art' => 'schwelle', 'schwelle' => 0, 'leistung' => 3.7,
                               'rang' => 2, 'neg' => 1)),
     );
-    $fp = plan_rechnen($preise, 3600, $t0, $regeln3, $u_neg,
+    $fp = $plan_alt($preise, 3600, $t0, $regeln3, $u_neg,
         array('budget_kw' => 5.0, 'pv_bonus' => 0.0, 'pv_schwelle' => 500));
     $pruefe('Negativpreis: Rang 1 laeuft', $fp[0]['aktiv'], 1);
     $pruefe('Negativpreis: Rang 2 bleibt aus, weil das Budget voll ist', $fp[1]['aktiv'], 0);
@@ -1891,13 +2014,13 @@ function plan_selbsttest()
     $vs = array();
     $w = array(30, 30, 30, 30, 30, 30, 30, 30, 10, 10, 10, 10, 10, 10, 10, 10, 30, 30, 30, 30);
     $vs = plan_test_reihe($t0, $w, 900);
-    $fp = plan_rechnen($vs, 900, $t0,
+    $fp = $plan_alt($vs, 900, $t0,
         array(plan_test_regel(array('art' => 'fenster', 'n' => 2, 'leistung' => 0))), $u0, $g0);
     $pruefe('Viertelstunden: 2 Stunden am Stueck sind 8 Scheiben ab 02:00',
         array($fp[0]['anzahl'], $fp[0]['start'], $fp[0]['in']), array(8, 2, 120));
 
     /* ---------- Belegung ---------- */
-    $fp = plan_rechnen($preise2, 3600, $t0, $regeln, $u0, $g1);
+    $fp = $plan_alt($preise2, 3600, $t0, $regeln, $u0, $g1);
     $bel = plan_belegung($fp);
     $pruefe('Belegung: je Stunde 3,7 kW, nicht 7,4',
         array(count($bel), array_values($bel)), array(2, array(3.7, 3.7)));
@@ -1954,7 +2077,7 @@ function plan_selbsttest()
     $pv3 = array($t0 + 7200 => 1000);
     $u3 = array_merge($u0, array('pv' => $pv3));
     $gpv = array('budget_kw' => 0.0, 'pv_bonus' => 15.0, 'pv_schwelle' => 500);
-    $fp = plan_rechnen($preise3, 3600, $t0,
+    $fp = $plan_alt($preise3, 3600, $t0,
         array(plan_test_regel(array('art' => 'fenster', 'n' => 1))), $u3, $gpv);
     $pruefe('PV-Gutschrift laesst die Sonnenstunde gewinnen', $fp[0]['start'], 2);
     /* Der ausgewiesene Preis wird an DIESEM Lauf geprueft, nicht am
@@ -1969,7 +2092,7 @@ function plan_selbsttest()
      * 20 ct, ihr Effektivpreis ist 5 ct. */
     $pruefe('Der ausgewiesene Preis ist der echte, nicht der Effektivpreis',
         $fp[0]['ct'], 20.0);
-    $fp = plan_rechnen($preise3, 3600, $t0,
+    $fp = $plan_alt($preise3, 3600, $t0,
         array(plan_test_regel(array('art' => 'fenster', 'n' => 1))), $u3, $g0);
     $pruefe('Ohne Gutschrift gewinnt die billigste Stunde', $fp[0]['start'], 0);
     $pruefe('Ohne Gutschrift stimmt der Preis ebenfalls', $fp[0]['ct'], 10.0);
@@ -2006,7 +2129,7 @@ function plan_selbsttest()
      * Preise 30 30 10 10 30 ... Das billige Fenster liegt 02:00-03:00,
      * das Zeitfenster laesst nur 04:00-06:00 zu. Die Regel muss auf 04:00
      * ausweichen, obwohl 02:00 billiger waere. */
-    $fp = plan_rechnen($preise, 3600, $t0,
+    $fp = $plan_alt($preise, 3600, $t0,
         array(plan_test_regel(array('art' => 'fenster', 'n' => 1, 'von' => 4, 'bis' => 6))),
         $u0, $g0);
     $pruefe('Zeitfenster 4 bis 6 schliesst die billige Stunde aus',
@@ -2015,12 +2138,12 @@ function plan_selbsttest()
     /* ---- Vergangenheit wird nicht geplant ----
      * Dieselbe Reihe, aber jetzt ist es 03:00. Die billigen Stunden 02:00
      * und 03:00 sind angebrochen bzw. vorbei - 03:00 zaehlt noch. */
-    $fp = plan_rechnen($preise, 3600, $t0 + 3 * 3600,
+    $fp = $plan_alt($preise, 3600, $t0 + 3 * 3600,
         array(plan_test_regel(array('art' => 'fenster', 'n' => 1))), $u0, $g0);
     $pruefe('Was vorbei ist, wird nicht mehr geplant', $fp[0]['start'], 3);
 
     /* ---- Inaktive Regel ---- */
-    $fp = plan_rechnen($preise, 3600, $t0,
+    $fp = $plan_alt($preise, 3600, $t0,
         array(plan_test_regel(array('aktiv' => 0))), $u0, $g0);
     $pruefe('Inaktive Regel: aus, ohne Treffer',
         array($fp[0]['aktiv'], $fp[0]['grund'], $fp[0]['anzahl']), array(0, 'aus', 0));
@@ -2039,11 +2162,11 @@ function plan_selbsttest()
     $loch = array($t0 => 30.0, $t0 + 3600 => 10.0,
                   $t0 + 10800 => 10.0, $t0 + 14400 => 10.0,
                   $t0 + 21600 => 30.0);
-    $fp = plan_rechnen($loch, 3600, $t0,
+    $fp = $plan_alt($loch, 3600, $t0,
         array(plan_test_regel(array('art' => 'fenster', 'n' => 3))), $u0, $g0);
     $pruefe('Ueber ein Loch in der Preisreihe wird nicht geklebt',
         $fp[0]['anzahl'], 0);
-    $fp = plan_rechnen($loch, 3600, $t0,
+    $fp = $plan_alt($loch, 3600, $t0,
         array(plan_test_regel(array('art' => 'fenster', 'n' => 2))), $u0, $g0);
     $pruefe('Zwei Stunden am Stueck gibt es trotz Loch: 03:00 und 04:00',
         array($fp[0]['start'], $fp[0]['anzahl']), array(3, 2));
@@ -2053,7 +2176,7 @@ function plan_selbsttest()
         plan_test_regel(array('art' => 'fenster', 'n' => 1, 'leistung' => 3.7, 'rang' => 5)),
         plan_test_regel(array('art' => 'fenster', 'n' => 1, 'leistung' => 3.7, 'rang' => 5)),
     );
-    $fp = plan_rechnen($preise2, 3600, $t0, $regeln_gl, $u0, $g1);
+    $fp = $plan_alt($preise2, 3600, $t0, $regeln_gl, $u0, $g1);
     $pruefe('Gleicher Rang: die kleinere Regelnummer waehlt zuerst',
         array($fp[0]['start'], $fp[1]['start']), array(2, 3));
 
@@ -2062,24 +2185,24 @@ function plan_selbsttest()
      * Stunde ist 01:00. Eine Stunde = 4 Scheiben. */
     $vs2 = plan_test_reihe($t0, array(30, 30, 30, 30, 10, 10, 10, 10,
                                       20, 20, 20, 20, 30, 30, 30, 30), 900);
-    $fp = plan_rechnen($vs2, 900, $t0,
+    $fp = $plan_alt($vs2, 900, $t0,
         array(plan_test_regel(array('art' => 'stunden', 'n' => 1))), $u0, $g0);
     $pruefe('Stunden: die guenstigste volle Stunde ist 01:00, vier Scheiben',
         array($fp[0]['start'], $fp[0]['anzahl']), array(1, 4));
-    $fp = plan_rechnen($vs2, 900, $t0,
+    $fp = $plan_alt($vs2, 900, $t0,
         array(plan_test_regel(array('art' => 'stunden', 'n' => 2))), $u0, $g0);
     $pruefe('Stunden: zwei Stunden sind acht Scheiben, verstreut erlaubt',
         $fp[0]['anzahl'], 8);
     /* Eine angebrochene Stunde wird nicht bewertet: ab 00:15 fehlt der
      * ersten Stunde eine Scheibe, sie faellt aus der Wertung. */
-    $fp = plan_rechnen($vs2, 900, $t0 + 900,
+    $fp = $plan_alt($vs2, 900, $t0 + 900,
         array(plan_test_regel(array('art' => 'stunden', 'n' => 1))), $u0, $g0);
     $pruefe('Stunden: angebrochene Stunden werden nicht bewertet',
         array($fp[0]['start'], $fp[0]['anzahl']), array(1, 4));
 
     /* ---- Regelart 'mittel' ---- */
     $preise_m = plan_test_reihe($t0, array(10, 20, 30, 20, 20, 20, 20, 20));
-    $fp = plan_rechnen($preise_m, 3600, $t0,
+    $fp = $plan_alt($preise_m, 3600, $t0,
         array(plan_test_regel(array('art' => 'mittel', 'prozent' => 20))),
         array_merge($u0, array('mittel' => 20.0)), $g0);
     $pruefe('Mittel: 20 Prozent unter 20 ct ist die Grenze 16 ct - nur die 10 ct',
@@ -2088,13 +2211,13 @@ function plan_selbsttest()
      * bei einem Mittel von -10 ct war die Grenze -8 - also OBERHALB des
      * Mittels, die Regel wurde weiter statt enger. Richtig sind -12. */
     $preise_n = plan_test_reihe($t0, array(-30.0, -12.0, -10.0, -8.0, 0.0, 0.0, 0.0, 0.0));
-    $fp = plan_rechnen($preise_n, 3600, $t0,
+    $fp = $plan_alt($preise_n, 3600, $t0,
         array(plan_test_regel(array('art' => 'mittel', 'prozent' => 20))),
         array_merge($u0, array('mittel' => -10.0)), $g0);
     $pruefe('Mittel: bei negativem Tagesmittel ist die Grenze -12, nicht -8',
         $fp[0]['anzahl'], 2);
     /* Ein echtes negatives Mittel ist nicht dasselbe wie "nicht bekannt". */
-    $fp = plan_rechnen($preise_n, 3600, $t0,
+    $fp = $plan_alt($preise_n, 3600, $t0,
         array(plan_test_regel(array('art' => 'mittel', 'prozent' => 20))),
         array_merge($u0, array('mittel' => null)), $g0);
     $pruefe('Mittel: ohne Angabe wird aus den Kandidaten gemittelt',
@@ -2105,7 +2228,7 @@ function plan_selbsttest()
      * EINZELNEN Scheiben sind die vier Zehner - ohne Stundenraster und
      * ohne Zusammenhang. */
     $vs3 = plan_test_reihe($t0, array(30, 10, 30, 10, 30, 10, 30, 10), 900);
-    $fp = plan_rechnen($vs3, 900, $t0,
+    $fp = $plan_alt($vs3, 900, $t0,
         array(plan_test_regel(array('art' => 'scheiben', 'n' => 1))), $u0, $g0);
     $pruefe('Scheiben: die vier guenstigsten Einzelscheiben, verstreut',
         array($fp[0]['anzahl'], $fp[0]['ct']), array(4, 10.0));
@@ -2115,7 +2238,7 @@ function plan_selbsttest()
     /* ---- Taktschutz ----
      * Dieselbe Reihe: ohne Schutz vier Einzelscheiben mit Loechern.
      * Mit min_pause 30 werden die Luecken von je 15 Minuten zugemacht. */
-    $fp = plan_rechnen($vs3, 900, $t0,
+    $fp = $plan_alt($vs3, 900, $t0,
         array(plan_test_regel(array('art' => 'scheiben', 'n' => 1, 'min_pause' => 30))),
         $u0, $g0);
     $pruefe('Mindestpause 30 min macht die Loecher von 15 min zu',
@@ -2123,7 +2246,7 @@ function plan_selbsttest()
     /* Mindestlaufzeit: ein einzelner Block von 15 Minuten wird auf 60
      * verlaengert, solange Kandidaten nachkommen. */
     $vs4 = plan_test_reihe($t0, array(30, 10, 30, 30, 30, 30, 30, 30), 900);
-    $fp = plan_rechnen($vs4, 900, $t0,
+    $fp = $plan_alt($vs4, 900, $t0,
         array(plan_test_regel(array('art' => 'scheiben', 'n' => 1, 'min_lauf' => 60))),
         $u0, $g0);
     $pruefe('Mindestlaufzeit 60 min verlaengert den Block auf vier Scheiben',
@@ -2131,7 +2254,7 @@ function plan_selbsttest()
     /* Und wenn nichts nachkommt, faellt der Block weg - ein Block unter
      * der Mindestlaufzeit ist genau das, was die Regel verhindern soll. */
     $vs5 = array($t0 => 30.0, $t0 + 900 => 10.0);
-    $fp = plan_rechnen($vs5, 900, $t0,
+    $fp = $plan_alt($vs5, 900, $t0,
         array(plan_test_regel(array('art' => 'scheiben', 'n' => 1, 'min_lauf' => 60))),
         $u0, $g0);
     $pruefe('Zu kurzer Block ohne Nachschub faellt weg', $fp[0]['anzahl'], 0);
@@ -2142,17 +2265,17 @@ function plan_selbsttest()
      * Preise 30 10 ...: ohne Hysterese laeuft die Regel um 00:00 nicht.
      * Mit einem laufenden Block bis 01:00 laeuft sie trotzdem weiter. */
     $preise_h = plan_test_reihe($t0, array(30, 10, 10, 30, 30, 30, 30, 30));
-    $fp = plan_rechnen($preise_h, 3600, $t0,
+    $fp = $plan_alt($preise_h, 3600, $t0,
         array(plan_test_regel(array('art' => 'fenster', 'n' => 1))), $u0, $g0);
     $pruefe('Ohne Hysterese laeuft die Regel um 00:00 nicht', $fp[0]['aktiv'], 0);
     $u_h = array_merge($u0, array('laufend' => array(0 => $t0 + 3600)));
-    $fp = plan_rechnen($preise_h, 3600, $t0,
+    $fp = $plan_alt($preise_h, 3600, $t0,
         array(plan_test_regel(array('art' => 'fenster', 'n' => 1))), $u_h, $g0);
     $pruefe('Hysterese: der begonnene Block laeuft bis zu seinem Ende',
         array($fp[0]['aktiv'], $fp[0]['grund']), array(1, 'laeuft'));
     /* Eine abgelaufene Hysterese haelt nichts mehr fest. */
     $u_h2 = array_merge($u0, array('laufend' => array(0 => $t0 - 3600)));
-    $fp = plan_rechnen($preise_h, 3600, $t0,
+    $fp = $plan_alt($preise_h, 3600, $t0,
         array(plan_test_regel(array('art' => 'fenster', 'n' => 1))), $u_h2, $g0);
     $pruefe('Abgelaufene Hysterese haelt nichts fest', $fp[0]['aktiv'], 0);
 
@@ -2162,45 +2285,45 @@ function plan_selbsttest()
     $preise_b = plan_test_reihe($t0, array(10, 10, 10, 10, 20, 20, 20, 20));
     $g14 = array('budget_kw' => 10.0, 'pv_bonus' => 0.0, 'pv_schwelle' => 500,
                  'budget2_kw' => 4.0, 'budget2_von' => 0, 'budget2_bis' => 4);
-    $fp = plan_rechnen($preise_b, 3600, $t0,
+    $fp = $plan_alt($preise_b, 3600, $t0,
         array(plan_test_regel(array('art' => 'fenster', 'n' => 1, 'leistung' => 6.0))),
         $u0, $g14);
     $pruefe('Paragraf 14a: 6 kW weichen aus der Sperrzeit auf 04:00 aus',
         $fp[0]['start'], 4);
     /* Ohne das zweite Budget nimmt dieselbe Regel die billige Stunde. */
-    $fp = plan_rechnen($preise_b, 3600, $t0,
+    $fp = $plan_alt($preise_b, 3600, $t0,
         array(plan_test_regel(array('art' => 'fenster', 'n' => 1, 'leistung' => 6.0))),
         $u0, array('budget_kw' => 10.0, 'pv_bonus' => 0.0, 'pv_schwelle' => 500));
     $pruefe('Ohne zweites Budget nimmt sie 00:00', $fp[0]['start'], 0);
     /* 3 kW passen auch in der Sperrzeit. */
-    $fp = plan_rechnen($preise_b, 3600, $t0,
+    $fp = $plan_alt($preise_b, 3600, $t0,
         array(plan_test_regel(array('art' => 'fenster', 'n' => 1, 'leistung' => 3.0))),
         $u0, $g14);
     $pruefe('Paragraf 14a: 3 kW passen in die Sperrzeit', $fp[0]['start'], 0);
 
     /* ---- Frist zu knapp: fehlt und grund ----
      * n=5, aber die Frist um 02:00 laesst nur zwei Stunden zu. */
-    $fp = plan_rechnen($preise, 3600, $t0,
+    $fp = $plan_alt($preise, 3600, $t0,
         array(plan_test_regel(array('art' => 'fenster', 'n' => 5, 'frist' => 2))), $u0, $g0);
     $pruefe('Frist zu knapp: zwei von fuenf Stunden, drei fehlen',
         array($fp[0]['anzahl'], $fp[0]['noetig'], $fp[0]['fehlt']), array(2, 5, 3));
     /* Ohne Frist fehlt nichts. */
-    $fp = plan_rechnen($preise, 3600, $t0,
+    $fp = $plan_alt($preise, 3600, $t0,
         array(plan_test_regel(array('art' => 'fenster', 'n' => 5))), $u0, $g0);
     $pruefe('Ohne Frist fehlt nichts', $fp[0]['fehlt'], 0);
     /* Bei 'schwelle' gibt es keine Sollmenge - dort waere 'fehlt' eine
      * Falschaussage. */
-    $fp = plan_rechnen($preise, 3600, $t0,
+    $fp = $plan_alt($preise, 3600, $t0,
         array(plan_test_regel(array('art' => 'schwelle', 'schwelle' => 15))), $u0, $g0);
     $pruefe('Bei schwelle bleibt fehlt auf 0', $fp[0]['fehlt'], 0);
     /* Und wenn die Frist alles abschneidet: grund sagt, dass sie es war. */
-    $fp = plan_rechnen($preise, 3600, $t0 + 3 * 3600,
+    $fp = $plan_alt($preise, 3600, $t0 + 3 * 3600,
         array(plan_test_regel(array('art' => 'fenster', 'n' => 1, 'von' => 5, 'bis' => 7,
                                     'frist' => 4))), $u0, $g0);
     $pruefe('Frist schneidet alles ab: grund nennt die Frist',
         $fp[0]['grund'], 'frist');
     /* Gibt es ohnehin nichts, heisst der Grund 'keine' und nicht 'frist'. */
-    $fp = plan_rechnen(array(), 3600, $t0,
+    $fp = $plan_alt(array(), 3600, $t0,
         array(plan_test_regel(array('art' => 'fenster', 'n' => 1))), $u0, $g0);
     $pruefe('Ohne Preise heisst der Grund keine', $fp[0]['grund'], 'keine');
 
@@ -2218,7 +2341,7 @@ function plan_selbsttest()
      * sind - sonst laeuft das Geraet drei Stunden vor seinem Fenster. */
     $rh = plan_test_regel(array('art' => 'fenster', 'n' => 1, 'leistung' => 3.0,
         'von' => 2, 'bis' => 3));
-    $fph = plan_rechnen($ph, 3600, $t0, array($rh),
+    $fph = $plan_alt($ph, 3600, $t0, array($rh),
         array_merge($u0, array('laufend' => array(0 => $t0 + 4 * 3600))), $g0);
     $pruefe('Hysterese traegt keine Scheibe ausserhalb des Fensters nach',
         $fph[0]['slots'], array($t0 + 7200));
@@ -2229,7 +2352,7 @@ function plan_selbsttest()
      * fragen, stehen dort 6,0 kW. */
     $rh1 = plan_test_regel(array('art' => 'fenster', 'n' => 1, 'leistung' => 3.0, 'rang' => 10));
     $rh2 = plan_test_regel(array('art' => 'fenster', 'n' => 1, 'leistung' => 3.0, 'rang' => 20));
-    $fpb = plan_rechnen($ph, 3600, $t0, array($rh1, $rh2),
+    $fpb = $plan_alt($ph, 3600, $t0, array($rh1, $rh2),
         array_merge($u0, array('laufend' => array(1 => $t0 + 3 * 3600))),
         array_merge($g0, array('budget_kw' => 3.0)));
     $pruefe('Hysterese reisst das Leistungsbudget nicht',
@@ -2250,7 +2373,7 @@ function plan_selbsttest()
     $rn = plan_test_regel(array('art' => 'fenster', 'n' => 2, 'leistung' => 4.0,
         'neg' => 1, 'von' => 10, 'bis' => 16));
     $un = array_merge($u0, array('neg' => 1));
-    $fpn = plan_rechnen($pn, 3600, $t0, array($rn), $un, $g0);
+    $fpn = $plan_alt($pn, 3600, $t0, array($rn), $un, $g0);
     $pruefe('Negativpreis: die verschobene Energie steht da',
         $fpn[0]['kwh'], 4.0);
     $pruefe('Negativpreis: fehlt zaehlt die nachgetragene Scheibe mit',
@@ -2267,7 +2390,7 @@ function plan_selbsttest()
      * nicht laufen, und die Zahlen bleiben bei null. */
     $pn2 = $pn;
     $pn2[$t0] = 20.0;
-    $fpn2 = plan_rechnen($pn2, 3600, $t0, array($rn), array_merge($u0, array('neg' => 0)), $g0);
+    $fpn2 = $plan_alt($pn2, 3600, $t0, array($rn), array_merge($u0, array('neg' => 0)), $g0);
     $pruefe('Ohne Negativpreis laeuft dieselbe Regel nicht',
         array($fpn2[0]['aktiv'], $fpn2[0]['anzahl'], $fpn2[0]['kwh']),
         array(0, 0, 0.0));
@@ -2276,7 +2399,7 @@ function plan_selbsttest()
      * Preise 30 30 10 10 ...: sofort losfahren kostet zwei Stunden zu je
      * 30 ct, geplant sind zwei zu je 10 ct. Ersparnis 20 ct/kWh; bei
      * 3,7 kW mal zwei Stunden sind das 7,4 kWh und 1,48 Euro. */
-    $fp = plan_rechnen($preise, 3600, $t0,
+    $fp = $plan_alt($preise, 3600, $t0,
         array(plan_test_regel(array('art' => 'fenster', 'n' => 2, 'leistung' => 3.7))),
         $u0, $g0);
     $pruefe('Ersparnis: sofort 30 ct, geplant 10 ct, Vorteil 20 ct/kWh',
@@ -2286,28 +2409,28 @@ function plan_selbsttest()
         array($fp[0]['kwh'], $fp[0]['spart_eur']), array(7.4, 1.48));
     /* Eine eingetragene Energiemenge sticht die Rechnung aus Leistung mal
      * Laufzeit - sie ist die Angabe, die der Mensch kennt. */
-    $fp = plan_rechnen($preise, 3600, $t0,
+    $fp = $plan_alt($preise, 3600, $t0,
         array(plan_test_regel(array('art' => 'fenster', 'n' => 2, 'leistung' => 3.7,
                                     'energie' => 5.0))), $u0, $g0);
     $pruefe('Eingetragene Energiemenge gilt fuer die Euro-Rechnung',
         array($fp[0]['kwh'], $fp[0]['spart_eur']), array(5.0, 1.0));
 
     /* ---- Maengel an der Regel ---- */
-    $fp = plan_rechnen($preise, 3600, $t0,
+    $fp = $plan_alt($preise, 3600, $t0,
         array(plan_test_regel(array('energie' => 7.0, 'leistung' => 0.0))), $u0, $g0);
     $pruefe('Energie ohne Leistung wird gemeldet',
         $fp[0]['mangel'], 'energie_ohne_leistung');
-    $fp = plan_rechnen($preise, 3600, $t0,
+    $fp = $plan_alt($preise, 3600, $t0,
         array(plan_test_regel(array('soc_min' => 80, 'soc_max' => 20))), $u0, $g0);
     $pruefe('soc_min ueber soc_max wird gemeldet', $fp[0]['mangel'], 'soc_reihe');
-    $fp = plan_rechnen($preise, 3600, $t0,
+    $fp = $plan_alt($preise, 3600, $t0,
         array(plan_test_regel()), $u0, $g0);
     $pruefe('Eine saubere Regel meldet keinen Mangel', $fp[0]['mangel'], '');
 
     /* ---- Eine Regel ohne die Plugin-Felder darf nicht knallen ----
      * So sieht sie aus, wenn sie aus einer alten Sicherung kommt. Es darf
      * keine Warnung geben und der Grund darf nicht leer sein. */
-    $fp = plan_rechnen($preise, 3600, $t0, array(array('aktiv' => 1)), $u0, $g0);
+    $fp = $plan_alt($preise, 3600, $t0, array(array('aktiv' => 1)), $u0, $g0);
     $pruefe('Regel ohne Felder: kein Absturz, ein benannter Grund',
         $fp[0]['grund'] !== '', true);
 
@@ -2318,7 +2441,7 @@ function plan_selbsttest()
         plan_test_regel(array('art' => 'fenster', 'n' => 1, 'leistung' => 3.7, 'rang' => 1)),
         plan_test_regel(array('art' => 'fenster', 'n' => 1, 'leistung' => 2.0, 'rang' => 2)),
     );
-    $bel2 = plan_belegung(plan_rechnen($preise2, 3600, $t0, $regeln_s, $u0, $g0));
+    $bel2 = plan_belegung($plan_alt($preise2, 3600, $t0, $regeln_s, $u0, $g0));
     $pruefe('Belegung: zwei Regeln in derselben Stunde ergeben 5,7 kW',
         array(count($bel2), array_values($bel2)), array(1, array(5.7)));
 
@@ -2334,7 +2457,7 @@ function plan_selbsttest()
         plan_test_regel(array('art' => 'schwelle', 'schwelle' => -99, 'leistung' => 4.0,
                               'rang' => 3, 'neg' => 1)),
     );
-    $fp = plan_rechnen($preise, 3600, $t0, $regeln_n, array_merge($u0, array('neg' => 1)),
+    $fp = $plan_alt($preise, 3600, $t0, $regeln_n, array_merge($u0, array('neg' => 1)),
         array('budget_kw' => 9.0, 'pv_bonus' => 0.0, 'pv_schwelle' => 500));
     $pruefe('Negativpreis: zwei laufen, die dritte nicht',
         array($fp[0]['aktiv'], $fp[1]['aktiv'], $fp[2]['aktiv']), array(1, 1, 0));
@@ -2366,12 +2489,12 @@ function plan_selbsttest()
         plan_test_regel(array('art' => 'fenster', 'n' => 1, 'leistung' => 3.7, 'rang' => 1)),
         plan_test_regel(array('art' => 'fenster', 'n' => 1, 'leistung' => 3.7, 'rang' => 2)),
     );
-    $fp = plan_rechnen($preise2, 3600, $t0, $regeln_kante, $u0, $g74);
+    $fp = $plan_alt($preise2, 3600, $t0, $regeln_kante, $u0, $g74);
     $pruefe('Budget genau ausgeschoepft: 3,7 + 3,7 passen in 7,4',
         array($fp[0]['start'], $fp[1]['start'], $fp[1]['verdraengt']), array(2, 2, 0));
     /* Und ein Haar darunter passt es nicht mehr. */
     $g739 = array('budget_kw' => 7.39, 'pv_bonus' => 0.0, 'pv_schwelle' => 500);
-    $fp = plan_rechnen($preise2, 3600, $t0, $regeln_kante, $u0, $g739);
+    $fp = $plan_alt($preise2, 3600, $t0, $regeln_kante, $u0, $g739);
     $pruefe('Budget 7,39: die zweite Regel muss ausweichen',
         array($fp[0]['start'], $fp[1]['start']), array(2, 3));
 
@@ -2382,7 +2505,7 @@ function plan_selbsttest()
      * Stunden mitzaehlt, landet bei Stunde 0 mit drei Scheiben. */
     $vs_teil = plan_test_reihe($t0, array(10, 10, 10, 10, 30, 30, 30, 30,
                                           20, 20, 20, 20, 30, 30, 30, 30), 900);
-    $fp = plan_rechnen($vs_teil, 900, $t0 + 900,
+    $fp = $plan_alt($vs_teil, 900, $t0 + 900,
         array(plan_test_regel(array('art' => 'stunden', 'n' => 1))), $u0, $g0);
     $pruefe('Angebrochene Stunde gewinnt nicht - die volle Stunde 02:00 gewinnt',
         array($fp[0]['start'], $fp[0]['anzahl']), array(2, 4));
@@ -2390,13 +2513,13 @@ function plan_selbsttest()
     /* ---- PV-Sperre: Prognose GENAU auf der Schwelle ----
      * ">= Schwelle" sperrt, "> Schwelle" nicht. */
     $u_kante = array_merge($u0, array('pv_summe' => 25.0));
-    $fp = plan_rechnen($preise, 3600, $t0,
+    $fp = $plan_alt($preise, 3600, $t0,
         array(plan_test_regel(array('art' => 'schwelle', 'schwelle' => 99, 'pv_sperre' => 25.0))),
         $u_kante, $g0);
     $pruefe('PV-Sperre greift, wenn die Prognose die Schwelle genau trifft',
         array($fp[0]['aktiv'], $fp[0]['gesperrt']), array(0, 'pv'));
     $u_knapp = array_merge($u0, array('pv_summe' => 24.999));
-    $fp = plan_rechnen($preise, 3600, $t0,
+    $fp = $plan_alt($preise, 3600, $t0,
         array(plan_test_regel(array('art' => 'schwelle', 'schwelle' => 99, 'pv_sperre' => 25.0))),
         $u_knapp, $g0);
     $pruefe('Ein Tausendstel darunter sperrt sie nicht', $fp[0]['gesperrt'], '');
@@ -2411,17 +2534,17 @@ function plan_selbsttest()
      * Speichergrenzen sind ein Bereich ("von 20 bis 80"), und die Raender
      * eines Bereichs gehoeren dazu. */
     $u_soc_kante = array_merge($u0, array('soc' => 20.0));
-    $fp = plan_rechnen($preise, 3600, $t0,
+    $fp = $plan_alt($preise, 3600, $t0,
         array(plan_test_regel(array('art' => 'schwelle', 'schwelle' => 99, 'soc_min' => 20))),
         $u_soc_kante, $g0);
     $pruefe('soc_min 20 bei Stand 20: laeuft, sperrt nicht', $fp[0]['gesperrt'], '');
     $u_soc_unter = array_merge($u0, array('soc' => 19.9));
-    $fp = plan_rechnen($preise, 3600, $t0,
+    $fp = $plan_alt($preise, 3600, $t0,
         array(plan_test_regel(array('art' => 'schwelle', 'schwelle' => 99, 'soc_min' => 20))),
         $u_soc_unter, $g0);
     $pruefe('Ein Zehntel darunter sperrt', $fp[0]['gesperrt'], 'soc_min');
     $u_soc_oben = array_merge($u0, array('soc' => 80.0));
-    $fp = plan_rechnen($preise, 3600, $t0,
+    $fp = $plan_alt($preise, 3600, $t0,
         array(plan_test_regel(array('art' => 'schwelle', 'schwelle' => 99, 'soc_max' => 80))),
         $u_soc_oben, $g0);
     $pruefe('soc_max 80 bei Stand 80: laeuft, sperrt nicht', $fp[0]['gesperrt'], '');
@@ -2465,7 +2588,7 @@ function plan_selbsttest()
      * "laeuft noch X Stunden" in der Visualisierung - und niemand merkt es,
      * weil sie plausibel aussieht. */
     $p_rest = plan_test_reihe($t0, array(10, 10, 10, 50, 50, 50));
-    $fp = plan_rechnen($p_rest, 3600, $t0,
+    $fp = $plan_alt($p_rest, 3600, $t0,
         array(plan_test_regel(array('art' => 'schwelle', 'schwelle' => 20))), $u0, $g0);
     $pruefe('rest: drei zusammenhaengende Stunden ab jetzt sind 180 Minuten',
         array($fp[0]['aktiv'], $fp[0]['rest']), array(1, 180));
@@ -2473,7 +2596,7 @@ function plan_selbsttest()
      * Ohne diesen Fall wuerde ein rest, das immer gerechnet wird, nicht
      * auffallen. */
     $p_spaet = plan_test_reihe($t0, array(50, 50, 10, 10));
-    $fp = plan_rechnen($p_spaet, 3600, $t0,
+    $fp = $plan_alt($p_spaet, 3600, $t0,
         array(plan_test_regel(array('art' => 'schwelle', 'schwelle' => 20))), $u0, $g0);
     $pruefe('rest bleibt 0, solange die Regel nicht laeuft',
         array($fp[0]['aktiv'], $fp[0]['rest']), array(0, 0));
@@ -2489,7 +2612,7 @@ function plan_selbsttest()
      * ganze Reihe, und startmin kam erwartungsgemaess als 0 heraus. Der
      * Fall war rot, und er hatte recht. */
     $p_min = plan_test_reihe($t0, array(50, 50, 10, 10, 10, 10, 50, 50), 900);
-    $fp = plan_rechnen($p_min, 900, $t0,
+    $fp = $plan_alt($p_min, 900, $t0,
         array(plan_test_regel(array('art' => 'fenster', 'n' => 1))), $u0, $g0);
     $pruefe('startmin: das guenstigste Viertelstundenfenster beginnt um :30',
         array($fp[0]['start'], $fp[0]['startmin'], $fp[0]['anzahl']), array(0, 30, 4));
@@ -2505,7 +2628,7 @@ function plan_selbsttest()
      * schuld. Zu unterscheiden von 'keine', sonst sucht der Anwender den
      * Fehler bei den Preisen statt bei seiner Leistungsgrenze. */
     $p_budget = plan_test_reihe($t0, array(10, 50, 50));
-    $fp = plan_rechnen($p_budget, 3600, $t0, array(
+    $fp = $plan_alt($p_budget, 3600, $t0, array(
         plan_test_regel(array('art' => 'schwelle', 'schwelle' => 20,
                               'leistung' => 3.7, 'rang' => 1)),
         plan_test_regel(array('art' => 'schwelle', 'schwelle' => 20,
@@ -2615,6 +2738,125 @@ function plan_selbsttest()
         plan_slots_noetig(array('energie' => 6.9, 'leistung' => 2.3), 900), 12);
     $pruefe('Ein krummes Paar wird weiterhin aufgerundet',
         plan_slots_noetig(array('energie' => 7.0, 'leistung' => 2.3), 3600), 4);
+
+    /* ---------- Entscheidung Nr. 30: kein Rang ohne zwoelf Preisstunden ----------
+     *
+     * Der gemessene Fall aus aWATTar: abends ohne die Preise fuer morgen
+     * sind nur noch die Stunden bis Mitternacht bekannt. Die Reihe hier
+     * kostet tagsueber wenig und abends viel; um 20 Uhr ist die teure
+     * Stunde 20 die guenstigste der vier bekannten.
+     *
+     * EICHUNG: nimmt man die Abfrage in plan_rechnen() heraus, gehen die
+     * Faelle "4 Preisstunden" und "11 Preisstunden" rot; macht man aus >=
+     * ein >, geht "genau 12 Preisstunden" rot. Die Gegenprobe mit
+     * $plan_alt zeigt, dass die Regel ohne die Horizontregel wirklich
+     * einschaltete - sonst bewiese das Ausbleiben nichts. */
+    $pa = plan_test_reihe($t0, array(10, 10, 10, 10, 10, 10, 10, 10, 20, 20, 20, 20,
+                                     25, 25, 25, 25, 25, 25, 25, 25, 40, 45, 50, 55));
+    $j20 = $t0 + 20 * 3600;
+    $pruefe('Preisstunden: um 20 Uhr ohne morgen sind es 4',
+        plan_preisstunden($pa, $j20, 3600), 4.0);
+    $pruefe('Preisstunden: Vergangenes zaehlt nicht, die laufende Stunde schon',
+        plan_preisstunden($pa, $t0 + 13 * 3600, 3600), 11.0);
+    $pruefe('Preisstunden: hoechstens die naechsten 24',
+        plan_preisstunden(plan_test_reihe($t0, array_fill(0, 30, 20.0)), $t0, 3600), 24.0);
+    $pruefe('Preisstunden: 47 Viertelstunden sind 11,75',
+        plan_preisstunden(plan_test_reihe($t0, array_fill(0, 47, 20.0), 900), $t0, 900), 11.75);
+    $pruefe('Preisstunden: 48 Viertelstunden sind 12',
+        plan_preisstunden(plan_test_reihe($t0, array_fill(0, 48, 20.0), 900), $t0, 900), 12.0);
+    $pruefe('Die Schwelle ist die benannte Konstante', PLAN_RANG_MIN_STUNDEN, 12);
+
+    $kurz = function ($e) {
+        return array($e['aktiv'], $e['grund'], $e['anzahl'], $e['in'], $e['slots']);
+    };
+    $r30s = plan_test_regel(array('art' => 'stunden', 'n' => 1));
+    $fp = $plan_alt($pa, 3600, $j20, array($r30s), $u0, $g0);
+    $pruefe('Gegenprobe ohne Horizontregel: um 20 Uhr schaltet die teure Stunde ein',
+        array($fp[0]['aktiv'], $fp[0]['grund']), array(1, 'stunden'));
+    $fp = plan_rechnen($pa, 3600, $j20, array($r30s), $u0, $g0);
+    $pruefe('4 Preisstunden: guenstigste Stunden schaltet nicht',
+        $kurz($fp[0]), array(0, 'horizont', 0, -1, array()));
+    $pruefe('4 Preisstunden: noetig und fehlt nennen, was ungeplant bleibt',
+        array($fp[0]['noetig'], $fp[0]['fehlt'], $fp[0]['ct']), array(1, 1, 0.0));
+    $fp = plan_rechnen($pa, 3600, $j20, array(plan_test_regel(array('art' => 'fenster', 'n' => 1))), $u0, $g0);
+    $pruefe('4 Preisstunden: guenstigstes Fenster schaltet nicht',
+        $kurz($fp[0]), array(0, 'horizont', 0, -1, array()));
+    $fp = plan_rechnen($pa, 3600, $j20, array(plan_test_regel(array('art' => 'scheiben', 'n' => 1))), $u0, $g0);
+    $pruefe('4 Preisstunden: guenstigste Scheiben schaltet nicht',
+        $kurz($fp[0]), array(0, 'horizont', 0, -1, array()));
+    $fp = plan_rechnen($pa, 3600, $t0 + 13 * 3600, array($r30s), $u0, $g0);
+    $pruefe('11 Preisstunden: guenstigste Stunden schaltet nicht',
+        $kurz($fp[0]), array(0, 'horizont', 0, -1, array()));
+    $fp = plan_rechnen($pa, 3600, $t0 + 12 * 3600, array($r30s), $u0, $g0);
+    $pruefe('Genau 12 Preisstunden: die Regel urteilt wieder',
+        $kurz($fp[0]), array(1, 'stunden', 1, 0, array($t0 + 12 * 3600)));
+    /* Schwelle und Tagesmittel fragen nach keinem Rang. */
+    $fp = plan_rechnen($pa, 3600, $j20,
+        array(plan_test_regel(array('art' => 'schwelle', 'schwelle' => 45.0))), $u0, $g0);
+    $pruefe('4 Preisstunden: die Schwelle rechnet weiter',
+        array($fp[0]['aktiv'], $fp[0]['grund']), array(1, 'schwelle'));
+    $fp = plan_rechnen($pa, 3600, $j20,
+        array(plan_test_regel(array('art' => 'mittel', 'prozent' => 0))), $u0,
+        $g0);
+    $pruefe('4 Preisstunden: das Tagesmittel rechnet weiter (40 ct ueber 20 ct)',
+        array($fp[0]['aktiv'], $fp[0]['grund']), array(0, 'keine'));
+    /* Auch ein negativer Preis macht aus vier Stunden keinen Rang. */
+    $pa_neg = $pa;
+    $pa_neg[$j20] = -5.0;
+    $fp = plan_rechnen($pa_neg, 3600, $j20, array(plan_test_regel(array('art' => 'stunden', 'n' => 1, 'neg' => 1))),
+        array_merge($u0, array('neg' => 1)), $g0);
+    $pruefe('4 Preisstunden, Preis negativ: die Regel bleibt aus',
+        $kurz($fp[0]), array(0, 'horizont', 0, -1, array()));
+    /* Eine Regel ohne Rang bucht kein Budget - die naechste bekommt es. */
+    $fp = plan_rechnen($pa, 3600, $j20, array(
+        plan_test_regel(array('art' => 'stunden', 'n' => 1, 'rang' => 1, 'leistung' => 3.0)),
+        plan_test_regel(array('art' => 'schwelle', 'schwelle' => 45.0, 'rang' => 2, 'leistung' => 3.0)),
+    ), $u0, array('budget_kw' => 3.0, 'pv_bonus' => 0.0, 'pv_schwelle' => 500));
+    $pruefe('4 Preisstunden: die Regel ohne Rang bucht kein Budget',
+        array($fp[0]['grund'], $fp[1]['aktiv'], $fp[1]['verdraengt'], plan_belegung($fp)),
+        array('horizont', 1, 0, array($j20 => 3.0, $j20 + 3600 => 3.0)));
+    /* Eine Sperre bleibt sichtbar. */
+    $fp = plan_rechnen($pa, 3600, $j20,
+        array(plan_test_regel(array('art' => 'stunden', 'n' => 1, 'pv_sperre' => 5.0))),
+        array_merge($u0, array('pv_summe' => 9.0)), $g0);
+    $pruefe('4 Preisstunden: eine PV-Sperre wird weiter genannt',
+        array($fp[0]['grund'], $fp[0]['gesperrt']), array('horizont', 'pv'));
+
+    /* ---------- PV-Prognose: nur endliche, nicht negative Werte (Befund 9) ----------
+     *
+     * EICHUNG: nimmt man die Pruefung der Betragssumme heraus, gehen
+     * "zwei Werte 1e308" und der Lastgang-Fall mit INF rot; nimmt man die Pruefung auf negative Werte heraus, geht
+     * "-5000 Wh" rot; nimmt man $nur_positiv aus der Bedingung, geht der
+     * Lastgang-Fall rot. */
+    $pv_ein = function ($werte) {
+        return array('result' => array('watt_hours_period' => $werte));
+    };
+    list($w9, $m9) = plan_pv_lesen($pv_ein(array($t0 + 36000 => 1e308, $t0 + 37800 => 1e308)),
+        'forecast_solar', '', '', '', 'wh', 3600);
+    $pruefe('PV: zwei Werte 1e308 in derselben Stunde werden abgewiesen',
+        array($w9, $m9), array(array(), 'WERTE_UNGUELTIG'));
+    list($w9, $m9) = plan_pv_lesen($pv_ein(array($t0 + 36000 => '1e400', $t0 + 39600 => 500)),
+        'forecast_solar', '', '', '', 'wh', 3600);
+    $pruefe('PV: ein unendlicher Wert ("1e400") weist die ganze Antwort ab',
+        array($w9, $m9), array(array(), 'WERTE_UNGUELTIG'));
+    list($w9, $m9) = plan_pv_lesen($pv_ein(array($t0 + 36000 => -5000, $t0 + 39600 => 500)),
+        'forecast_solar', '', '', '', 'wh', 3600);
+    $pruefe('PV: -5000 Wh werden abgewiesen',
+        array($w9, $m9), array(array(), 'WERTE_UNGUELTIG'));
+    list($w9, $m9) = plan_pv_lesen($pv_ein(array($t0 + 36000 => 0, $t0 + 39600 => 500)),
+        'forecast_solar', '', '', '', 'wh', 3600);
+    $pruefe('PV: 0 und 500 Wh werden angenommen',
+        array($w9, $m9), array(array($t0 + 36000 => 0.0, $t0 + 39600 => 500.0), ''));
+    list($w9, $m9) = plan_pv_lesen($pv_ein(array($t0 + 36000 => -5000, $t0 + 39600 => 500)),
+        'forecast_solar', '', '', '', 'wh', 3600, false);
+    $pruefe('Lastgang: ein negativer Wert bleibt erlaubt, wenn der Aufrufer es sagt',
+        array($w9, $m9), array(array($t0 + 36000 => -5000.0, $t0 + 39600 => 500.0), ''));
+    list($w9, $m9) = plan_pv_lesen($pv_ein(array($t0 + 36000 => 1e308, $t0 + 37800 => 1e308)),
+        'forecast_solar', '', '', '', 'wh', 3600, false);
+    $pruefe('Lastgang: INF bleibt auch dort abgewiesen',
+        array($w9, $m9), array(array(), 'WERTE_UNGUELTIG'));
+    $pruefe('PV-Summe einer angenommenen Prognose laesst sich speichern',
+        json_encode(plan_pv_summe(array($t0 => 1e307, $t0 + 3600 => 1e307), $t0, 24)) !== false, true);
 
     /* Zurueckstellen, BEVOR die Kopfzeile gebaut wird - sonst traegt sie
      * die gesetzte Zeitzone als die des Geraets ein und behauptete genau

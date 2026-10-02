@@ -1233,8 +1233,15 @@ if (!empty($oc_cfg['mqtt_enabled']) && $oc_gw['vorhanden'] && !$oc_gw['autostart
   <div class="sm-kachel"><small><?php echo oc_t('KACHEL.STUNDE'); ?></small>
     <b><?php echo oc_n($oc_st['cur_h'], 2); ?></b><small>ct/kWh</small></div>
   <div class="sm-kachel"><small><?php echo oc_t('KACHEL.RANG'); ?></small>
+<?php if (!empty($oc_st['ok']) && isset($oc_st['rang_ok']) && empty($oc_st['rang_ok'])) {
+    // Planer-30 (Entscheidung Nr. 30): ohne gedeckten Horizont kein Rang.
+?>
+    <b>&ndash;</b><small><?php echo oc_e(sprintf(oc_t('TEXT.RANG_HORIZONT'),
+        str_replace('.', ',', (string) (float) $oc_st['n_bekannt']), PLAN_RANG_MIN_STUNDEN)); ?></small></div>
+<?php } else { ?>
     <b><?php echo (int) $oc_st['rank']; ?></b><small><?php echo oc_t('KACHEL.VON'); ?>
     <?php echo (int) $oc_st['n']; ?></small></div>
+<?php } ?>
   <div class="sm-kachel"><small><?php echo oc_t('KACHEL.NIVEAU'); ?></small>
     <b><?php echo $oc_st['level'] == 1 ? oc_t('TEXT.GUENSTIG')
         : ($oc_st['level'] == 3 ? oc_t('TEXT.TEUER') : oc_t('TEXT.NORMAL')); ?></b>
@@ -2097,13 +2104,17 @@ $oc_bausteine = array(
     array(13, 'LOX.T_SCHWELLE',  'SW_Guenstig',                  'LOX.P_SW_G',      'LOX.E_1'),
     array(14, 'LOX.T_SCHWELLE',  'SW_Teuer',                     'LOX.P_SW_T',      'LOX.E_1'),
     array(15, 'LOX.T_VERGLEICH', 'VG_Rang_Guenstig',             'LOX.P_VG_RANG',   'LOX.E_3'),
-    array(16, 'LOX.T_ODER',      'OD_Laden_frei',                'LOX.P_OD',        'LOX.E_ODER'),
-    array(17, 'LOX.T_UND',       'UN_Laden',                     'LOX.P_UN',        'LOX.E_UND'),
-    array(18, 'LOX.T_MERKER',    'MK_Daten_alt',                 'LOX.P_MK_ALT',    'LOX.E_6'),
-    array(19, 'LOX.T_ODER',      'OD_Meldung',                   'LOX.P_OD_MELD',   'LOX.E_MELD'),
-    array(20, 'LOX.T_BENACHR',   'BN_Strompreis',                'LOX.P_BN',        'LOX.E_19'),
-    array(21, 'LOX.T_TEXTGEN',   'TG_Ansage',                    'LOX.P_TG',        'LOX.E_10'),
-    array(22, 'LOX.T_STATISTIK', 'SG_Preisverlauf',              'LOX.P_SG',        'LOX.E_1'),
+    // Planer-30: Rang -1 heisst auch "weniger als 12 kuenftige Preisstunden" - #16 haelt das auf.
+    array(16, 'LOX.T_VERGLEICH', 'VG_Rang_bekannt',              'LOX.P_VG_BEKANNT', 'LOX.E_3'),
+    array(17, 'LOX.T_ODER',      'OD_Laden_frei',                'LOX.P_OD',        'LOX.E_ODER'),
+    array(18, 'LOX.T_UND',       'UN_Laden',                     'LOX.P_UN',        'LOX.E_UND'),
+    array(19, 'LOX.T_MERKER',    'MK_Daten_alt',                 'LOX.P_MK_ALT',    'LOX.E_6'),
+    // Regel A4: ein UND/ODER hat hoechstens zwei Eingaenge - deshalb zwei ODER-Bausteine.
+    array(20, 'LOX.T_ODER',      'OD_Meldung',                   'LOX.P_OD_MELD',   'LOX.E_MELD'),
+    array(21, 'LOX.T_ODER',      'OD_Meldung_Test',              'LOX.P_OD_MELD2',  'LOX.E_MELD2'),
+    array(22, 'LOX.T_BENACHR',   'BN_Strompreis',                'LOX.P_BN',        'LOX.E_21'),
+    array(23, 'LOX.T_TEXTGEN',   'TG_Ansage',                    'LOX.P_TG',        'LOX.E_10'),
+    array(24, 'LOX.T_STATISTIK', 'SG_Preisverlauf',              'LOX.P_SG',        'LOX.E_1'),
 );
 foreach ($oc_bausteine as $oc_b) { ?>
 <tr><td><?php echo $oc_b[0]; ?></td><td><?php echo oc_t($oc_b[1]); ?></td>

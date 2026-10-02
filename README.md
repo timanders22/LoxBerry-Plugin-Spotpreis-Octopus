@@ -7,6 +7,16 @@ HTTP-Endpunkt als Rückfallebene.
 
 ---
 
+## Was 1.1.20 behebt
+
+Rang und Fahrplaner nur mit 12 Preisstunden, Baustein-Liste nach A4 (Planer-30, Entscheidung 30).
+Gemessen am Fahrplaner-Selbsttest (195 Fälle) und mit Proben abends/morgens unter PHP 7.4 und 8.5; nicht am Gerät.
+
+* **Rang nur mit 12 künftigen Preisstunden (Entscheidung 30):** `rank`, `rankd` und `rank_h` sind −1 („nicht bekannt“), solange weniger als 12 künftige Preisstunden bekannt sind. Das betrifft vor allem den Abend, bevor die Preise für morgen da sind. Bisher galt dann die teure Abendviertelstunde als „Rang 1“. Die Kachel „Rang“ und das Protokoll nennen den Grund.
+* **Schaltregeln:** „günstigste Stunden“, „Fenster“ und „günstigste Viertelstunden“ stehen dann auf 0, mit dem Grund „zu wenige künftige Preisstunden“ (Fahrplaner 1.1.8). „Schwelle“ und „Tagesmittel“ rechnen weiter.
+* **Baustein-Liste (Schritt 6), bitte in Loxone nachziehen:** Neu ist #16 „Rang bekannt“ (Rang ≥ 1). Das UND „Laden“ (#18) hängt jetzt an #17 und #16 statt an ok, weil −1 die Abfrage „Rang ≤ N“ ebenfalls erfüllt. Die Meldung läuft über zwei ODER-Bausteine (#20, #21), weil ein ODER höchstens zwei Eingänge hat. Ab #16 verschieben sich die Nummern.
+* **PV-Prognose:** Eine Antwort mit unendlich großen oder negativen Werten wird ganz verworfen und gemeldet. Das Verbrauchsprofil darf weiterhin negative Werte enthalten.
+
 ## Was 1.1.19 behebt
 
 Ansage-3: Ausgabe über Google-Lautsprecher. Gemessen an einer Attrappe und am echten Endpunkt aus Chromecast 4 Lox NG 1.3.15 (Dienst-Attrappe) unter PHP 7.4 und 8.5; die Ausgabe über Alexa NG und alle übrigen Ausgabearten messen vorher = nachher gleich. Nicht am Gerät, nicht an echten Lautsprechern.

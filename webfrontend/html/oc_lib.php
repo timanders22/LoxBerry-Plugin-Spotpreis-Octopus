@@ -2709,6 +2709,18 @@ function oc_state($force = false)
     foreach ($wh as $v) { if ($v < $curh) { $rangh++; } }
     if (count($wh)) { $rangh = min($rangh, count($wh)); }
 
+    /* EIN RANG BRAUCHT EINEN GEDECKTEN HORIZONT (Planer-30, Entscheidung
+     * Nr. 30 vom 01.10.2026, hier sinngemaess). Gemessen in der
+     * Schwesterlinie aWATTar: abends ohne die Preise fuer morgen waren nur
+     * noch vier Stunden bekannt, und die teure Abendstunde galt als "Rang 1
+     * von 4". Gezaehlt wird wie im Planer (plan_preisstunden: die laufende
+     * Viertelstunde mit, hoechstens 24 Stunden); unter
+     * PLAN_RANG_MIN_STUNDEN tragen rank, rankd und rank_h -1 - die
+     * Schreibweise fuer "nicht bekannt", die sie ohne Preise schon tragen.
+     * Wie viele Stunden bekannt sind, steht in n_bekannt. */
+    $n_bekannt = plan_preisstunden($fenster24, $slotstart, 900);
+    $rang_ok = ($n_bekannt >= PLAN_RANG_MIN_STUNDEN) ? 1 : 0;
+
     /* OHNE GUELTIGE PREISE IST DAS NIVEAU NICHT BEKANNT.
      *
      * Bis 1.1.8 stand hier 2 als Anfangswert, und 2 heisst laut
@@ -2757,11 +2769,14 @@ function oc_state($force = false)
          * derselben Aufzaehlung. Alle drei tragen jetzt -1; die 99 war
          * nirgends beschrieben und deshalb keine Zusage. -1 ist die
          * Schreibweise, die dieses Plugin ohnehin fuehrt. */
-        'rank'        => count($werte) ? $rang : -1,
-        'rankd'       => count($werte) ? count($werte) + 1 - $rang : -1,
+        'rank'        => (count($werte) && $rang_ok) ? $rang : -1,
+        'rankd'       => (count($werte) && $rang_ok) ? count($werte) + 1 - $rang : -1,
         'n'           => count($werte),
-        'rank_h'      => count($wh) ? $rangh : -1,
+        'rank_h'      => (count($wh) && $rang_ok) ? $rangh : -1,
         'n_h'         => count($wh),
+        // Planer-30: ob die bekannten Preise fuer einen Rang reichen, und wie viele.
+        'rang_ok'     => $rang_ok,
+        'n_bekannt'   => $n_bekannt,
         'level'       => $level,
         'heute'       => $heute !== null ? $heute : oc_tagstats_leer(),
         'morgen'      => $morgen !== null ? $morgen : oc_tagstats_leer(),
@@ -2870,6 +2885,8 @@ function oc_state($force = false)
     @file_put_contents($cache, json_encode($st));
 
     oc_log_if_changed('zustand', 'jetzt=' . $st['cur'] . ' ct rang=' . $st['rank'] . '/' . $st['n']
+        . ($st['ok'] && !$st['rang_ok'] ? ' (kein Rang: nur ' . $st['n_bekannt']
+           . ' kuenftige Preisstunden bekannt, mindestens ' . PLAN_RANG_MIN_STUNDEN . ')' : '')
         . ' niveau=' . $st['level'] . ' morgen=' . $st['tomorrow_ok'] . ' demo=' . $st['demo']
         . ($st['cur_fehlt'] && $st['ok'] ? ' (Ersatzwert: laufende Viertelstunde fehlt)' : ''));
     return $st;
@@ -5837,8 +5854,10 @@ function oc_verbrauch($force = false)
         @file_put_contents($cache, json_encode($erg));
         return $erg;
     }
+    /* false: ein Lastgang darf negative Werte tragen (Einspeisung) - wie bisher.
+     * Nicht endliche Werte weist planer.php seit 1.1.8 immer ab (WERTE_UNGUELTIG). */
     list($werte, $m) = plan_pv_lesen($roh, $cfg['verbrauch_quelle'], $cfg['verbrauch_pfad'],
-        $cfg['verbrauch_zeitfeld'], $cfg['verbrauch_wertfeld'], $cfg['verbrauch_einheit'], 3600);
+        $cfg['verbrauch_zeitfeld'], $cfg['verbrauch_wertfeld'], $cfg['verbrauch_einheit'], 3600, false);
     $erg['meldung'] = $m;
     if ($werte) {
         /* Aus den Stundenwerten ein Gewichtsprofil bilden: je Stunde des
