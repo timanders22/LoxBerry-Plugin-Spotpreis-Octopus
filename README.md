@@ -7,6 +7,33 @@ HTTP-Endpunkt als Rückfallebene.
 
 ---
 
+## Was 1.1.21 behebt
+
+Gemeinsame Sprachausgabe, Ansagetext nicht mehr im Protokoll (Entscheidung 40, Stufe 1).
+Gemessen an Attrappen für Alexa-NG,
+Chromecast 4 Lox NG, Music Server, MusicServer4Home und eine eigene Vorlage, unter PHP 7.4 und 8.5, je ohne und
+mit php-curl. Nicht am Gerät, nicht an echten Lautsprechern.
+
+* **Der Ansagetext steht nicht mehr im Protokoll.** Bisher stand er dort bei Alexa-NG, beim Music Server und bei
+  einer eigenen Vorlage im Wortlaut. Jetzt steht nur seine Länge, etwa „Ansage gesendet: 89 Zeichen -> OK“.
+* **Die Antwort auf `?aktion=say` nennt nur noch die Länge des Texts.** Statt `SAY;OK=1;GESPERRT=0;TEXT=<Ansage>`
+  kommt `SAY;OK=1;GESPERRT=0;TEXTLAENGE=89`. `OK=` und `GESPERRT=` bleiben, wie sie waren.
+* **Beim Original-Audioserver bleibt `TEXT=`.** Dort gibt Loxone den Text selbst über den Textgenerator aus und
+  braucht ihn deshalb in der Antwort.
+* **Alexa-NG wird über den Webport dieses LoxBerry gerufen.** Bisher ging die Ansage fest an Port 80. Auf einem
+  LoxBerry mit anderem Webport kam deshalb keine Alexa-Ansage an; jetzt kommt sie an.
+* Music Server und eigene Vorlage: Eine Weiterleitung (HTTP 3xx) gilt nicht mehr als „gesendet“. Gesendet ist
+  eine Ansage nur noch bei HTTP 2xx.
+* Ansagen an Alexa-NG und an den Music Server gehen nicht mehr über einen Proxy aus der Umgebung. Für
+  Chromecast 4 Lox NG galt das schon.
+* Neue Datei `webfrontend/html/sprachausgabe.php`: die gemeinsame Sprachausgabe des Hauses (Fassung 1.0.2), in
+  allen Linien mit Sprachausgabe byte-gleich.
+* **Unverändert:** Einstellungen, Feldnamen, gespeicherte Werte und die Sicherungsdatei. Sicherungen aus 1.1.17
+  (ohne Alexa-NG) und 1.1.18 (ohne Google-Lautsprecher) lassen sich weiter zurückspielen; die hinterlegten
+  Sprechtoken bleiben dabei stehen.
+
+**In Loxone:** Wer aus der Antwort den Text `TEXT=` gelesen hat, liest jetzt `TEXTLAENGE=` (außer beim Original-Audioserver).
+
 ## Was 1.1.20 behebt
 
 Rang und Fahrplaner nur mit 12 Preisstunden, Baustein-Liste nach A4 (Planer-30, Entscheidung 30).
@@ -1134,7 +1161,7 @@ Ohne Vertrag lässt sich alles über den **Demo-Modus** durchspielen.
 Für Ansagen über Echo-Geräte gibt es den Ausgabeweg **Alexa-NG** – dafür muss
 das Plugin [Alexa-NG](https://github.com/timanders22/LoxBerry-Plugin-Alexa-NG)
 auf demselben LoxBerry laufen. Octopus schickt die Ansage per POST an
-`http://127.0.0.1/plugins/alexang/index.php` (`aktion=sprechen`, Sprechtoken,
+`http://127.0.0.1:<Webport>/plugins/alexang/index.php` (`aktion=sprechen`, Sprechtoken,
 Gerät, Text); nur `SPRECHEN;OK=1` gilt als gesendet, sonst nennen Testansage
 und Protokoll Code und Grund. Ab Werk ist der Weg nicht gewählt.
 
@@ -1251,8 +1278,10 @@ dort — es wäre sonst ohne Token über HTTP erreichbar.
   eigenen Haken. Dasselbe gilt für das **Sprechtoken von Alexa-NG** und das
   eigene **Sprechtoken für Chromecast 4 Lox NG**; sie stehen nie in einer
   Adresse, nie im Protokoll, nie in der Sicherung und kommen nie ins Formular
-  zurück. Bei der Ausgabeart Google-Lautsprecher steht auch der Ansagetext
-  nicht im Protokoll, nur seine Länge.
+  zurück. Vom Ansagetext steht bei keiner Ausgabeart etwas im Protokoll außer
+  seiner Länge; ebenso nennt die Antwort auf `aktion=say` nur die Länge
+  (`TEXTLAENGE=`). Nur beim Original-Audioserver steht der Text in der Antwort
+  (`TEXT=`), weil Loxone ihn dort über den Textgenerator ausgibt.
 * Bei einer **Beanstandung wird nichts gespeichert** – in keinem Formular,
   auch nicht die übrigen richtigen Felder. Dazu zählt, was früher still
   zurechtgebogen wurde: fehlende Feldnamen oder ein fehlender Pfad einer

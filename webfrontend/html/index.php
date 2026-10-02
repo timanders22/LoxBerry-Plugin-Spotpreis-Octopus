@@ -267,14 +267,15 @@ if ($aktion === 'say' || $aktion === 'saytomorrow') {
     /* 20 Sekunden: lang genug, dass eine Schleife nicht durchkommt, kurz
      * genug, dass zwei gewollte Ansagen hintereinander moeglich bleiben. */
     if (!oc_sperre_frei('say', 20)) {
-        echo "SAY;OK=0;GESPERRT=1;TEXT=\n";
+        echo 'SAY;OK=0;GESPERRT=1;' . oc_say_feld('') . "\n";
         exit;
     }
     $st = oc_state();
     $text = $aktion === 'saytomorrow' ? oc_tomorrow_text($st) : oc_announce_text($st);
     if ($text === '') { $text = oc_t('ANSAGE.TEST_LEER'); }
     $ok = oc_say($text);
-    echo 'SAY;OK=' . ($ok ? 1 : 0) . ';GESPERRT=0;TEXT=' . oc_mqtt_wert_saeubern($text) . "\n";
+    /* Seit 1.1.21 (Nr. 40): vom Text nur die Laenge, ausser beim Original-Audioserver. */
+    echo 'SAY;OK=' . ($ok ? 1 : 0) . ';GESPERRT=0;' . oc_say_feld($text) . "\n";
     exit;
 }
 

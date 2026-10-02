@@ -42,6 +42,12 @@ define('OC_API', 'https://api.oeg-kraken.energy/v1/graphql/');
  * Spotpreis-aWATTar-Plugin - Frist, Rangfolge, Leistungsbudget und
  * PV-Gutschrift stecken dort. Naeheres im Kopf von planer.php. */
 require_once __DIR__ . '/planer.php';
+/* Die gemeinsame Sprachausgabe (seit 1.1.21, Nr. 36 b). Eigene Datei daneben,
+ * byteweise gleich mit der Stammfassung Werkzeuge/gemeinsam/sprachausgabe.php
+ * im Arbeitsordner und mit den Abschriften der anderen Linien; Naeheres im
+ * Kopf von sprachausgabe.php. Sie tut beim Laden nichts ausser Funktionen
+ * anzulegen und antwortet bei direktem Aufruf mit 403. */
+require_once __DIR__ . '/sprachausgabe.php';
 
 
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
@@ -4281,16 +4287,70 @@ function oc_mqtt_publish($st = null, $nur_lebenszeichen = false, $erzwingen = fa
  * Endpunkt auf demselben LoxBerry: aktion=sprechen, token, geraet (leer =
  * Standardgeraet, dann nicht mitgeschickt), text. Das Token steht NIE in einer
  * Adresse (Adressen landen in Protokollen von Webservern). Erfolg ist nur eine
- * Antwort, die mit SPRECHEN;OK=1 beginnt. Die Adresse ist fest; ein Pruefstand
- * kann sie vor dem Laden der Bibliothek setzen. */
-if (!defined('OC_ALEXANG_ADRESSE')) {
-    define('OC_ALEXANG_ADRESSE', 'http://127.0.0.1/plugins/alexang/index.php');
+ * Antwort, die mit SPRECHEN;OK=1 beginnt. Die Adresse baut seit 1.1.21 die
+ * gemeinsame Sprachausgabe mit dem Webport dieses LoxBerry (oc_alexa_adresse());
+ * bis 1.1.20 stand sie fest auf Port 80, und auf einem LoxBerry mit anderem
+ * Webport scheiterte jede Alexa-Ansage. Ein Pruefstand kann die Adresse weiter
+ * ueber die Konstante OC_ALEXANG_ADRESSE vor dem Laden der Bibliothek setzen. */
+
+/** Adresse des Sprech-Endpunkts von Alexa-NG - immer 127.0.0.1, mit dem Webport, ohne Token. */
+function oc_alexa_adresse()
+{
+    return defined('OC_ALEXANG_ADRESSE') ? (string) OC_ALEXANG_ADRESSE : ansage_adresse('alexang', oc_webport());
+}
+
+/** Kontext der gemeinsamen Sprachausgabe: Webport und Kennung dieses Plugins. */
+function oc_ansage_k()
+{
+    return array('port' => oc_webport(),
+                 'kopf' => array('User-Agent: LoxBerry-Plugin-Octopus/1.0 (+https://wiki.loxberry.de)'),
+                 'ordner' => '');
+}
+
+/**
+ * Kennung eines Transportfehlers der gemeinsamen Sprachausgabe
+ * (ansage_http_grund_id()) in den Fehlerschluessel von oc_http() uebersetzen -
+ * Protokoll und Testansage nennen damit dieselben Worte wie bis 1.1.20 (ohne
+ * curl: FEHLER_VERBINDUNG wie dort).
+ */
+function oc_ansage_fehler($grund_id)
+{
+    if (!function_exists('curl_init')) { return 'FEHLER_VERBINDUNG'; }
+    $nr = array('HTTP_ZEIT' => 28, 'HTTP_ABGEWIESEN' => 7, 'HTTP_NAME' => 6);
+    return oc_curl_fehler(isset($nr[$grund_id]) ? $nr[$grund_id] : 0);
+}
+
+/**
+ * POST an Alexa-NG oder Chromecast 4 Lox NG ueber den Transport der
+ * gemeinsamen Sprachausgabe (seit 1.1.21): ohne Proxy, ohne Umleitung, 3 s
+ * Verbindungsfrist, $tmo s gesamt, das Token nur im Koerper. Rueckgabe in der
+ * Form von oc_http(), damit die Bewertung (oc_sprechen_bewerten(), ersetzt das
+ * Token in der Antwort) bleibt, wie sie war: ok (Antwort unter HTTP 400),
+ * code, body (der Rumpf, hoechstens 64 KiB), fehler.
+ */
+function oc_sprechen_rufen($adresse, array $felder, $tmo)
+{
+    $k = oc_ansage_k();
+    $a = ansage_ausfuehren(ansage_anfrage('POST', (string) $adresse, $felder, $tmo, $k), $k);
+    $erg = array('ok' => false, 'code' => (int) $a['code'], 'body' => (string) $a['rumpf'], 'fehler' => '');
+    if ($erg['code'] <= 0) {
+        $erg['code'] = 0;
+        $erg['body'] = '';
+        $erg['fehler'] = oc_ansage_fehler(ansage_http_grund_id($a['errno'] === 0 ? -1 : $a['errno'], 0));
+        return $erg;
+    }
+    if ($erg['code'] >= 400) {
+        $erg['fehler'] = 'FEHLER_HTTP:' . $erg['code'];
+        return $erg;
+    }
+    $erg['ok'] = true;
+    return $erg;
 }
 
 /** Form des Sprechtokens von Alexa-NG: 8 bis 128 Zeichen aus A-Z a-z 0-9 _ -. */
 function oc_alexa_token_ok($t)
 {
-    return is_string($t) && (bool) preg_match('/^[A-Za-z0-9_-]{8,128}$/', $t);
+    return ansage_token_ok($t);     // seit 1.1.21 aus der gemeinsamen Sprachausgabe
 }
 
 /** Ergebnis der letzten Ansage dieses Aufrufs (fuer die Testansage), nie mit Token. */
@@ -4305,17 +4365,17 @@ function oc_ansage_letzte($setzen = null)
 function oc_alexa_sprechen($text)
 {
     $cfg = oc_config();
-    /* Seit Ansage-3 ueber den gemeinsamen Teil; die Parameter halten das
-     * Verhalten von Ansage-2 (Adresse fest, Umgebungsproxy, Erfolg ohne
-     * HTTP-200-Pflicht, Text im Protokoll). */
+    /* Seit Ansage-3 ueber den gemeinsamen Teil; Erfolg ohne HTTP-200-Pflicht
+     * wie in Ansage-2. Seit 1.1.21 (Nr. 36 b, Nr. 40): Adresse mit dem Webport,
+     * Transport ohne Umgebungsproxy, vom Text nur die Laenge im Protokoll. */
     return oc_sprechen_an(array(
         'name'    => 'Alexa-NG',
-        'adresse' => OC_ALEXANG_ADRESSE,
+        'adresse' => oc_alexa_adresse(),
         'token'   => (string) $cfg['tts']['alexa_token'],
         'geraet'  => (string) $cfg['tts']['alexa_geraet'],
         'laut'    => -1,
         'lokal'   => false,
-        'text_ins_protokoll' => true,
+        'text_ins_protokoll' => false,
         'fehlt'   => '',
         'fehlt_log' => '',
     ), $text);
@@ -4348,8 +4408,7 @@ function oc_sprechen_an(array $z, $text)
     if ($geraet !== '') { $felder['geraet'] = $geraet; }
     if ($laut >= 0 && $laut <= 100) { $felder['laut'] = $laut; }
     $felder['text'] = (string) $text;
-    $r = oc_http($z['adresse'], http_build_query($felder, '', '&'),
-        array('Content-Type: application/x-www-form-urlencoded'), 10, (bool) $z['lokal']);
+    $r = oc_sprechen_rufen($z['adresse'], $felder, 10);
     list($ok, $was, $anzeige) = oc_sprechen_bewerten($r, $tok, 'SPRECHEN', $z);
     oc_ansage_letzte($anzeige);
     $wo = array();
@@ -4412,31 +4471,22 @@ function oc_webport()
 {
     static $port = null;
     if ($port !== null) { return $port; }
-    $port = 80;
-    $f = (string) oc_paths()['general'];
-    if ($f !== '' && is_file($f)) {
-        $g = json_decode((string) @file_get_contents($f), true);
-        foreach (array('Webserver', 'WEBSERVER') as $ab) {
-            if (isset($g[$ab]['Port']) && is_scalar($g[$ab]['Port'])
-                && (int) $g[$ab]['Port'] > 0 && (int) $g[$ab]['Port'] <= 65535) {
-                $port = (int) $g[$ab]['Port'];
-                break;
-            }
-        }
-    }
+    /* Seit 1.1.21 aus der gemeinsamen Sprachausgabe: Webserver.Port oder
+     * WEBSERVER.Port, nur Ziffern, 1 bis 65535, sonst 80. */
+    $port = ansage_webport((string) oc_paths()['general']);
     return $port;
 }
 
 /** Adresse des Sprech-Endpunkts von Chromecast 4 Lox NG - immer 127.0.0.1, nie die LAN-Adresse. */
 function oc_google_adresse()
 {
-    return 'http://127.0.0.1:' . oc_webport() . '/plugins/chromecast-4lox-ng/index.php';
+    return ansage_adresse('cc4lox', oc_webport());
 }
 
 /** Form des Sprechtokens: 8 bis 128 Zeichen aus A-Z a-z 0-9 _ - (das Chromecast-Plugin selbst verlangt 16). */
 function oc_google_token_ok($t)
 {
-    return is_string($t) && (bool) preg_match('/^[A-Za-z0-9_\-]{8,128}\z/', $t);
+    return ansage_token_ok($t);     // seit 1.1.21 aus der gemeinsamen Sprachausgabe
 }
 
 /** Die Parameter des gemeinsamen Teils fuer Chromecast 4 Lox NG. */
@@ -4473,8 +4523,7 @@ function oc_google_selbsttest()
 {
     $z = oc_google_ziel();
     if ($z['token'] === '') { return array(false, oc_t('TEST.TTS_GOOGLE_KEIN_TOKEN')); }
-    $r = oc_http($z['adresse'], http_build_query(array('selftest' => '1', 'token' => $z['token']), '', '&'),
-        array('Content-Type: application/x-www-form-urlencoded'), 10, true);
+    $r = oc_sprechen_rufen($z['adresse'], array('selftest' => '1', 'token' => $z['token']), 10);
     list($ok, $was, $anzeige) = oc_sprechen_bewerten($r, $z['token'], 'SELFTEST', $z);
     if (!$ok) { return array(false, $anzeige); }
     $zeile = (string) strtok(trim((string) $r['body']), "\n");
@@ -4495,50 +4544,19 @@ function oc_tts_url($text)
     }
     if ($t['mode'] === 'alexang') {
         // Die feste Adresse ohne Token; '' heisst: kein Sprechtoken hinterlegt.
-        return (string) $t['alexa_token'] === '' ? '' : OC_ALEXANG_ADRESSE;
+        return (string) $t['alexa_token'] === '' ? '' : oc_alexa_adresse();
     }
     if ($t['mode'] === 'cc4lox') {
         // Ansage-3: ebenso fuer Chromecast 4 Lox NG.
         return (string) $t['google_token'] === '' ? '' : oc_google_adresse();
     }
-    if ($t['mode'] === 'musicserver' && (string) $t['ip'] === '') {
-        return '';   // ohne IP laesst sich die Music-Server-Adresse nicht bauen
-    }
-
-    /* Zonenliste EINMAL fuer alle Modi normalisieren. Vorher wurde nur im
-     * Modus musicserver je Zone getrimmt; in den Vorlagen-Modi ging die
-     * Eingabe roh in {zones} - aus "2, 4, 6" wurde eine Adresse mit
-     * Leerzeichen. */
-    $zl = array();
-    foreach (explode(',', (string) $t['zones']) as $z) {
-        $z = trim($z);
-        if ($z !== '') { $zl[] = $z; }
-    }
-    $t['zones'] = implode(',', $zl);
-    if ($t['mode'] === 'musicserver') {
-        $vol = max(1, min(100, (int) $t['volume']));
-        $zonen = array();
-        foreach (explode(',', (string) $t['zones']) as $z) {
-            $z = trim($z);
-            if ($z === '') { continue; }
-            $zonen[] = (strpos($z, '~') === false) ? $z . '~' . $vol : $z;
-        }
-        $zs = $zonen ? implode(',', $zonen) : '1~' . $vol;
-        return 'http://' . $t['ip'] . ':' . (int) $t['port'] . '/audio/grouped/tts/'
-             . $zs . '/' . rawurlencode($t['lang'] . '|' . $text);
-    }
-    $tpl = trim((string) $t['template']);
-    if ($tpl === '') { $tpl = 'http://{ip}:{port}/tts?text={text}&zone={zones}&vol={vol}'; }
-    /* Die IP wird nur verlangt, wenn die Vorlage sie auch verwendet.
-     * Vorher stand die Pruefung unbedingt am Anfang - eine eigene Vorlage
-     * ohne {ip} war damit unbenutzbar (AWM-1.2.0-Fund, hier nachgezogen). */
-    if ((string) $t['ip'] === '' && strpos($tpl, '{ip}') !== false) {
-        return '';
-    }
-    return str_replace(
-        array('{ip}', '{port}', '{zones}', '{vol}', '{lang}', '{text}'),
-        array($t['ip'], (int) $t['port'], $t['zones'], (int) $t['volume'], $t['lang'], rawurlencode($text)),
-        $tpl);
+    /* musicserver, ms4h und custom (oc_config() laesst nur diese drei uebrig):
+     * seit 1.1.21 baut die gemeinsame Sprachausgabe die Adresse, mit demselben
+     * Ergebnis wie der Code bis 1.1.20 - Zonenliste einmal fuer alle Arten
+     * normalisiert ("2, 4" -> "2,4"), beim Music Server je Zone die
+     * Lautstaerke, IP nur verlangt, wenn die Art bzw. die Vorlage sie benutzt
+     * ('' = IP fehlt). */
+    return ansage_tts_url($text, $t);
 }
 
 function oc_say($text)
@@ -4555,9 +4573,31 @@ function oc_say($text)
         oc_log('Ansage uebersprungen: keine Adresse fuer die Sprachausgabe hinterlegt');
         return false;
     }
-    $r = oc_http($url, null, array(), 10);
-    oc_log('Ansage gesendet: "' . $text . '" -> ' . ($r['ok'] ? 'OK' : $r['fehler']));
-    return $r['ok'];
+    /* Seit 1.1.21 ueber den Transport der gemeinsamen Sprachausgabe: ohne
+     * Proxy, ohne Weiterleitung, Erfolg nur bei HTTP 2xx. Vom Text steht nur
+     * die Laenge im Protokoll (Nr. 40) - die Adresse traegt ihn und steht
+     * deshalb ebenfalls nicht darin. */
+    $k = oc_ansage_k();
+    $a = ansage_ausfuehren(ansage_anfrage('GET', $url, null, 10, $k), $k);
+    $ok = $a['code'] >= 200 && $a['code'] < 300;
+    $fehler = $ok ? '' : ($a['code'] > 0 ? 'FEHLER_HTTP:' . $a['code']
+        : oc_ansage_fehler(ansage_http_grund_id($a['errno'] === 0 ? -1 : $a['errno'], 0)));
+    oc_log('Ansage gesendet: ' . ansage_zeichen((string) $text) . ' Zeichen -> ' . ($ok ? 'OK' : $fehler));
+    return $ok;
+}
+
+/**
+ * Das Textfeld der Antwort auf ?aktion=say (seit 1.1.21, Nr. 40): beim
+ * Original-Audioserver der Text selbst (TEXT=, Loxone gibt ihn ueber den
+ * Textgenerator an den Audioserver), sonst nur seine Laenge (TEXTLAENGE=).
+ */
+function oc_say_feld($text)
+{
+    $cfg = oc_config();
+    if ($cfg['tts']['mode'] === 'audioserver') {
+        return 'TEXT=' . oc_mqtt_wert_saeubern($text);
+    }
+    return 'TEXTLAENGE=' . ansage_zeichen((string) $text);
 }
 
 /** Zahl deutsch aussprechen: 24.3 -> "24,3" */
@@ -5425,8 +5465,8 @@ function oc_sicherung_teile($mit_zugang = false)
     /* Das Sprechtoken fuer Alexa-NG geht nie mit (Ansage-2, wie in der
      * Sprachsteuerung): es ist ein Kennwort des anderen Plugins, und das
      * Zurueckspielen behaelt das laufende. */
-    unset($cfg['tts']['alexa_token']);
-    unset($cfg['tts']['google_token']);   // ebenso das Google-Sprechtoken (Ansage-3)
+    // ebenso das Google-Sprechtoken (Ansage-3); seit 1.1.21 aus der gemeinsamen Sprachausgabe
+    $cfg['tts'] = ansage_sicherung_bereinigen($cfg['tts']);
     $kopf = array(
         '_hinweis' => 'Sicherung der Einstellungen des LoxBerry-Plugins Octopus Dynamic.'
                     . ' Im Reiter Einstellungen unter "Einstellungen zurueckspielen"'
