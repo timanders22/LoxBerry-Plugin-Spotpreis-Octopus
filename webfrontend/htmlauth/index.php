@@ -576,98 +576,18 @@ if ($oc_ist_post && isset($_POST['save'])) {
         'lb'         => isset($_POST['notify_lb']) ? 1 : 0,
         'lb_stunden' => $oc_g('notify_lb_stunden', $oc_cfg['notify']['lb_stunden'], 1, 72),
     );
-    $oc_ttsip = $oc_roh('tts_ip');
-    if ($oc_ttsip === null) {
-        $oc_ttsip = (string) $oc_cfg['tts']['ip'];
-    } elseif ($oc_ttsip !== '' && (strlen($oc_ttsip) > 100 || !preg_match('/^[A-Za-z0-9._-]+$/', $oc_ttsip))) {
-        // Nr. 19: laenger als 100 Zeichen kuerzte oc_config() bis 1.1.18 still.
-        $oc_abweis[] = oc_t('MELDUNG.TTS_IP');
-        $oc_bean[] = 'tts_ip';
-        $oc_ttsip = (string) $oc_cfg['tts']['ip'];
-    }
-    $oc_zonen = $oc_roh('tts_zones');
-    if ($oc_zonen === null) {
-        $oc_zonen = (string) $oc_cfg['tts']['zones'];
-    } elseif (!preg_match('/^[0-9]+([ ,~]+[0-9]+)*$/', $oc_zonen)) {
-        $oc_bean[] = 'tts_zones';
-        $oc_abweis[] = sprintf(oc_t('MELDUNG.ZONEN_ABGEWIESEN'), oc_e($oc_zonen === "\0" ? '[]' : $oc_zonen));
-        $oc_zonen = (string) $oc_cfg['tts']['zones'];
-    }
-    $oc_sprache = $oc_roh('tts_lang');
-    if ($oc_sprache === null) {
-        $oc_sprache = (string) $oc_cfg['tts']['lang'];
-    } elseif (!preg_match('/^[a-z]{2,8}$/', $oc_sprache)) {
-        $oc_bean[] = 'tts_lang';
-        $oc_abweis[] = sprintf(oc_t('MELDUNG.SPRACHE_ABGEWIESEN'), oc_e($oc_sprache === "\0" ? '[]' : $oc_sprache));
-        $oc_sprache = (string) $oc_cfg['tts']['lang'];
-    }
-    $oc_vorlage = $oc_text('tts_template', $oc_roh('tts_template'), (string) $oc_cfg['tts']['template'], 400, false);
-    if ($oc_vorlage !== '' && !preg_match('#^https?://#i', $oc_vorlage)) {
-        $oc_bean[] = 'tts_template';
-        $oc_abweis[] = sprintf(oc_t('MELDUNG.WAHL_ABGEWIESEN'), 'tts_template', oc_e($oc_vorlage));
-        $oc_vorlage = (string) $oc_cfg['tts']['template'];
-    }
-    $oc_tmodus = $oc_wahl('tts_mode', $oc_roh('tts_mode'), $oc_cfg['tts']['mode'],
-                          array('musicserver', 'ms4h', 'audioserver', 'custom', 'alexang', 'cc4lox'));
-    /* Alexa-NG (Ansage-2): das Sprechtoken ist ein Kennwort - leer heisst
-     * unveraendert, der Haken loescht es, eine falsche Form wird abgewiesen
-     * (nichts gespeichert). Ohne Token ist der Ausgabeweg Alexa-NG unbrauchbar. */
-    $oc_atok = (string) $oc_cfg['tts']['alexa_token'];
-    $oc_atok_roh = $oc_roh('tts_alexa_token');
-    if (isset($_POST['tts_alexa_token_weg'])) {
-        $oc_atok = '';
-    } elseif ($oc_atok_roh !== null && $oc_atok_roh !== '') {
-        if (oc_alexa_token_ok($oc_atok_roh)) {
-            $oc_atok = $oc_atok_roh;
-        } else {
-            $oc_abweis[] = oc_t('MELDUNG.ALEXA_TOKEN_FORM');
-            $oc_bean[] = 'tts_alexa_token';
-        }
-    }
-    if ($oc_tmodus === 'alexang' && $oc_atok === '' && !in_array('tts_alexa_token', $oc_bean, true)) {
-        $oc_abweis[] = oc_t('MELDUNG.ALEXA_TOKEN_FEHLT');
-        $oc_bean[] = 'tts_alexa_token';
-    }
-    $oc_ageraet = $oc_text('tts_alexa_geraet', $oc_roh('tts_alexa_geraet'),
-        (string) $oc_cfg['tts']['alexa_geraet'], 200, false);
-    /* Google-Lautsprecher (Ansage-3): ein EIGENES Sprechtoken mit denselben
-     * Regeln wie das von Alexa-NG; Geraet wie dort; Lautstaerke leer = -1
-     * (Ansagelautstaerke des Chromecast-Plugins), sonst eine ganze Zahl 0-100. */
-    $oc_gtok = (string) $oc_cfg['tts']['google_token'];
-    $oc_gtok_roh = $oc_roh('tts_google_token');
-    if (isset($_POST['tts_google_token_weg'])) {
-        $oc_gtok = '';
-    } elseif ($oc_gtok_roh !== null && $oc_gtok_roh !== '') {
-        if (oc_google_token_ok($oc_gtok_roh)) {
-            $oc_gtok = $oc_gtok_roh;
-        } else {
-            $oc_abweis[] = oc_t('MELDUNG.GOOGLE_TOKEN_FORM');
-            $oc_bean[] = 'tts_google_token';
-        }
-    }
-    if ($oc_tmodus === 'cc4lox' && $oc_gtok === '' && !in_array('tts_google_token', $oc_bean, true)) {
-        $oc_abweis[] = oc_t('MELDUNG.GOOGLE_TOKEN_FEHLT');
-        $oc_bean[] = 'tts_google_token';
-    }
-    $oc_ggeraet = $oc_text('tts_google_geraet', $oc_roh('tts_google_geraet'),
-        (string) $oc_cfg['tts']['google_geraet'], 200, false);
-    $oc_glaut_roh = $oc_roh('tts_google_laut');
-    $oc_glaut = ($oc_glaut_roh === '') ? -1
-        : $oc_pruef('tts_google_laut', $oc_glaut_roh, (int) $oc_cfg['tts']['google_laut'], 0, 100, true);
-    $oc_neu['tts'] = array(
-        'mode'     => $oc_tmodus,
-        'ip'       => $oc_ttsip,
-        'port'     => $oc_g('tts_port', $oc_cfg['tts']['port'], 1, 65535),
-        'zones'    => $oc_zonen,
-        'volume'   => $oc_g('tts_volume', $oc_cfg['tts']['volume'], 1, 100),
-        'lang'     => $oc_sprache,
-        'template' => $oc_vorlage,
-        'alexa_token'  => $oc_atok,
-        'alexa_geraet' => $oc_ageraet,
-        'google_token'  => $oc_gtok,
-        'google_geraet' => $oc_ggeraet,
-        'google_laut'   => $oc_glaut,
-    );
+    /* Sprachausgabe (seit 1.1.22, Nr. 36 b Stufe 2): der Formular-Baustein der gemeinsamen Sprachausgabe
+     * liest und prueft den ganzen Block - Adresse und Vorlage nur im Heimnetz (Entscheidung Nr. 40),
+     * Sprechtoken wie ein Kennwort (leer = unveraendert, der Haken loescht, beides zugleich ist ein
+     * Widerspruch), Alexa-NG/Google ohne Token ist beanstandet. Jede Beanstandung kommt in dieselbe Liste
+     * wie die uebrigen (nichts gespeichert, Nr. 16; Eingaben zurueck, X-2, ohne Token). Die POST-Namen
+     * sind dieselben wie bis 1.1.21. */
+    $oc_tmangel = array();
+    $oc_tbean = array();
+    $oc_neu['tts'] = ansage_formular_lesen($_POST, oc_tts($oc_cfg), $oc_tmangel, $oc_tbean,
+                                           oc_ansage_opt(), oc_ansage_k());
+    foreach ($oc_tmangel as $oc_tm) { $oc_abweis[] = oc_e($oc_tm['text']); }
+    foreach ($oc_tbean as $oc_tb) { $oc_bean[] = $oc_tb; }
 
     if ($oc_abweis) {
         foreach ($oc_abweis as $oc_a) { $oc_fehler[] = $oc_a; }
@@ -1708,87 +1628,28 @@ foreach (oc_regel_arten() as $oc_a) { ?>
 <div class="sm-hilfe"><?php echo oc_t('EINST.NOTIFY_LB_HILFE'); ?></div>
 
 <h3><?php echo oc_t('EINST.H_TTS'); ?></h3>
-<div class="sm-reihe">
-  <div>
-    <label><?php echo oc_t('EINST.TTS_MODE'); ?></label>
-    <select data-role="none" name="tts_mode">
-      <option value="musicserver" <?php echo $oc_tts['mode'] === 'musicserver' ? 'selected' : ''; ?>><?php echo oc_t('EINST.TTS_MS'); ?></option>
-      <option value="ms4h" <?php echo $oc_tts['mode'] === 'ms4h' ? 'selected' : ''; ?>><?php echo oc_t('EINST.TTS_MS4H'); ?></option>
-      <option value="audioserver" <?php echo $oc_tts['mode'] === 'audioserver' ? 'selected' : ''; ?>><?php echo oc_t('EINST.TTS_AS'); ?></option>
-      <option value="custom" <?php echo $oc_tts['mode'] === 'custom' ? 'selected' : ''; ?>><?php echo oc_t('EINST.TTS_CUSTOM'); ?></option>
-      <option value="alexang" <?php echo $oc_tts['mode'] === 'alexang' ? 'selected' : ''; ?>><?php echo oc_t('EINST.TTS_ALEXA'); ?></option>
-      <option value="cc4lox" <?php echo $oc_tts['mode'] === 'cc4lox' ? 'selected' : ''; ?>><?php echo oc_t('EINST.TTS_GOOGLE'); ?></option>
-    </select>
-  </div>
-  <div>
-    <label><?php echo oc_t('EINST.TTS_IP'); ?></label>
-    <input data-role="none" type="text" name="tts_ip" value="<?php echo oc_e($oc_tts['ip']); ?>" placeholder="192.168.1.20">
-  </div>
-  <div>
-    <label><?php echo oc_t('EINST.TTS_PORT'); ?></label>
-    <input data-role="none" type="text" name="tts_port" value="<?php echo (int) $oc_tts['port']; ?>" placeholder="7091">
-  </div>
-  <div>
-    <label><?php echo oc_t('EINST.TTS_ZONES'); ?></label>
-    <input data-role="none" type="text" name="tts_zones" value="<?php echo oc_e($oc_tts['zones']); ?>" placeholder="1,2">
-  </div>
-  <div>
-    <label><?php echo oc_t('EINST.TTS_VOLUME'); ?></label>
-    <input data-role="none" type="text" name="tts_volume" value="<?php echo (int) $oc_tts['volume']; ?>" placeholder="8">
-    <div class="sm-hilfe"><?php echo oc_t('EINST.TTS_VOL_HILFE'); ?></div>
-  </div>
-  <div>
-    <label><?php echo oc_t('EINST.TTS_LANG'); ?></label>
-    <input data-role="none" type="text" name="tts_lang" value="<?php echo oc_e($oc_tts['lang']); ?>" placeholder="de">
-  </div>
-</div>
-<div class="sm-feld">
-  <label><?php echo oc_t('EINST.TTS_TEMPLATE'); ?></label>
-  <input data-role="none" type="text" name="tts_template" value="<?php echo oc_e($oc_tts['template']); ?>"
-         placeholder="http://{ip}:{port}/tts?text={text}&amp;zone={zones}&amp;vol={vol}">
-  <div class="sm-hilfe"><?php echo oc_t('EINST.TTS_TEMPLATE_HILFE'); ?></div>
-</div>
-<?php /* Ansage-2: Ausgabeweg Alexa-NG. Das Token kommt nie in die Seite -
-         das Feld ist immer leer, der Platzhalter sagt, ob eines hinterlegt ist. */ ?>
-<div class="sm-reihe">
-  <div>
-    <label><?php echo oc_t('EINST.TTS_ALEXA_GERAET'); ?></label>
-    <input data-role="none" type="text" name="tts_alexa_geraet" value="<?php echo oc_e($oc_tts['alexa_geraet']); ?>" placeholder="kueche">
-    <div class="sm-hilfe"><?php echo oc_t('EINST.TTS_ALEXA_GERAET_HILFE'); ?></div>
-  </div>
-  <div>
-    <label><?php echo oc_t('EINST.TTS_ALEXA_TOKEN'); ?></label>
-    <input data-role="none" type="password" name="tts_alexa_token" value="" autocomplete="new-password" placeholder="<?php echo oc_e(oc_t((string) $oc_tts['alexa_token'] !== '' ? 'EINST.TTS_ALEXA_TOKEN_DA' : 'EINST.TTS_ALEXA_TOKEN_LEER')); ?>">
-    <label style="display:inline-flex;align-items:center;gap:6px;margin-top:4px;">
-      <input data-role="none" type="checkbox" name="tts_alexa_token_weg" value="1">
-      <?php echo oc_t('EINST.TTS_ALEXA_TOKEN_WEG'); ?>
-    </label>
-  </div>
-</div>
-<div class="sm-hilfe"><?php echo oc_t('EINST.TTS_ALEXA_HILFE'); ?></div>
-<?php /* Ansage-3: Google-Lautsprecher ueber Chromecast 4 Lox NG. Ein eigenes
-         Sprechtoken, wie das von Alexa-NG nie in der Seite. */ ?>
-<div class="sm-reihe">
-  <div>
-    <label><?php echo oc_t('EINST.TTS_GOOGLE_GERAET'); ?></label>
-    <input data-role="none" type="text" name="tts_google_geraet" value="<?php echo oc_e($oc_tts['google_geraet']); ?>" placeholder="Wohnzimmer">
-    <div class="sm-hilfe"><?php echo oc_t('EINST.TTS_GOOGLE_GERAET_HILFE'); ?></div>
-  </div>
-  <div>
-    <label><?php echo oc_t('EINST.TTS_GOOGLE_LAUT'); ?></label>
-    <input data-role="none" type="text" name="tts_google_laut" value="<?php echo (int) $oc_tts['google_laut'] >= 0 ? (int) $oc_tts['google_laut'] : ''; ?>" placeholder="0-100">
-    <div class="sm-hilfe"><?php echo oc_t('EINST.TTS_GOOGLE_LAUT_HILFE'); ?></div>
-  </div>
-  <div>
-    <label><?php echo oc_t('EINST.TTS_GOOGLE_TOKEN'); ?></label>
-    <input data-role="none" type="password" name="tts_google_token" value="" autocomplete="new-password" placeholder="<?php echo oc_e(oc_t((string) $oc_tts['google_token'] !== '' ? 'EINST.TTS_ALEXA_TOKEN_DA' : 'EINST.TTS_ALEXA_TOKEN_LEER')); ?>">
-    <label style="display:inline-flex;align-items:center;gap:6px;margin-top:4px;">
-      <input data-role="none" type="checkbox" name="tts_google_token_weg" value="1">
-      <?php echo oc_t('EINST.TTS_GOOGLE_TOKEN_WEG'); ?>
-    </label>
-  </div>
-</div>
-<div class="sm-hilfe"><?php echo oc_t('EINST.TTS_GOOGLE_HILFE'); ?></div>
+<div class="sm-hinweis"><?php echo oc_t('EINST.TTS_HAUSFORM'); ?></div>
+<?php /* Seit 1.1.22 der Formular-Baustein der gemeinsamen Sprachausgabe (ansage_formular_html()): Klassen
+         sm-feld, sm-hilfe, sm-hinweis aus der Vorlage; das Umschalt-Skript des Bausteins blendet ein Feld mit
+         .sm-beanstandet nie aus. Die Eingaben nach einer Beanstandung setzt oc_eingaben_einsetzen() ein wie
+         bei allen Feldern dieses Formulars (X-2); ein Sprechtoken steht nie in der Seite. */ ?>
+<?php
+/* oc_eingaben_einsetzen() kennt <input> und <select>, aber kein <textarea> - die Adressvorlage ist im
+ * Baustein eines. Fuer sie setzt der Baustein Wert und Markierung selbst ('w', 'm'), aus denselben
+ * Eingaben der Einmalmeldung. */
+$oc_th = oc_ansage_opt();
+$oc_th['w'] = function ($n, $g) use ($oc_eingaben) {
+    return ($n === 'tts_template' && is_array($oc_eingaben) && isset($oc_eingaben['formular'], $oc_eingaben['werte'][$n])
+            && $oc_eingaben['formular'] === 'save' && is_string($oc_eingaben['werte'][$n])) ? $oc_eingaben['werte'][$n] : $g;
+};
+$oc_th['m'] = function ($n) use ($oc_eingaben) {
+    return ($n === 'tts_template' && is_array($oc_eingaben) && isset($oc_eingaben['formular'], $oc_eingaben['felder'])
+            && $oc_eingaben['formular'] === 'save' && is_array($oc_eingaben['felder'])
+            && in_array($n, $oc_eingaben['felder'], true)) ? ' class="sm-beanstandet" aria-invalid="true"' : '';
+};
+echo ansage_formular_html(oc_tts($oc_cfg), $oc_th, oc_ansage_k());
+?>
+<div class="sm-hilfe"><?php echo sprintf(oc_t('EINST.TTS_TEST_HINWEIS'), '<b>' . oc_e(oc_t('REITER.TEST')) . '</b>'); ?></div>
 
 <?php /* MQTT stand hier bis zu dieser Fassung. Es wohnt jetzt
          vollstaendig im Reiter MQTT - eine Sache, eine Stelle. */ ?>

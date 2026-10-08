@@ -272,7 +272,7 @@ if ($aktion === 'say' || $aktion === 'saytomorrow') {
     }
     $st = oc_state();
     $text = $aktion === 'saytomorrow' ? oc_tomorrow_text($st) : oc_announce_text($st);
-    if ($text === '') { $text = oc_t('ANSAGE.TEST_LEER'); }
+    if ($text === '') { $text = oc_t('OC_ANSAGE.TEST_LEER'); }
     $ok = oc_say($text);
     /* Seit 1.1.21 (Nr. 40): vom Text nur die Laenge, ausser beim Original-Audioserver. */
     echo 'SAY;OK=' . ($ok ? 1 : 0) . ';GESPERRT=0;' . oc_say_feld($text) . "\n";

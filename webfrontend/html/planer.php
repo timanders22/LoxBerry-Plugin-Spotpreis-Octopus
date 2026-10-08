@@ -92,6 +92,23 @@
  * Kompatibel mit PHP 7.4 und PHP 8.x.
  */
 
+/* Kein Endpunkt (Regeln/03, ab 1.1.9): die Datei liegt in allen drei Linien
+ * im unangemeldeten Baum webfrontend/html/ und war dort direkt aufrufbar. Ein
+ * direkter Aufruf ueber den Webserver bekommt 403 und tut sonst nichts -
+ * dieselbe Schranke wie im Sprachmodul (sprachausgabe.php). Eingebunden
+ * (require_once aus der Bibliothek der Linie) und auf der Kommandozeile
+ * (Dienst, Selbsttest, mutation_planer.py) greift sie nicht. */
+if (PHP_SAPI !== 'cli') {
+    $plan_einstieg = get_included_files();
+    if (isset($plan_einstieg[0]) && realpath($plan_einstieg[0]) === realpath(__FILE__)) {
+        http_response_code(403);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo "PLAN;OK=0;GRUND=KEIN_ENDPUNKT\n";
+        exit;
+    }
+    unset($plan_einstieg);
+}
+
 /** Fassung dieser Datei. Der Reiter Test jeder der drei Linien zeigt sie an.
  *
  * 1.1.1: Aufrundung gegen Gleitkommarauschen in plan_slots_noetig(), und
@@ -209,8 +226,12 @@
  *          nie mehr geschrieben. Eine solche Antwort wird jetzt ganz
  *          abgewiesen und mit WERTE_UNGUELTIG gemeldet - nicht still
  *          zurechtgebogen. Ein Lastgang darf negative Werte weiter
- *          liefern; das sagt der Aufrufer mit dem letzten Argument. */
-define('PLAN_FASSUNG', '1.1.8');
+ *          liefern; das sagt der Aufrufer mit dem letzten Argument.
+ *
+ * 1.1.9: Direktaufruf ueber den Webserver antwortet mit 403 (Planer-k1,
+ *        Fund Sprachmodul-Bau 02.10.2026; Schranke oben im Kopf). An der
+ *        Rechnung und am Einbinden durch die Linien aendert sich nichts. */
+define('PLAN_FASSUNG', '1.1.9');
 
 /** Entscheidung Nr. 30 (01.10.2026): eine Regel der Arten 'fenster',
  *  'stunden' und 'scheiben' urteilt nur, wenn mindestens so viele kuenftige

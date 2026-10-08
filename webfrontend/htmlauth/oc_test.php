@@ -141,22 +141,17 @@ function oc_test_selbst()
         $h .= oc_zeile(!empty($st['co2_ok']), oc_t('TEST.CO2'),
             !empty($st['co2_ok']) ? $st['co2'] . ' g/kWh' : oc_t('TEST.CO2_KEIN'));
     }
-    if (!empty($cfg['notify']['audio'])) {
-        $url = oc_tts_url('Test');
-        $alexa = ($cfg['tts']['mode'] === 'alexang');   // Ansage-2
-        if ($cfg['tts']['mode'] === 'cc4lox') {
-            /* Ansage-3: eigene Zeile - antwortet Chromecast 4 Lox NG, passt das
-             * Sprechtoken? selftest=1 spricht nichts; nur auf diesen Knopf
-             * (hoechstens 10 s), nie beim Seitenaufbau. */
-            list($oc_gok, $oc_gtext) = oc_google_selbsttest();
-            $h .= oc_zeile($oc_gok, oc_t('TEST.TTS_GOOGLE_PRUEF'), oc_e($oc_gtext . ' ' . sprintf(oc_t('TEST.TTS_GOOGLE_ZIEL'),
-                (string) $cfg['tts']['google_geraet'] !== '' ? (string) $cfg['tts']['google_geraet'] : oc_t('TEST.TTS_GOOGLE_STD_GERAET'),
-                (int) $cfg['tts']['google_laut'] >= 0 ? (string) (int) $cfg['tts']['google_laut'] : oc_t('TEST.TTS_GOOGLE_STD_LAUT'))));
+    /* Sprachausgabe (seit 1.1.22 die Zeile der gemeinsamen Sprachausgabe, ansage_pruefzeile()): nur auf
+     * diesen Knopf; Alexa-NG bzw. Chromecast 4 Lox NG mit selftest=1 (spricht nicht), der Music Server nie
+     * (eine Probe dort spraeche - das tut der Knopf "Testansage"). Die Zeile steht, wenn die Ansage
+     * eingeschaltet oder Alexa-NG/Google gewaehlt ist; dazu das Ergebnis der letzten Ansage. */
+    $oc_tm = (string) oc_tts($cfg)['mode'];
+    if (!empty($cfg['notify']['audio']) || $oc_tm === 'alexang' || $oc_tm === 'cc4lox') {
+        list($oc_ast, $oc_atext) = oc_ansage_pruefzeile(true);
+        if ($oc_ast === 1 || $oc_ast === 0) {
+            $h .= oc_zeile($oc_ast === 1, oc_t('TEST.TTS_ANSAGE'), $oc_atext);
         } else {
-        $h .= oc_zeile($url !== '' && $url !== null, oc_t('TEST.TTS'),
-            $url === null ? oc_t('TEST.TTS_AUDIOSERVER')
-                : ($url === '' ? oc_t($alexa ? 'TEST.TTS_ALEXA_KEIN_TOKEN' : 'TEST.TTS_KEINE_IP')
-                    : oc_t($alexa ? 'TEST.TTS_ALEXA_OK' : 'TEST.TTS_OK')));
+            $h .= '<div><span style="color:#888;">&ndash;</span> ' . oc_t('TEST.TTS_ANSAGE') . ' &mdash; ' . $oc_atext . '</div>';
         }
     }
 
@@ -384,33 +379,23 @@ function oc_test_endpunkt()
 
 function oc_test_say($morgen)
 {
+    /* Seit 1.1.22 (Sprachausgabe Stufe 2): ueber die gemeinsame Sprachausgabe wie die Stundenansage. Die
+     * Antwort nennt Ergebnis, Zeichenzahl und HTTP-Code (bei Alexa-NG/Chromecast deren Antwortzeile ohne
+     * Token) - den Ansagetext nicht mehr: er reist in der Einmalmeldung durch den Datenordner (Nr. 40). */
     $st = oc_state();
     $text = $morgen ? oc_tomorrow_text($st) : oc_announce_text($st);
-    if ($text === '') { $text = oc_t('ANSAGE.TEST_LEER'); }
-    $url = oc_tts_url($text);
-    if ($url === null) {
-        return array(oc_t('TEST.T_SAY'),
-            '<div class="sm-hinweis">' . oc_t('TEST.TTS_AUDIOSERVER') . '</div>'
-            . '<div class="sm-pre">' . oc_e($text) . '</div>');
+    if ($text === '') { $text = oc_t('OC_ANSAGE.TEST_LEER'); }
+    $r = oc_say_ergebnis($text);
+    $k = oc_ansage_k();
+    if ($r['stand'] === -1) {
+        return array(oc_t('TEST.T_SAY'), '<div class="sm-hinweis">'
+            . oc_e(sprintf(oc_t('TEST.SAY_NICHTS'), ansage_kennung_text($r['kennung'], $k))) . '</div>');
     }
-    $alexa = (oc_config()['tts']['mode'] === 'alexang');   // Ansage-2
-    $google = (oc_config()['tts']['mode'] === 'cc4lox');   // Ansage-3
-    if ($url === '') {
-        return array(oc_t('TEST.T_SAY'),
-            '<div class="sm-warnung">' . oc_t($alexa ? 'TEST.TTS_ALEXA_KEIN_TOKEN'
-                : ($google ? 'TEST.TTS_GOOGLE_KEIN_TOKEN' : 'TEST.TTS_KEINE_IP')) . '</div>');
-    }
-    $ok = oc_say($text);
-    /* Bei Alexa-NG nennt die Zeile die Antwort (HTTP-Code bzw. Verbindungs-
-     * fehler und GRUND) - nie das Token. */
+    $was = ($r['stand'] === 1)
+        ? sprintf(oc_t('TEST.SAY_WAS'), (int) $r['zeichen'], (int) $r['http']) . ($r['zeile'] !== '' ? ' ' . $r['zeile'] : '')
+        : ansage_kennung_text($r['kennung'], $k);
     return array(oc_t('TEST.T_SAY'),
-        oc_zeile($ok, $ok ? oc_t('TEST.SAY_OK') : oc_t('TEST.SAY_FEHLER'),
-            ($alexa && !$ok) ? oc_t('TEST.SAY_ALEXA_FEHLER') . ' ' . oc_e(oc_ansage_letzte())
-                /* Ansage-3: bei Google steht die Antwort immer da, auch bei
-                 * Erfolg (EINGEREIHT, UNVERAENDERT, TEXT_NULL) - "gesendet",
-                 * nicht "gesprochen". */
-                : ($google ? oc_t('TEST.SAY_GOOGLE_ANTWORT') . ' ' . oc_e(oc_ansage_letzte()) : ''))
-        . '<div class="sm-pre">' . oc_e($text) . '</div>');
+        oc_zeile($r['stand'] === 1, $r['stand'] === 1 ? oc_t('TEST.SAY_OK') : oc_t('TEST.SAY_FEHLER'), oc_e($was)));
 }
 
 function oc_test_ptest()

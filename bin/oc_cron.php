@@ -226,9 +226,9 @@ if ((int) date('j') === 1 && (int) date('G') >= 8 && !is_file($oc_marke)) {
         if (!empty($cfg['notify']['audio'])) {
             $t = str_replace(array('%DYN%', '%FIX%'),
                 array(oc_num($vm['dynp'], 1), oc_num($vm['fix'], 1)),
-                oc_t('ANSAGE.MONATSBERICHT'));
+                oc_t('OC_ANSAGE.MONATSBERICHT'));
             $t .= ' ' . str_replace('%D%', oc_num(abs($vm['diff']), 1),
-                oc_t($vm['diff'] >= 0 ? 'ANSAGE.MONAT_DYN_BESSER' : 'ANSAGE.MONAT_FIX_BESSER'));
+                oc_t($vm['diff'] >= 0 ? 'OC_ANSAGE.MONAT_DYN_BESSER' : 'OC_ANSAGE.MONAT_FIX_BESSER'));
             oc_say($t);
         }
     }

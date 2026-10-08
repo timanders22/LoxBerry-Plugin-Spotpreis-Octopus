@@ -7,6 +7,32 @@ HTTP-Endpunkt als Rückfallebene.
 
 ---
 
+## Neu in 1.1.22
+
+Sprachausgabe in Hausform (Entscheidung 40, Stufe 2). Gemessen unter PHP 7.4 und 8.5 gegen Attrappen
+(Music Server, MusicServer4Home, eigene Vorlage, Alexa-NG, Chromecast 4 Lox NG); nicht am Gerät und nicht an
+einem echten Lautsprecher.
+
+* **Einstellungen der Sprachausgabe** kommen jetzt aus dem gemeinsamen Baustein der Plugins dieses Hauses.
+  Neu wählbar ist die Ausgabeart „aus“; ab Werk bleibt es beim Loxone Music Server (mit leerer IP spricht er
+  nicht). Alexa-NG hat jetzt ein eigenes Feld für die Lautstärke (leer = Ansagelautstärke von Alexa-NG).
+* **Adresse und Vorlage müssen im Heimnetz liegen** (private IPv4-Bereiche, Namen ohne Punkt oder mit
+  `.local`, `.lan`, `.home`, `.fritz.box`, `.intern` …). Eine Adresse im Internet wird beim Speichern
+  beanstandet, beim Zurückspielen abgewiesen und vor jedem Senden noch einmal geprüft.
+* Sprache genau zwei Buchstaben (bisher bis zu acht), Zonen als Zahlen mit Komma (je wahlweise
+  `~Lautstärke` 1 bis 100), Lautstärken 1 bis 100 oder leer. Bei einer Beanstandung wird nichts gespeichert,
+  die Eingaben bleiben im Formular stehen.
+* Die Testansagen im Reiter Test (aktueller Preis, Preise morgen) melden Ergebnis, Zeichenzahl und
+  HTTP-Code – den Ansagetext zeigen sie nicht mehr an. Ein Neuladen der Seite spricht nicht noch einmal.
+* Die Selbstprüfung nennt in der Zeile „Sprachausgabe“ auch das Ergebnis der letzten Ansage. Ins Protokoll
+  kommt je Ansage eine Zeile mit Art, Ergebnis, Zeichenzahl und HTTP-Code – nie der Text, nie ein Sprechtoken.
+* Baustein-Liste: die Spalte „Eingänge verbinden mit“ in der Form `I1 = #N, I2 = #M` (für das
+  Leitungswerkzeug).
+* Gemeinsame Dateien: Fahrplaner `planer.php` 1.1.9 (ein direkter Aufruf über den Webserver bekommt 403),
+  Sprachmodul 1.1.1.
+
+**In Loxone:** nichts zu tun. Die Antwort auf `?aktion=say` bleibt `SAY;OK=…;GESPERRT=…;TEXTLAENGE=…`.
+
 ## Was 1.1.21 behebt
 
 Gemeinsame Sprachausgabe, Ansagetext nicht mehr im Protokoll (Entscheidung 40, Stufe 1).
