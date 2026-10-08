@@ -7,6 +7,18 @@ HTTP-Endpunkt als Rückfallebene.
 
 ---
 
+## Neu in 1.1.23
+
+Kopf wie alle Hausplugins: Statusübersicht über den Reitern, Zusammenfassung oben im ersten Reiter.
+
+* **Statusübersicht über den Reitern, immer sichtbar** (die Preiskacheln erscheinen weiter nur, wenn
+  Preise vorliegen): Abruf ohne Dienst, ob Preise für heute vorliegen (mit Stand, Demo-Modus oder
+  veraltet), ob die Preise für morgen veröffentlicht sind, ob ein Octopus-Konto eingetragen ist und ob
+  MQTT eingeschaltet ist – aus Werten, die die Seite ohnehin liest, ohne eigene Abfrage.
+* **Zusammenfassung** des Plugins in einem grünen Kasten oben im Reiter Einstellungen, über der
+  Erklärung zum Zugang.
+* Nur Oberfläche; gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
+
 ## Neu in 1.1.22
 
 Sprachausgabe in Hausform (Entscheidung 40, Stufe 2). Gemessen unter PHP 7.4 und 8.5 gegen Attrappen

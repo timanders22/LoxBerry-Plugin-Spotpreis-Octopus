@@ -1197,6 +1197,43 @@ if (!empty($oc_cfg['mqtt_enabled']) && $oc_gw['vorhanden'] && !$oc_gw['autostart
 <div style="margin-top:8px;"><?php echo oc_chart($oc_st); ?></div>
 <?php } ?>
 
+<?php /* Kopf (Entscheidung Nr. 43, seit 1.1.23): Statusuebersicht ueber den
+   Reitern, IMMER sichtbar - die Preiskacheln darueber stehen nur da, wenn
+   Preise vorliegen. Keine eigene Abfrage: $oc_st, $oc_zug, $oc_gw und $oc_cfg
+   stehen oben schon fest. */ ?>
+<table class="sm-tbl" style="max-width:620px">
+<tr><th><?php echo oc_t('KACHEL.EIGENSCHAFT'); ?></th><th><?php echo oc_t('KACHEL.WERT'); ?></th></tr>
+<tr><td><?php echo oc_t('KACHEL.ABRUF'); ?></td>
+    <td><?php echo oc_t('KACHEL.OHNE_DIENST'); ?></td></tr>
+<tr><td><?php echo oc_t('KACHEL.PREISE'); ?></td>
+    <td><?php
+if (!empty($oc_st['ok']) && !empty($oc_st['demo'])) {
+    echo '<span class="sm-an">' . oc_t('KACHEL.PREISE_DEMO') . '</span>';
+} elseif (!empty($oc_st['ok']) && !empty($oc_st['veraltet'])) {
+    echo '<span class="sm-aus">' . oc_t('KACHEL.PREISE_VERALTET') . '</span>';
+} elseif (!empty($oc_st['ok'])) {
+    echo '<span class="sm-an">' . oc_t('KACHEL.PREISE_DA') . '</span>';
+} else {
+    echo '<span class="sm-aus">' . oc_t('KACHEL.PREISE_KEINE') . '</span>';
+}
+echo !empty($oc_st['stand']) ? ' &middot; ' . oc_t('TEXT.STAND') . ' ' . date('d.m.Y H:i', (int) $oc_st['stand']) : '';
+?></td></tr>
+<tr><td><?php echo oc_t('KACHEL.MORGEN'); ?></td>
+    <td><?php echo !empty($oc_st['tomorrow_ok']) ? oc_t('KACHEL.MORGEN_DA') : oc_t('KACHEL.MORGEN_OFFEN'); ?></td></tr>
+<tr><td><?php echo oc_t('KACHEL.KONTO'); ?></td>
+    <td><?php echo $oc_zug['email'] !== '' ? oc_t('KACHEL.KONTO_DA') : oc_t('KACHEL.KONTO_LEER'); ?></td></tr>
+<tr><td>MQTT</td>
+    <td><?php
+if (empty($oc_cfg['mqtt_enabled'])) {
+    echo '<span class="sm-aus">' . oc_t('KACHEL.MQTT_AUS') . '</span>';
+} elseif ($oc_gw['vorhanden'] && !$oc_gw['autostart']) {
+    echo '<span class="sm-aus">' . oc_t('KACHEL.MQTT_OHNE_AUTOSTART') . '</span>';
+} else {
+    echo '<span class="sm-an">' . oc_t('KACHEL.MQTT_EIN') . '</span>';
+}
+?></td></tr>
+</table>
+
 <!-- Reiterleiste: echte Links, JavaScript faengt den Klick ab. -->
 <?php
 /*
@@ -1255,6 +1292,7 @@ $oc_reiter = array(
 
 <!-- ==================== Reiter: Einstellungen ==================== -->
 <div class="sm-seite<?php echo $oc_tab === 'tab-settings' ? ' sm-active' : ''; ?>" id="tab-settings">
+<div class="sm-hinweis"><?php echo oc_t('EINST.WAS_IST_DAS'); ?></div>
 
 <h2><?php echo oc_t('EINST.H_ZUGANG'); ?></h2>
 <div class="sm-hinweis"><?php echo oc_t('EINST.ZUGANG_ERKLAERUNG'); ?></div>
