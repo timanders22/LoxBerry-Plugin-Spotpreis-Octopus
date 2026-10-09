@@ -4317,9 +4317,10 @@ function oc_ansage_k()
                  'kopf' => array('User-Agent: LoxBerry-Plugin-Octopus/1.0 (+https://wiki.loxberry.de)'),
                  'ordner' => @is_dir($d) ? $d : '',
                  't' => function ($s) { return oc_t($s); },
-                 /* Zwei Saetze des Moduls sagen "ab Werk aus" - in dieser Linie ist ab Werk der Music
-                  * Server gewaehlt (Entwurf F7); dafuer stehen eigene Saetze in der Sprachdatei. */
-                 'schluessel' => array('ART_HINWEIS' => 'EINST.TTS_ART_HINWEIS', 'O_AUS' => 'EINST.TTS_O_AUS'));
+                 /* Ab Werk ist der Music Server gewaehlt (Entwurf F7, oc_tts()). Die passenden Saetze
+                  * bringt das Modul seit 1.1.2 mit 'werk' selbst mit; die eigenen Umlenkungen auf
+                  * EINST.TTS_ART_HINWEIS/TTS_O_AUS sind seit 1.1.24 gestrichen (X-10). */
+                 'werk' => 'musicserver');
 }
 
 /**

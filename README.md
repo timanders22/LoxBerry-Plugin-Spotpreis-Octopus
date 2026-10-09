@@ -7,6 +7,22 @@ HTTP-Endpunkt als Rückfallebene.
 
 ---
 
+## Neu in 1.1.24
+
+Gemeinsame Sprachausgabe 1.1.2, Baustein-Liste in der Schreibweise des Leitungswerkzeugs.
+
+* **Sprachausgabe 1.1.2:** gemeinsames Modul und Abschnitt [ANSAGE] mit 157 Sätzen. Das Modul weiß
+  jetzt, dass hier ab Werk der Loxone Music Server eingestellt ist: Die Auswahl nennt ihn
+  „(ab Werk)“, „aus“ heißt schlicht „aus“, und der Hinweis darunter kommt aus dem Modul. Die
+  eigenen Sätze dafür sind gestrichen. Dazu aus dem Modul: eigene Sätze zu einem unbekannten
+  Eintrag im Block der Sprachausgabe, Zeichenzahl bei kaputtem UTF-8 in Zeichen, die Meldung
+  „Port abgewiesen“ nennt das Feld nicht mehr doppelt.
+* **Baustein-Liste (Reiter Einbindung in Loxone):** Bei den virtuellen Eingängen #1 bis #11 steht
+  in der Spalte „Eingänge verbinden mit“ jetzt „– (MQTT-Gateway, Titel muss genau passen)“: Der
+  Strich sagt, dass aus der Liste nichts angeschlossen wird; den Wert liefert das MQTT-Gateway.
+  Gleiche Bausteine, gleiche Verbindungen.
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
+
 ## Neu in 1.1.23
 
 Kopf wie alle Hausplugins: Statusübersicht über den Reitern, Zusammenfassung oben im ersten Reiter.
