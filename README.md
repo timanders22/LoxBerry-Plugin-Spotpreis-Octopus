@@ -7,6 +7,41 @@ HTTP-Endpunkt als Rückfallebene.
 
 ---
 
+## Neu in 1.1.25
+
+Einbindung in Loxone in Vollausstattung: fünf Seiten aus dem gemeinsamen Musterprojekt mit fünf Bildern und
+Schritt-für-Schritt-Anleitung, dazu eine fertige Vorlage für die Befehle.
+
+* **Reiter „Einbindung in Loxone“, Schritt 6:** Statt der bisherigen Liste mit 24 Zeilen stehen dort die fünf
+  Seiten des [LoxBerry-Plugins Musterprojekts](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt),
+  je mit Kasten „So übernehmen Sie diese Seite“, Tabelle, Hinweisen und Bild: „Spotpreis Octopus“ (35 Zeilen:
+  läuft das Plugin – mit Lebenszeichen `status_zaehler` an einer Analogwertvalidierung –, Preis jetzt,
+  Preis-Push, Test-Push, Ansage-Tasten), „Spotpreis Octopus Steuerung“ (35: alle vier Schaltregeln mit Status,
+  abgesichert über das Lebenszeichen), „Spotpreis Octopus Werte“ (31: heute, morgen, günstigstes Fenster,
+  Fahrplaner), „Spotpreis Octopus Freigaben und Tarif“ (28: günstig freigeben, teuer sperren, Strommix,
+  Tarifvergleich) und „Spotpreis Octopus Stundenprofil“ (27: der Loxone-Baustein Spotpreis-Optimierer mit den
+  24 Stundenpreisen). Die Namen folgen dem eingestellten MQTT-Präfix.
+* **Die alte Liste war an mehreren Stellen nicht baubar:** Namen mit `VE_` (das Gateway liefert sie ohne),
+  „Analogwert-Vergleich“, „Textgenerator“ und „Statistik“ als Typ, ein Merker mit Schwelle. Und sie erkannte
+  einen stehenden LoxBerry nie: `alter` bleibt dann auf seinem letzten Wert. Wer sie gebaut hat, nimmt die
+  Seite „Spotpreis Octopus“ neu.
+* **Neu: Vorlage für Befehle (virtueller Ausgang)** in Schritt 4 – `VQ_octopus_befehle.xml`, Behälter
+  „Octopus Dynamic Befehle“ mit `OCTOPUS_ANSAGE`, `OCTOPUS_ANSAGE_MORGEN` und `OCTOPUS_TESTPUSH` (Adresse und
+  Aktionstoken eingetragen; nach „Neues Token erzeugen“ neu herunterladen). Schritt 4 nennt dazu die Adresse für
+  `saytomorrow`.
+* **Verhalten geändert: Die Schaltsignale `regel1_aktiv` bis `regel4_aktiv` gehen bei jedem Lauf hinaus**
+  (jede Minute, wie `ok` und `alter`), nicht nur bei einer Änderung. Bis 1.1.24 ging „regel1_aktiv 0“ einmal
+  hinaus; verlor der UDP-Eingang des MQTT-Gateways dieses eine Datagramm, lief der Verbraucher bis zum nächsten
+  vollen Satz (30 Minuten) weiter. Kosten: vier Nachrichten je Minute mehr.
+* **Vorlage der virtuellen Eingänge:** die 0/1-Felder (`ok`, `demo`, `cur_fehlt`, `neg`, `morgen_ok`,
+  `co2_clean`, `ann`, `audio`, `push`, `ptest`, `regelN_aktiv`) tragen MinVal 0 / MaxVal 1 statt 0 bis 999
+  (beide Vorlagen, MQTT und HTTP). Bestehende Anlagen müssen nicht neu einlesen.
+* Schritt 3 sagt, dass die Vorlage die Stundenpreise `ph00` bis `ph23` nur enthält, wenn das Stundenprofil
+  vorher auf „absolut“ steht; Schritt 5 nennt den Laufzähler als dritte Größe der Ausfallerkennung.
+* Reiter Test: der Satz zum Original-Audioserver nennt den Baustein „Text Generator“ (Name in Config). Hilfe:
+  das Rang-Beispiel heißt jetzt Rang ≤ 16 (Viertelstunden) wie die Liste.
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
+
 ## Neu in 1.1.24
 
 Gemeinsame Sprachausgabe 1.1.2, Baustein-Liste in der Schreibweise des Leitungswerkzeugs.
@@ -1354,8 +1389,12 @@ dort — es wäre sonst ohne Token über HTTP erreichbar.
 ## Einbindung in Loxone
 
 Der Reiter *Einbindung in Loxone* führt in sieben Schritten durch die
-Einrichtung und enthält eine **komplette Baustein-Liste zum 1:1-Nachbauen**
-(22 Zeilen mit Typ, Namensvorschlag, Parametern und Verdrahtung).
+Einrichtung. Schritt 6 enthält die **fünf Seiten des
+[LoxBerry-Plugins Musterprojekts](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt)**
+zum Nachbauen, je mit Anleitung, Baustein-Liste (eine Zeile je Baustein) und
+Bild: Preis und Meldungen, Schaltregeln, Werte, Freigaben und Tarif,
+Stundenprofil für den Spotpreis-Optimierer. Schritt 3 und 4 bieten die
+Vorlagen für die virtuellen Eingänge und für die Befehle (virtueller Ausgang).
 
 Kurzfassung:
 
@@ -1368,7 +1407,9 @@ Kurzfassung:
 3. Ausfallerkennung über `alter` (Minuten seit dem letzten erfolgreichen
    Abruf). Virtuelle Eingänge behalten ihren letzten Wert — ohne diese Größe
    sieht in der App alles normal aus, obwohl die Preise von gestern sind.
-   Schwelle deutlich über den Abholtakt legen, Vorschlag 90 Minuten.
+   Schwelle deutlich über den Abholtakt legen, Vorschlag 90 Minuten. Steht
+   der LoxBerry selbst, bleibt auch `alter` stehen – dann zeigt es nur der
+   Laufzähler `status_zaehler` an einer Analogwertvalidierung (Tmc 900 s).
 
 Wer den Gateway nicht nutzen will: der Endpunkt liefert alle Werte in einer
 Zeile.

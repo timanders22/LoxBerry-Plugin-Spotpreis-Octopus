@@ -202,7 +202,10 @@ if ($oc_ist_post && isset($_POST['plantest'])) {
 
 /* ================= Loxone-Vorlage herunterladen ================= */
 if ($oc_ist_post && isset($_POST['download'])) {
-    $oc_art = ((string) $_POST['download'] === 'http_in') ? 'http_in' : 'mqtt_in';
+    /* Feste Liste der Arten; alles andere ist die MQTT-Vorlage wie bisher. 'vq_befehle' seit 1.1.25
+     * (Welle Bild 16, Entwurf Welle 16 oc, Entscheidung 8). */
+    $oc_art = in_array((string) $_POST['download'], array('http_in', 'vq_befehle'), true)
+        ? (string) $_POST['download'] : 'mqtt_in';
     list($oc_name, $oc_inhalt) = oc_vorlage($oc_art);
     header('Content-Type: application/x-download');
     /* Die Anfuehrungszeichen um den Dateinamen sind Pflicht: ohne sie
@@ -1095,6 +1098,15 @@ if ($oc_rahmen) {
 .sm-row { display: flex; gap: 12px; }
 .sm-row > div { flex: 1; }
 .sm-small { font-size: 0.88em; color: #555; }
+/* Welle Bild 16 (1.1.25): Bild der Bausteine aus dem gemeinsamen Musterprojekt, Seiten, Schritte und Hinweise
+   je Baustein-Liste (wie Funkwacht 1.0.15). */
+.sm-bild { margin: 12px 0; }
+.sm-bild img { max-width: 100%; height: auto; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
+.sm-bild figcaption { font-size: .9em; color: #555; margin-top: 4px; }
+.sm-wrap h4.sm-h4 { color: #4f7d17; font-size: 0.98em; font-weight: 700; margin: 22px 0 4px;
+    padding-top: 10px; border-top: 1px solid #e0e0e0; }
+.sm-schritte { margin: 6px 0 0 18px; padding: 0; }
+.sm-schritte li { margin: 3px 0; }
 </style>
 <div class="sm-wrap">
 
@@ -1966,6 +1978,7 @@ if ($oc_x3_ohne || $oc_x3_mit) { ?>
 </div>
 </form>
 <div class="sm-hilfe"><?php echo oc_t('LOX.DL_HILFE'); ?></div>
+<div class="sm-hilfe"><?php echo oc_t('LOX.DL_PROFIL'); ?></div>
 <!-- Hausstandard: der Satz zum zweimaligen Import gehoert SICHTBAR in
      den Reiter, nicht nur in die Hilfe. Er fehlte bis 1.1.3 ganz -
      gemessen mit einer Suche ueber Sprachdateien und Hilfetext. -->
@@ -1974,55 +1987,61 @@ if ($oc_x3_ohne || $oc_x3_mit) { ?>
 
 <div class="sm-step"><b><?php echo oc_t('LOX.S4_T'); ?></b><br><?php echo oc_t('LOX.S4'); ?>
 <div class="sm-pre"><?php echo oc_e($oc_endpunkt); ?>?token=<?php echo oc_e($oc_cfg['aktionstoken']); ?>&amp;aktion=say
+<?php echo oc_e($oc_endpunkt); ?>?token=<?php echo oc_e($oc_cfg['aktionstoken']); ?>&amp;aktion=saytomorrow
 <?php echo oc_e($oc_endpunkt); ?>?token=<?php echo oc_e($oc_cfg['aktionstoken']); ?>&amp;aktion=ptest
 <?php echo oc_e($oc_endpunkt); ?>?token=<?php echo oc_e($oc_cfg['aktionstoken']); ?>&amp;aktion=refresh</div>
+<!-- Welle Bild 16 (1.1.25; Entwurf Welle 16 oc, Entscheidung 8): die ersten drei Aktionen als fertige Vorlage
+     fuer einen virtuellen Ausgang (oc_vorlage('vq_befehle')). -->
+<form action="index.php" method="post" style="margin-top:8px;">
+<input data-role="none" type="hidden" name="fmt" value="<?php echo oc_e($oc_fmt); ?>">
+<input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+<div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="download" value="vq_befehle"><?php echo oc_t('LOX.DL_VQ'); ?></button>
+</div>
+</form>
+<div class="sm-hilfe"><?php echo oc_e(oc_t('LOX.VQ_HILFE')); ?></div>
 </div>
 
 <div class="sm-step"><b><?php echo oc_t('LOX.S5_T'); ?></b><br><?php echo oc_t('LOX.S5'); ?></div>
 
 <div class="sm-step"><b><?php echo oc_t('LOX.S6_T'); ?></b><br><?php echo oc_t('LOX.S6'); ?>
-<table class="sm-tbl">
-<tr><th>#</th><th><?php echo oc_t('LOX.B_TYP'); ?></th><th><?php echo oc_t('LOX.B_NAME'); ?></th>
-    <th><?php echo oc_t('LOX.B_PARAM'); ?></th><th><?php echo oc_t('LOX.B_EIN'); ?></th></tr>
-<?php
-// M6 (seit 1.1.16): der Name des Eingangs, wie der Gateway ihn bildet.
-$oc_pf = oc_thema_flach($oc_cfg['mqtt_topic']);
-$oc_bausteine = array(
-    array(1,  'LOX.T_VE',        'VE_' . $oc_pf . '_cur',        'LOX.P_VE_CUR',    'LOX.E_MQTT'),
-    array(2,  'LOX.T_VE',        'VE_' . $oc_pf . '_cur_h',      'LOX.P_VE_CURH',   'LOX.E_MQTT'),
-    array(3,  'LOX.T_VE',        'VE_' . $oc_pf . '_rank',       'LOX.P_VE_RANK',   'LOX.E_MQTT'),
-    array(4,  'LOX.T_VE',        'VE_' . $oc_pf . '_level',      'LOX.P_VE_LEVEL',  'LOX.E_MQTT'),
-    array(5,  'LOX.T_VE',        'VE_' . $oc_pf . '_ok',         'LOX.P_VE_OK',     'LOX.E_MQTT'),
-    array(6,  'LOX.T_VE',        'VE_' . $oc_pf . '_alter',      'LOX.P_VE_ALTER',  'LOX.E_MQTT'),
-    array(7,  'LOX.T_VE',        'VE_' . $oc_pf . '_fenster_in', 'LOX.P_VE_FIN',    'LOX.E_MQTT'),
-    array(8,  'LOX.T_VE',        'VE_' . $oc_pf . '_neg',        'LOX.P_VE_NEG',    'LOX.E_MQTT'),
-    array(9,  'LOX.T_VE',        'VE_' . $oc_pf . '_co2_clean',  'LOX.P_VE_CO2',    'LOX.E_MQTT'),
-    array(10, 'LOX.T_VE',        'VE_' . $oc_pf . '_ann',        'LOX.P_VE_ANN',    'LOX.E_MQTT'),
-    array(11, 'LOX.T_VE',        'VE_' . $oc_pf . '_ptest',      'LOX.P_VE_PTEST',  'LOX.E_MQTT'),
-    array(12, 'LOX.T_STATUS',    'ST_Strompreis',                'LOX.P_STATUS',    'LOX.E_1'),
-    array(13, 'LOX.T_SCHWELLE',  'SW_Guenstig',                  'LOX.P_SW_G',      'LOX.E_1'),
-    array(14, 'LOX.T_SCHWELLE',  'SW_Teuer',                     'LOX.P_SW_T',      'LOX.E_1'),
-    array(15, 'LOX.T_VERGLEICH', 'VG_Rang_Guenstig',             'LOX.P_VG_RANG',   'LOX.E_3'),
-    // Planer-30: Rang -1 heisst auch "weniger als 12 kuenftige Preisstunden" - #16 haelt das auf.
-    array(16, 'LOX.T_VERGLEICH', 'VG_Rang_bekannt',              'LOX.P_VG_BEKANNT', 'LOX.E_3'),
-    array(17, 'LOX.T_ODER',      'OD_Laden_frei',                'LOX.P_OD',        'LOX.E_ODER'),
-    array(18, 'LOX.T_UND',       'UN_Laden',                     'LOX.P_UN',        'LOX.E_UND'),
-    array(19, 'LOX.T_MERKER',    'MK_Daten_alt',                 'LOX.P_MK_ALT',    'LOX.E_6'),
-    // Regel A4: ein UND/ODER hat hoechstens zwei Eingaenge - deshalb zwei ODER-Bausteine.
-    array(20, 'LOX.T_ODER',      'OD_Meldung',                   'LOX.P_OD_MELD',   'LOX.E_MELD'),
-    array(21, 'LOX.T_ODER',      'OD_Meldung_Test',              'LOX.P_OD_MELD2',  'LOX.E_MELD2'),
-    array(22, 'LOX.T_BENACHR',   'BN_Strompreis',                'LOX.P_BN',        'LOX.E_21'),
-    array(23, 'LOX.T_TEXTGEN',   'TG_Ansage',                    'LOX.P_TG',        'LOX.E_10'),
-    array(24, 'LOX.T_STATISTIK', 'SG_Preisverlauf',              'LOX.P_SG',        'LOX.E_1'),
-);
-foreach ($oc_bausteine as $oc_b) { ?>
-<tr><td><?php echo $oc_b[0]; ?></td><td><?php echo oc_t($oc_b[1]); ?></td>
-    <td><span class="sm-mono"><?php echo oc_e($oc_b[2]); ?></span></td>
-    <td><?php echo oc_t($oc_b[3]); ?></td><td><?php echo oc_t($oc_b[4]); ?></td></tr>
-<?php } ?>
-</table>
-<div class="sm-hilfe"><?php echo oc_t('LOX.B_ERKLAERUNG'); ?></div>
+<?php /* Welle Bild 16 (1.1.25; Hausherr 11.10.2026: Vollausstattung, laientauglich; Entwurf Welle 16 oc):
+   fuenf Seiten aus dem LoxBerry-Plugins Musterprojekt (oc_bausteinliste()). Je Seite: Ueberschrift, Kasten
+   "So uebernehmen Sie diese Seite", Tabelle, Hinweise, Bild, Link - alle immer sichtbar. Jede Zelle und jeder
+   Satz ist reiner Text und wird maskiert; nur MUSTERPROJEKT traegt den Link. Bis 1.1.24 stand hier eine feste
+   Tabelle mit 24 Zeilen ($oc_bausteine). */
+$oc_bl = oc_bausteinliste(); ?>
+<div class="sm-hilfe"><?php echo oc_e(sprintf(oc_t('LOX.BAUSTEINE_VORTEXT'), $oc_cfg['mqtt_topic'])); ?></div>
 </div>
+<?php foreach ($oc_bl as $oc_bs) { ?>
+<h4 class="sm-h4"><?php echo oc_e($oc_bs['kopf']); ?></h4>
+<div class="sm-hinweis"><b><?php echo oc_e(oc_t('LOX.SCHRITTE_TITEL')); ?></b>
+<ol class="sm-schritte">
+<?php foreach ($oc_bs['schritte'] as $oc_bx) { ?>
+<li><?php echo oc_e($oc_bx); ?></li>
+<?php } ?>
+</ol></div>
+<div class="sm-breit"><table class="sm-tbl">
+<tr><th><?php echo oc_e(oc_t('LOX.BS_SP_NR')); ?></th><th><?php echo oc_e(oc_t('LOX.B_TYP')); ?></th>
+    <th><?php echo oc_e(oc_t('LOX.B_NAME')); ?></th><th><?php echo oc_e(oc_t('LOX.B_PARAM')); ?></th>
+    <th><?php echo oc_e(oc_t('LOX.B_EIN')); ?></th></tr>
+<?php foreach ($oc_bs['zeilen'] as $oc_bz) { ?>
+<tr><td><?php echo (int) $oc_bz[0]; ?></td><td><?php echo oc_e($oc_bz[1]); ?></td><td><?php echo oc_e($oc_bz[2]); ?></td>
+    <td><?php echo oc_e($oc_bz[3]); ?></td><td><?php echo oc_e($oc_bz[4]); ?></td></tr>
+<?php } ?>
+</table></div>
+<div class="sm-warnung"><b><?php echo oc_e(oc_t('LOX.HINWEISE_TITEL')); ?></b>
+<ul class="sm-schritte">
+<?php foreach ($oc_bs['hinweise'] as $oc_bx) { ?>
+<li><?php echo oc_e($oc_bx); ?></li>
+<?php } ?>
+</ul></div>
+<figure class="sm-bild">
+<img src="<?php echo oc_e($oc_bs['bild']); ?>" alt="<?php echo oc_e(oc_t('LOX.BILD_ALT')); ?>" loading="lazy">
+<figcaption><?php echo oc_e(sprintf(oc_t('LOX.BILD_UNTERSCHRIFT'), $oc_bs['seite'])); ?></figcaption>
+</figure>
+<div class="sm-hilfe"><?php echo oc_t('LOX.MUSTERPROJEKT'); ?></div>
+<?php } ?>
 
 <div class="sm-step"><b><?php echo oc_t('LOX.S7_T'); ?></b><br><?php echo oc_t('LOX.S7'); ?></div>
 </div><!-- /tab-loxone -->

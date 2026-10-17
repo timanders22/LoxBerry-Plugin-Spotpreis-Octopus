@@ -4084,7 +4084,14 @@ function oc_mqtt_praefix_merken($praefix)
 /** Die Themen, die bei JEDEM Lauf hinausgehen, geaendert oder nicht (M3). */
 function oc_mqtt_jeder_lauf()
 {
-    return array('ok', 'alter');
+    /* Welle Bild 16 (1.1.25; Entwurf Welle 16 oc, Entscheidung 9 b, Hausherr 17.10.2026): dazu die
+     * Schaltsignale regelN_aktiv. Bis 1.1.24 ging "regel1_aktiv 0" nur bei der Aenderung einmal hinaus;
+     * verwarf der UDP-Eingang des Gateways dieses eine Datagramm (unter Last 17-70 %), lief der Verbraucher
+     * bis zum naechsten Vollsatz (30 min) weiter. Jetzt geht jedes Schaltsignal bei jedem Lauf hinaus
+     * (vier Datagramme je Minute) und zaehlt - wie ok und alter - nicht als Aenderung. */
+    $t = array('ok', 'alter');
+    for ($i = 1; $i <= OC_REGELN; $i++) { $t[] = 'regel' . $i . '_aktiv'; }
+    return $t;
 }
 
 /** Die Themen, die bei einem Ausfall (ok=0) hinausgehen - nur das Signal (C3). */
@@ -4566,6 +4573,11 @@ function oc_thema_grenzen($einheit, $schluessel = '')
     $k = (string) $schluessel;
     if ($k === 'rank' || $k === 'rankd' || $k === 'rank_h') { return array(-1, 999); }
     if ($k === 'level') { return array(-1, 3); }
+    /* Welle Bild 16 (1.1.25; Entwurf Welle 16 oc, Entscheidung 14): die 0/1-Felder MinVal 0 / MaxVal 1 statt
+     * 0..999. Erst ein Eingang mit MaxVal 1 fuehrt in Loxone den digitalen Ausgang (Regeln/09); aWATTar fuehrt
+     * diese Felder schon so. Bestehende Anlagen muessen nicht neu einlesen - nur die Grenzen aendern sich. */
+    if (in_array($k, array('ok', 'demo', 'cur_fehlt', 'neg', 'morgen_ok', 'co2_clean', 'ann', 'audio', 'push', 'ptest'), true)
+        || preg_match('/^regel[0-9]+_aktiv$/', $k)) { return array(0, 1); }
     /* M5 (seit 1.1.16): die Grenze gegen den rechenbaren Wert. Ein Wert ueber
      * MaxVal wird im Miniserver zu 0 (Regeln/07). 'alter' traegt ohne je einen
      * Abruf 9999 und nach einem Tag Ausfall mehr als 1440 - mit MaxVal 1440
@@ -4642,7 +4654,33 @@ function oc_xml_virtual_in_http($kopf, $cmds)
 }
 
 /**
- * Vorlage erzeugen. $art ist 'mqtt_in' oder 'http_in'.
+ * Virtueller Ausgang (Welle Bild 16, 1.1.25; Entwurf Welle 16 oc, Entscheidung 8): die Befehle, mit denen
+ * Loxone das Plugin anspricht. Form wie die Ausfuhr aus Loxone Config und wie
+ * Musterprojekt/vorlagen_w16/VQ_octopus_befehle.xml: Wurzel VirtualOut mit HintText, Title, Comment, Address,
+ * CmdInit, CloseAfterSend="true", CmdSep; erstes Kind Info templateType="3"; je Befehl Title, Comment,
+ * CmdOnMethod, CmdOffMethod, CmdOn, CmdOnHTTP, CmdOnPost, CmdOff, CmdOffHTTP, CmdOffPost, CmdAnswer, Analog,
+ * Repeat, RepeatRate, HintText (digital, nur CmdOn). CRLF und Tabulator wie oc_xml_virtual_in_http().
+ */
+function oc_xml_virtual_out($kopf, $cmds)
+{
+    $crlf = "\r\n";
+    $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
+    $o .= '<VirtualOut HintText="" Title="' . oc_x($kopf['title']) . '" Comment="'
+        . oc_x(isset($kopf['comment']) ? $kopf['comment'] : '') . '" Address="'
+        . oc_x(isset($kopf['address']) ? $kopf['address'] : '') . '" CmdInit="" CloseAfterSend="true" CmdSep="">' . $crlf;
+    $o .= "\t" . '<Info templateType="3" minVersion="17010727"/>' . $crlf;
+    foreach ($cmds as $c) {
+        $o .= "\t" . '<VirtualOutCmd Title="' . oc_x($c['title']) . '" Comment="'
+            . oc_x(isset($c['comment']) ? $c['comment'] : '') . '" CmdOnMethod="GET" CmdOffMethod="GET" CmdOn="'
+            . oc_x($c['on']) . '" CmdOnHTTP="" CmdOnPost="" CmdOff="" CmdOffHTTP="" CmdOffPost="" CmdAnswer=""'
+            . ' Analog="false" Repeat="0" RepeatRate="0" HintText=""/>' . $crlf;
+    }
+    $o .= '</VirtualOut>' . $crlf;
+    return $o;
+}
+
+/**
+ * Vorlage erzeugen. $art ist 'mqtt_in', 'http_in' oder (seit 1.1.25) 'vq_befehle'.
  * Rueckgabe: array(dateiname, inhalt)
  */
 function oc_vorlage($art = 'mqtt_in')
@@ -4651,6 +4689,25 @@ function oc_vorlage($art = 'mqtt_in')
     $praefix = trim((string) $cfg['mqtt_topic']);
     if ($praefix === '') { $praefix = 'octopus'; }
     $fuss = 'Erzeugt vom LoxBerry-Plugin Octopus Dynamic (' . date('d.m.Y') . ')';
+
+    /* Welle Bild 16 (1.1.25; Entwurf Welle 16 oc, Entscheidung 8): die Befehle an das Plugin als fertige
+     * Vorlage fuer einen virtuellen Ausgang - Preisansage, Ansage Preise morgen, Test-Pushnachricht. Titel fest
+     * deutsch (Sprachregel 13.10.2026), Kommentare aus der Sprachdatei. 'refresh' bewusst nicht: es verwirft das
+     * Kraken-Token und meldet neu an (Sperre 60 s), der Minutentakt holt ohnehin alle 15 Minuten. Die Datei
+     * traegt das Aktionstoken - nach 'Neues Token erzeugen' neu herunterladen. */
+    if ($art === 'vq_befehle') {
+        $basis = '/plugins/' . oc_paths()['plugin'] . '/index.php?token=' . (string) $cfg['aktionstoken'] . '&aktion=';
+        return array('VQ_octopus_befehle.xml', oc_xml_virtual_out(array(
+            'title'   => 'Octopus Dynamic Befehle',
+            'comment' => oc_t('LOX.VQ_KOMMENTAR'),
+            'address' => 'http://' . oc_eigene_ip(),
+        ), array(
+            array('title' => 'OCTOPUS_ANSAGE', 'comment' => oc_t('LOX.VQ_K_ANSAGE'), 'on' => $basis . 'say'),
+            array('title' => 'OCTOPUS_ANSAGE_MORGEN', 'comment' => oc_t('LOX.VQ_K_ANSAGE_MORGEN'),
+                  'on' => $basis . 'saytomorrow'),
+            array('title' => 'OCTOPUS_TESTPUSH', 'comment' => oc_t('LOX.VQ_K_TESTPUSH'), 'on' => $basis . 'ptest'),
+        )));
+    }
 
     if ($art === 'http_in') {
         // Rueckfallebene: Loxone holt die Textzeile selbst und zieht die Werte
@@ -4699,6 +4756,115 @@ function oc_vorlage($art = 'mqtt_in')
         'polling' => '604800',
         'comment' => $fuss,
     ), $cmds));
+}
+
+/**
+ * Die Baustein-Listen fuer den Reiter "Einbindung in Loxone" (Welle Bild 16, 1.1.25; Hausherr 11.10.2026:
+ * Vollausstattung, ein absoluter Laie soll das Maximum leicht uebernehmen koennen; Entwurf Welle 16 oc,
+ * Entscheidungen 1, 12, 15 und O1). Fuenf Seiten aus dem LoxBerry-Plugins Musterprojekt, dort in Loxone Config
+ * gebaut und verbunden (Musterprojekt/baustein_listen.txt, Abschnitte "Spotpreis Octopus" 35, "... Steuerung" 35,
+ * "... Werte" 31, "... Freigaben und Tarif" 28 und "... Stundenprofil" 27 Zeilen, wortgleich). Je Tabellenzeile
+ * EIN Sprachschluessel LOX.Z<seite>_<nn> = "Typ | Name | Parameter | Eingaenge" ohne Auszeichnung; index.php gibt
+ * jede Zelle und jeden Satz maskiert aus.
+ *
+ * Die Liste zeigt das Themenpraefix ab Werk ("octopus"). Wie das MQTT-Gateway den Namen bildet (oc_thema_flach),
+ * werden "octopus_" und das Abo "octopus/#" in Zeilen, Kaesten und Hinweisen durch das eingestellte Praefix
+ * ersetzt; ab Werk bleibt alles wortgleich mit der Liste. OCTOPUS_ANSAGE usw. (Titel der Befehlsvorlage) und
+ * "Octopus" bleiben.
+ *
+ * Bis 1.1.24 stand im Reiter eine feste Tabelle mit 24 Zeilen ($oc_bausteine in index.php), die vom Code abwich:
+ * Namen mit "VE_" (das Gateway liefert sie ohne), Typen "Analogwert-Vergleich", "Textgenerator" und "Statistik",
+ * ein Merker mit Schwelle, kein Lebenszeichen - ein stehender LoxBerry meldete nie.
+ *
+ * Rueckgabe: je Seite 'kopf', 'seite' (Name der Musterseite), 'bild', 'schritte' und 'hinweise' (Saetze),
+ * 'zeilen' (je array(Nummer, Typ, Name, Parameter, Eingaenge)) - alles reiner Text.
+ */
+function oc_bausteinliste()
+{
+    $cfg = oc_config();
+    $thema = trim((string) $cfg['mqtt_topic']);
+    if ($thema === '') { $thema = 'octopus'; }
+    $map = array('octopus_' => oc_thema_flach($thema) . '_', 'octopus/#' => $thema . '/#');
+    $seiten = array(
+        array('kopf' => oc_t('LOX.BS1_KOPF'), 'seite' => 'Spotpreis Octopus', 'bild' => 'einbindung_loxone.png', 'z' => 1, 'n' => 35,
+              'schritte' => array(
+                oc_t('LOX.BS1_S1'),
+                oc_t('LOX.BS1_S2'),
+                oc_t('LOX.BS1_S3'),
+                oc_t('LOX.BS1_S4'),
+                oc_t('LOX.BS1_S5'),
+                oc_t('LOX.BS1_S6'),
+                oc_t('LOX.BS1_S7'),
+                oc_t('LOX.BS1_S8')),
+              'hinweise' => array(
+                oc_t('LOX.BS1_H1'),
+                oc_t('LOX.BS1_H2'),
+                oc_t('LOX.BS1_H3'),
+                oc_t('LOX.BS1_H4'),
+                oc_t('LOX.BS1_H5'),
+                oc_t('LOX.BS1_H6'))),
+        array('kopf' => oc_t('LOX.BS2_KOPF'), 'seite' => 'Spotpreis Octopus Steuerung', 'bild' => 'einbindung_loxone_steuerung.png', 'z' => 2, 'n' => 35,
+              'schritte' => array(
+                oc_t('LOX.BS2_S1'),
+                oc_t('LOX.BS2_S2'),
+                oc_t('LOX.BS2_S3'),
+                oc_t('LOX.BS2_S4'),
+                oc_t('LOX.BS2_S5')),
+              'hinweise' => array(
+                oc_t('LOX.BS2_H1'),
+                oc_t('LOX.BS2_H2'),
+                oc_t('LOX.BS2_H3'),
+                oc_t('LOX.BS2_H4'),
+                oc_t('LOX.BS2_H5'))),
+        array('kopf' => oc_t('LOX.BS3_KOPF'), 'seite' => 'Spotpreis Octopus Werte', 'bild' => 'einbindung_loxone_werte.png', 'z' => 3, 'n' => 31,
+              'schritte' => array(
+                oc_t('LOX.BS3_S1'),
+                oc_t('LOX.BS3_S2'),
+                oc_t('LOX.BS3_S3'),
+                oc_t('LOX.BS3_S4')),
+              'hinweise' => array(
+                oc_t('LOX.BS3_H1'),
+                oc_t('LOX.BS3_H2'),
+                oc_t('LOX.BS3_H3'),
+                oc_t('LOX.BS3_H4'))),
+        array('kopf' => oc_t('LOX.BS4_KOPF'), 'seite' => 'Spotpreis Octopus Freigaben und Tarif', 'bild' => 'einbindung_loxone_freigaben_tarif.png', 'z' => 4, 'n' => 28,
+              'schritte' => array(
+                oc_t('LOX.BS4_S1'),
+                oc_t('LOX.BS4_S2'),
+                oc_t('LOX.BS4_S3'),
+                oc_t('LOX.BS4_S4'),
+                oc_t('LOX.BS4_S5')),
+              'hinweise' => array(
+                oc_t('LOX.BS4_H1'),
+                oc_t('LOX.BS4_H2'),
+                oc_t('LOX.BS4_H3'),
+                oc_t('LOX.BS4_H4'),
+                oc_t('LOX.BS4_H5'))),
+        array('kopf' => oc_t('LOX.BS5_KOPF'), 'seite' => 'Spotpreis Octopus Stundenprofil', 'bild' => 'einbindung_loxone_stundenprofil.png', 'z' => 5, 'n' => 27,
+              'schritte' => array(
+                oc_t('LOX.BS5_S1'),
+                oc_t('LOX.BS5_S2'),
+                oc_t('LOX.BS5_S3'),
+                oc_t('LOX.BS5_S4'),
+                oc_t('LOX.BS5_S5')),
+              'hinweise' => array(
+                oc_t('LOX.BS5_H1'),
+                oc_t('LOX.BS5_H2'),
+                oc_t('LOX.BS5_H3'))),
+    );
+    $aus = array();
+    $ersetzen = function ($x) use ($map) { return strtr($x, $map); };
+    foreach ($seiten as $s) {
+        $zeilen = array();
+        for ($i = 1; $i <= $s['n']; $i++) {
+            $c = array_pad(explode(' | ', strtr(oc_t(sprintf('LOX.Z%d_%02d', $s['z'], $i)), $map), 4), 4, '');
+            $zeilen[] = array($i, $c[0], $c[1], $c[2], $c[3]);
+        }
+        $aus[] = array('kopf' => $s['kopf'], 'seite' => $s['seite'], 'bild' => $s['bild'],
+                       'schritte' => array_map($ersetzen, $s['schritte']),
+                       'hinweise' => array_map($ersetzen, $s['hinweise']), 'zeilen' => $zeilen);
+    }
+    return $aus;
 }
 
 /** Eigene Netzadresse bestimmen (fuer Adressen in der Anleitung). */
