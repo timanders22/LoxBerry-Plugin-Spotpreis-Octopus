@@ -193,6 +193,27 @@ function oc_test_selbst()
             : oc_e(str_replace('%S%', $oc_rt_fremd ? implode(', ', $oc_rt_fremd) : '-',
                 oc_t('TEST.RETAIN_FREMD'))));
 
+    /* ---- Gruppe 5 / MQTT (1.1.26): Namenstabelle, Haken unter Gateway V2, Befehlsbruecke ----
+     * Die Namen der Einbindung gegen die gesendeten Themen (Entwurf oc 2.4), die V2-Haken aus subscriptions.json
+     * (E15), die Bruecke gemessen am Erzeugnis wie im Waechter (gemeinsam 2.11) und ihre Einrichtungspruefung
+     * (--pruefen). Nicht feststellbar bzw. aus (Haken) ist ein Strich, kein Kreuz. */
+    $oc_strich = function ($t, $z) {
+        return '<div><span style="color:#888;">&ndash;</span> ' . $t . ' &mdash; ' . $z . '</div>';
+    };
+    list($oc_nok, $oc_ntext) = oc_mqtt_namen_probe(null, $st);
+    $h .= oc_zeile($oc_nok, oc_t('TEST.NAMEN'), oc_e($oc_ntext));
+    if (!empty($cfg['mqtt_enabled'])) {
+        list($oc_v2, $oc_v2t) = oc_mqtt_v2_haken_lage();
+        $h .= $oc_v2 === 2 ? $oc_strich(oc_t('TEST.V2_HAKEN'), oc_e($oc_v2t))
+                           : oc_zeile($oc_v2 === 1, oc_t('TEST.V2_HAKEN'), oc_e($oc_v2t));
+    }
+    list($oc_bok, $oc_bt) = oc_pruef_bruecke();
+    $h .= $oc_bok === -1 ? $oc_strich(oc_t('BEFEHL.P_TITEL'), $oc_bt)
+                         : oc_zeile($oc_bok === 1, oc_t('BEFEHL.P_TITEL'), $oc_bt);
+    list($oc_eok, $oc_et) = oc_pruef_bruecke_einrichtung();
+    $h .= $oc_eok === 2 ? $oc_strich(oc_t('BEFEHL.P_PRUEFEN'), oc_e($oc_et))
+                        : oc_zeile($oc_eok === 1, oc_t('BEFEHL.P_PRUEFEN'), oc_e($oc_et));
+
     /* ---- Der Rundlauf der Sicherung ----
      *
      * Bauen, wieder einlesen, und es muss durchgehen. Das ist der eine

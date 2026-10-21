@@ -52,6 +52,15 @@ lb_wurzel_suchen() {
 # loescht config/plugins/<ordner>/ und data/plugins/<ordner>/ ohne jede
 # Abfrage. Liegen bleibt genau die Datei, die hier gefehlt hat.
 
+# Gruppe 5 / MQTT (1.1.26, Entwurf oc E12): Uninstall-Praefix (am Geraet gemessen 08.10.2026, plugininstall.pl
+# :1570/:1603): beim Deinstallieren ruft der Installer JEDES data/system/uninstall/<name>* - auch dieses Skript,
+# wenn ein Plugin deinstalliert wird, dessen NAME ein Anfang von "octopus" ist; $2 ist dann DESSEN Name. Dann
+# gehoert der Lauf nicht uns: nichts tun - vor allem keine Bruecke anhalten, keine Themen leeren, nichts loeschen.
+# Bis 1.1.25 wertete das Skript nur $3 und $5 aus.
+if [ -n "$2" ] && [ "$2" != "octopus" ]; then
+    echo "<INFO> Deinstallation von '$2' - dieses Skript gehoert zu 'octopus' und tut nichts."
+    exit 0
+fi
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-octopus}"
@@ -78,6 +87,51 @@ fi
 # Praefix UND unter jedem frueher eingestellten (oc_mqtt_leeren() in
 # webfrontend/html/oc_lib.php). Als loxberry, nicht als root; stdin
 # geschlossen, damit su nie auf eine Eingabe wartet.
+# ---------- Befehlsbruecke anhalten (Gruppe 5 / MQTT, 1.1.26; Muster vb_g1_bruecke_bau/beispiel/uninstall) ----------
+# VOR dem Leeren der Themen und dem Loeschen: sonst nimmt sie waehrend der Deinstallation noch Befehle an. Anhalten
+# (stop beendet Dienst und mosquitto_sub, auch ein verwaistes), argumentweise nachzaehlen, die Optionsdateien mit
+# dem Broker-Kennwort ueberschreiben und den Ordner befehle/ entfernen. Im Broker bleibt nichts: Quittungen und
+# status/befehle sind nie retained.
+BBSH="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
+BBPHP="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.php"
+BBDIR="$BASE/data/plugins/$PFOLDER/befehle"
+if [ -f "$BBSH" ]; then
+    timeout 40 bash "$BBSH" stop
+fi
+BB_REST=0
+for d in /proc/[0-9]*; do
+    mapfile -d '' -t a 2>/dev/null < "$d/cmdline" || continue
+    if [ "${#a[@]}" -eq 2 ] && [ "${a[1]}" = "$BBPHP" ] && [[ "${a[0]}" =~ (^|/)php[0-9.]*$ ]]; then
+        kill -9 "${d#/proc/}" 2>/dev/null
+        BB_REST=$((BB_REST + 1))
+    fi
+done
+BB_ABOS=0
+for d in /proc/[0-9]*; do
+    read -r c 2>/dev/null < "$d/comm" || continue
+    [ "$c" = "mosquitto_sub" ] || continue
+    mapfile -d '' -t e 2>/dev/null < "$d/environ" || continue
+    for x in "${e[@]}"; do
+        if [ "$x" = "XDG_CONFIG_HOME=$BBDIR/mosquitto" ]; then kill -9 "${d#/proc/}" 2>/dev/null; BB_ABOS=$((BB_ABOS + 1)); fi
+    done
+done
+[ "$BB_REST" -gt 0 ] && echo "<WARNING> Befehlsbruecke: $BB_REST Dienst(e) erst mit kill -9 beendet."
+[ "$BB_ABOS" -gt 0 ] && echo "<WARNING> Befehlsbruecke: $BB_ABOS mosquitto_sub erst mit kill -9 beendet."
+if [ -d "$BBDIR" ]; then
+    for f in "$BBDIR/mosquitto/mosquitto_sub" "$BBDIR/mosquitto/mosquitto_pub"; do
+        if [ -f "$f" ]; then
+            n=$(stat -c %s "$f" 2>/dev/null || echo 64)
+            head -c "$n" /dev/zero > "$f" 2>/dev/null
+        fi
+    done
+    rm -rf "${BBDIR:?}"
+fi
+if [ -e "$BBDIR/mosquitto/mosquitto_sub" ] || [ -e "$BBDIR/mosquitto/mosquitto_pub" ]; then
+    echo "<WARNING> Befehlsbruecke: Optionsdateien liegen noch unter $BBDIR/mosquitto - von Hand entfernen."
+elif [ -f "$BBSH" ]; then
+    echo "<OK> Befehlsbruecke angehalten, ihre Zugangsdaten entfernt."
+fi
+
 OC_CRON="$BASE/bin/plugins/$PFOLDER/oc_cron.php"
 if command -v php >/dev/null 2>&1 && [ -f "$OC_CRON" ]; then
     if [ "$(id -u)" = "0" ] && id loxberry >/dev/null 2>&1; then

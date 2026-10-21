@@ -777,6 +777,9 @@ function oc_vorgaben()
         // MQTT
         'mqtt_enabled'  => 1,
         'mqtt_topic'    => 'octopus',
+        /* Gruppe 5 / MQTT (1.1.26, Entwurf oc 3.3, E1): "Befehle ueber MQTT annehmen" - Preisansage, Ansage
+         * morgen, Test-Push ueber die Befehlsbruecke. Ab Werk aus; einen zweiten Haken gibt es nicht. */
+        'befehle_mqtt_ein' => 0,
         // Meldungen
         'notify'        => array(),
         'tts'           => array(),
@@ -1179,6 +1182,7 @@ function oc_config($heilen = null)
     $cfg['demo']        = empty($cfg['demo']) ? 0 : 1;
     $cfg['co2_enabled'] = empty($cfg['co2_enabled']) ? 0 : 1;
     $cfg['mqtt_enabled'] = empty($cfg['mqtt_enabled']) ? 0 : 1;
+    $cfg['befehle_mqtt_ein'] = empty($cfg['befehle_mqtt_ein']) ? 0 : 1;   // Gruppe 5 (1.1.26)
     $cfg['hysterese']   = empty($cfg['hysterese']) ? 0 : 1;
 
     $cfg['demo_aufschlag'] = oc_zahl($cfg['demo_aufschlag'], 15.0, 0, 100);
@@ -1269,6 +1273,7 @@ function oc_schranken()
         'demo'           => array('b'),
         'co2_enabled'    => array('b'),
         'mqtt_enabled'   => array('b'),
+        'befehle_mqtt_ein' => array('b'),   // Gruppe 5 / MQTT (1.1.26)
         'hysterese'      => array('b'),
         'demo_aufschlag' => array('z', 15.0, 0, 100),
         'demo_vat'       => array('z', 19.0, 0, 30),
@@ -2792,11 +2797,13 @@ function oc_state($force = false)
     $st['dyn_monat']  = $lauf ? $lauf['dynp'] : 0;
     $st['diff_monat'] = $lauf ? $lauf['diff'] : 0;
     $st['euro_monat'] = $lauf ? $lauf['euro'] : 0;
+    $st['monat_ok']   = $lauf ? 1 : 0;   // Gruppe 5 (1.1.26): ohne Tageswerte im Monat sendet oc_werte() -999
 
     $sh = oc_shift_saving(7);
     $st['shift_ct']   = $sh['ct'];
     $st['shift_euro'] = $sh['euro'];
     $st['shift_jahr'] = $sh['euro_jahr'];
+    $st['shift_tage'] = (int) $sh['tage'];   // Gruppe 5 (1.1.26): ohne Tageswerte sendet oc_werte() -999
 
     /* HIER STAND DER SCHREIBBEFEHL FUER DEN ZWISCHENSPEICHER - MITTEN IN
      * DER FUNKTION. Er steht jetzt am Ende, vor dem return.
@@ -3461,6 +3468,27 @@ function oc_werte($st = null)
         'ptest'         => oc_ptest_active(),
         'alter'         => $st['stand'] > 0 ? (int) round((time() - $st['stand']) / 60) : 9999,
     );
+    /* Gruppe 5 / MQTT (1.1.26, Entwurf oc 2.3, E4): fehlende Werte MIT Vorzeichen gehen als -999 hinaus, nicht
+     * als -1 bzw. 0 - -1 ct/kWh ist ein echter Preis und 0 ct "gleich teuer" eine falsche Aussage (Entscheidung
+     * Gruppe 3). Ueber MQTT, in der HTTP-Zeile und im JSON (alle drei lesen diese Funktion). Der Zustand intern
+     * (oc_state(), oc_tagstats_leer(), oc_fenster()) bleibt, wie er ist; Stunden, Rang und fenster_start/_in
+     * bleiben -1 (ohne Vorzeichen). Ausnahmen (begruendet im Entwurf): regelN_ct 0 ohne Plan (planer.php ist
+     * gemeinsam), co2/co2_min 0 bei abgeschaltetem CO2, ph/pm mit dem Tageshoechstpreis bzw. -1. Eine Zustandsdatei
+     * von vor 1.1.26 ohne monat_ok/shift_tage behaelt die alten Werte bis zur naechsten Berechnung. */
+    foreach (array('heute', 'morgen') as $oc_tg) {
+        if (empty($st[$oc_tg]['n'])) {
+            $w['avg_' . $oc_tg] = -999;
+            $w['min_' . $oc_tg] = -999;
+            $w['max_' . $oc_tg] = -999;
+        }
+    }
+    if (!isset($st['fenster']['h']) || (int) $st['fenster']['h'] < 0) { $w['fenster_ct'] = -999; }
+    if (isset($st['monat_ok']) && empty($st['monat_ok'])) {
+        $w['dyn_monat'] = -999;
+        $w['diff_monat'] = -999;
+        $w['euro_monat'] = -999;
+    }
+    if (isset($st['shift_tage']) && (int) $st['shift_tage'] === 0) { $w['shift_jahr'] = -999; }
     foreach ((array) (isset($st['regeln']) ? $st['regeln'] : array()) as $r) {
         $n = (int) $r['nr'];
         $w['regel' . $n . '_aktiv'] = (int) $r['aktiv'];
@@ -4097,7 +4125,10 @@ function oc_mqtt_jeder_lauf()
 /** Die Themen, die bei einem Ausfall (ok=0) hinausgehen - nur das Signal (C3). */
 function oc_mqtt_ausfall_themen()
 {
-    return array('ok', 'alter', 'status/ok', 'status/ts', 'status/zaehler');
+    /* Gruppe 5 / MQTT (1.1.26, Entwurf oc E3, wie aWATTar E6): dazu level, rank, rankd und rank_h - sie gehen im
+     * Ausfall als -1 hinaus (fest gesetzt in oc_mqtt_publish()); sonst bliebe in Loxone eine alte Freigabe
+     * "guenstig" stehen, solange der Laufzaehler laeuft. Preise bleiben weiter auf ihrem letzten Wert. */
+    return array('ok', 'alter', 'status/ok', 'status/ts', 'status/zaehler', 'level', 'rank', 'rankd', 'rank_h');
 }
 
 /** Wo der Merker der zuletzt gesendeten Werte liegt. */
@@ -4186,6 +4217,8 @@ function oc_mqtt_publish($st = null, $nur_lebenszeichen = false, $erzwingen = fa
          * Ein Schaltsignal darf nicht auf 1 stehen bleiben; der Endpunkt
          * meldet im Ausfall ebenso aktiv=0. Keine Preise. */
         for ($oc_ri = 1; $oc_ri <= OC_REGELN; $oc_ri++) { $werte['regel' . $oc_ri . '_aktiv'] = 0; }
+        /* Gruppe 5 / MQTT (1.1.26, Entwurf oc E3): Niveau und Rang "unbekannt". */
+        foreach (array('level', 'rank', 'rankd', 'rank_h') as $oc_rk) { $werte[$oc_rk] = -1; }
     }
     /* DIESELBE FORMATIERUNG WIE DIE HTTP-ZEILE.
      *
@@ -4209,6 +4242,17 @@ function oc_mqtt_publish($st = null, $nur_lebenszeichen = false, $erzwingen = fa
             isset($info_alle[$k]) ? $info_alle[$k] : null));
     }
     $merken = null;
+    /* Gruppe 5 / MQTT (1.1.26, Entwurf oc 2.2, E8; wie aWATTar Nachtrag 2): beim ersten Lauf jeder vollen Stunde
+     * gehen die Stundenpreise ph00-ph23 am Aenderungsfilter vorbei hinaus. Der Spotpreis-Optimierer nimmt einen
+     * Stundenwert nur, wenn er in der laufenden Stunde aktualisiert wurde; der Vollsatz (rund 31 min, driftend)
+     * kommt nicht verlaesslich kurz nach der vollen Stunde, und Gateway V2 reicht gleiche Werte nur mit
+     * "Noncached" weiter. Die Marke tmp/mqtt_stunde_marke wird nur nach gelungenem Senden fortgeschrieben; im
+     * Ausfall (ok=0) gehen keine Stundenpreise hinaus. */
+    $oc_stunde = '';
+    if (!$nur_lebenszeichen && !$ausfall
+        && (string) @file_get_contents(oc_tmpdir() . '/mqtt_stunde_marke') !== date('YmdH')) {
+        $oc_stunde = date('YmdH');
+    }
     if (!$nur_lebenszeichen) {
         $alt_merker = array();
         if (is_file(oc_mqtt_merker())) {
@@ -4237,6 +4281,7 @@ function oc_mqtt_publish($st = null, $nur_lebenszeichen = false, $erzwingen = fa
         foreach ($formatiert as $k => $w) {
             // Im Ausfall geht das Signal bei jedem Lauf hinaus, nicht nur bei Aenderung.
             if ($ausfall || strpos((string) $k, 'status/') === 0 || in_array($k, oc_mqtt_jeder_lauf(), true)) { continue; }
+            if ($oc_stunde !== '' && preg_match('/^ph[0-9]{2}$/', (string) $k)) { continue; }   // Gruppe 5, E8
             if (array_key_exists($k, $vorher) && (string) $vorher[$k] === (string) $w) { unset($formatiert[$k]); }
         }
     }
@@ -4263,6 +4308,9 @@ function oc_mqtt_publish($st = null, $nur_lebenszeichen = false, $erzwingen = fa
     socket_close($s);
     if ($merken !== null && $gesendet > 0) {
         @file_put_contents(oc_mqtt_merker(), json_encode($merken));
+    }
+    if ($oc_stunde !== '' && $gesendet > 0) {
+        @file_put_contents(oc_tmpdir() . '/mqtt_stunde_marke', $oc_stunde);   // Gruppe 5, E8
     }
     oc_log_if_changed('mqttzahl', $gesendet . ' Themen gesendet, davon '
         . $behalten . ' zurueckbehalten');
@@ -4573,6 +4621,10 @@ function oc_thema_grenzen($einheit, $schluessel = '')
     $k = (string) $schluessel;
     if ($k === 'rank' || $k === 'rankd' || $k === 'rank_h') { return array(-1, 999); }
     if ($k === 'level') { return array(-1, 3); }
+    /* Gruppe 5 (1.1.26, Entwurf oc 2.3, E4): die neun Preisfelder, die ohne Wert -999 tragen - MinVal -999, damit
+     * die HTTP-Vorlage und die Namenstabelle den Fehlwert nicht abschneiden. EUR (-10000) reicht schon. */
+    if (in_array($k, array('avg_heute', 'min_heute', 'max_heute', 'avg_morgen', 'min_morgen', 'max_morgen',
+                           'fenster_ct', 'dyn_monat', 'diff_monat'), true)) { return array(-999, 200); }
     /* Welle Bild 16 (1.1.25; Entwurf Welle 16 oc, Entscheidung 14): die 0/1-Felder MinVal 0 / MaxVal 1 statt
      * 0..999. Erst ein Eingang mit MaxVal 1 fuehrt in Loxone den digitalen Ausgang (Regeln/09); aWATTar fuehrt
      * diese Felder schon so. Bestehende Anlagen muessen nicht neu einlesen - nur die Grenzen aendern sich. */
@@ -4680,10 +4732,13 @@ function oc_xml_virtual_out($kopf, $cmds)
 }
 
 /**
- * Vorlage erzeugen. $art ist 'mqtt_in', 'http_in' oder (seit 1.1.25) 'vq_befehle'.
- * Rueckgabe: array(dateiname, inhalt)
+ * Vorlage erzeugen. $art ist 'http_in' oder (seit 1.1.25) 'vq_befehle'.
+ * Rueckgabe: array(dateiname, inhalt), fuer jede andere Art null.
+ * Gruppe 5 / MQTT (1.1.26, Entwurf oc 2.6, E10; Gruppe 1 Nachtrag 2, R2_078): die Vorlage 'mqtt_in'
+ * (VI_octopus_eingaenge.xml, Virtuelle HTTP-Eingaenge mit http://localhost) entfaellt - fuer Werte ueber das
+ * MQTT-Gateway legt man einfache Virtuelle Eingaenge nach der Namenstabelle an (oc_mqtt_namen()).
  */
-function oc_vorlage($art = 'mqtt_in')
+function oc_vorlage($art = '')
 {
     $cfg = oc_config();
     $praefix = trim((string) $cfg['mqtt_topic']);
@@ -4732,30 +4787,7 @@ function oc_vorlage($art = 'mqtt_in')
         ), $cmds));
     }
 
-    $cmds = array();
-    foreach (oc_themen() as $k => $info) {
-        $g = oc_thema_grenzen(isset($info[1]) ? $info[1] : '', $k);
-        $cmds[] = array(
-            // Der Gateway bildet den Titel aus dem Thema und ersetzt dabei
-            // den Schraegstrich - siehe oc_thema_flach().
-            // M6 (seit 1.1.16): auch der Schraegstrich IM Praefix wird zum
-            // Unterstrich, wie der Gateway den Namen bildet (aus haus/strom
-            // wird haus_strom_cur, nicht haus/strom_cur).
-            'title'   => oc_thema_flach($praefix . '/' . $k),
-            'einheit' => isset($info[1]) ? $info[1] : '',
-            'min'     => $g[0], 'max' => $g[1],
-            /* Kachelname (Regeln/07): kurz, mit Vorsatz. Bis 1.1.10 stand
-             * hier der Erklaertext - 67 von 90 ueber 40 Zeichen. */
-            'comment' => 'Octopus: ' . oc_kachel_text($info) . ($info[1] !== '' ? ' [' . $info[1] . ']' : ''),
-            'check'   => ' ',
-        );
-    }
-    return array('VI_octopus_eingaenge.xml', oc_xml_virtual_in_http(array(
-        'title'   => 'Octopus Dynamic',
-        'address' => 'http://localhost',
-        'polling' => '604800',
-        'comment' => $fuss,
-    ), $cmds));
+    return null;
 }
 
 /**
@@ -4784,7 +4816,9 @@ function oc_bausteinliste()
     $cfg = oc_config();
     $thema = trim((string) $cfg['mqtt_topic']);
     if ($thema === '') { $thema = 'octopus'; }
-    $map = array('octopus_' => oc_thema_flach($thema) . '_', 'octopus/#' => $thema . '/#');
+    /* Gruppe 5 / MQTT (1.1.26): dazu die Befehle "publish octopus/befehl/..." am gemeinsamen Ausgang. */
+    $map = array('octopus_' => oc_thema_flach($thema) . '_', 'octopus/#' => $thema . '/#',
+                 'octopus/befehl/' => $thema . '/befehl/');
     $seiten = array(
         array('kopf' => oc_t('LOX.BS1_KOPF'), 'seite' => 'Spotpreis Octopus', 'bild' => 'einbindung_loxone.png', 'z' => 1, 'n' => 35,
               'schritte' => array(
@@ -4840,7 +4874,7 @@ function oc_bausteinliste()
                 oc_t('LOX.BS4_H3'),
                 oc_t('LOX.BS4_H4'),
                 oc_t('LOX.BS4_H5'))),
-        array('kopf' => oc_t('LOX.BS5_KOPF'), 'seite' => 'Spotpreis Octopus Stundenprofil', 'bild' => 'einbindung_loxone_stundenprofil.png', 'z' => 5, 'n' => 27,
+        array('kopf' => oc_t('LOX.BS5_KOPF'), 'seite' => 'Spotpreis Octopus Stundenprofil', 'bild' => 'einbindung_loxone_stundenprofil.png', 'z' => 5, 'n' => 30,
               'schritte' => array(
                 oc_t('LOX.BS5_S1'),
                 oc_t('LOX.BS5_S2'),
@@ -5252,7 +5286,9 @@ function oc_sicherung_lesen($roh)
      * eigenen Datei - faellt nicht auf Werk zurueck und darf hier fehlen. */
     $fehlend = array();
     foreach (array_keys(oc_vorgaben()) as $fk) {
-        if (!array_key_exists($fk, $daten)) {
+        /* Gruppe 5 / MQTT (1.1.26, Entwurf oc 3.3): eine Sicherung bis 1.1.25 kennt den Haken der
+         * Befehlsbruecke nicht - damals gab es keine Bruecke. Sie ergibt "aus" (Vorgabe 0) ohne Beanstandung. */
+        if (!array_key_exists($fk, $daten) && $fk !== 'befehle_mqtt_ein') {
             $fehlend[] = $fk;
         }
     }
@@ -5960,4 +5996,434 @@ function oc_history_csv()
             . ';' . ((int) $r[6] ? 'Demo' : 'echt');
     }
     return implode("\r\n", $z) . "\r\n";
+}
+
+
+/* ==================================================================
+ * Gruppe 5 / MQTT (1.1.26): Namenstabelle, Hakenliste, Abo-Datei, Befehle und Befehlsbruecke
+ *
+ * Grundlage: Musterprojekt/entwurf_gruppe5_oc.txt (E1-E17 nach Empfehlung bzw. nach
+ * ENTSCHEIDUNGEN_GRUPPE5_MQTT.md), Bauvorschrift wz_bild/GRUPPE5_BAUVORSCHRIFT.md. Fuer Werte ueber das
+ * MQTT-Gateway gibt es KEINE Importvorlage mehr (Gruppe 1 Nachtrag 2, R2_078): je Wert ein einfacher
+ * Virtueller Eingang, Name genau so, wie das Gateway ihn vergibt (oc_thema_flach()). Die Namen kommen aus
+ * EINER Funktion (oc_mqtt_namen()) fuer Namenstabelle, Hakenliste, Pruefzeilen und Reiter MQTT. Die
+ * HTTP-Vorlagen bleiben fuer bestehende Anlagen (Reiter "Einbindung in Loxone", zugeklappt).
+ * ================================================================== */
+
+/**
+ * Die Themen der Musterseiten (Entwurf oc 2.4, E11): 94 Eingaenge auf fuenf Seiten - 13 "Spotpreis Octopus",
+ * 24 "... Steuerung", 24 "... Werte", 9 neue auf "... Freigaben und Tarif", 24 "... Stundenprofil" (die
+ * Stundenpreise nur mit Stundenprofil absolut/beides). Sie und status/befehle sind die Hakenliste fuer Gateway V2.
+ */
+function oc_mqtt_muster_themen()
+{
+    $t = array('ok', 'alter', 'status/zaehler', 'cur', 'cur_fehlt', 'next', 'level', 'rank', 'neg', 'ann', 'push',
+               'audio', 'ptest');
+    for ($i = 1; $i <= OC_REGELN; $i++) {
+        foreach (array('aktiv', 'in', 'rest', 'ct', 'verdraengt', 'sperre') as $s) { $t[] = 'regel' . $i . '_' . $s; }
+    }
+    $t = array_merge($t, array('avg_heute', 'min_heute', 'minh_heute', 'max_heute', 'maxh_heute', 'cur_h', 'rank_h',
+        'demo', 'morgen_ok', 'avg_morgen', 'min_morgen', 'minh_morgen', 'max_morgen', 'maxh_morgen', 'fenster_start',
+        'fenster_min', 'fenster_in', 'fenster_ct', 'plan_pv', 'plan_soc', 'plan_budget', 'plan_last', 'plan_budget2',
+        'plan_spart', 'co2', 'co2_min', 'co2_minh', 'co2_clean', 'fix', 'dyn_monat', 'diff_monat', 'euro_monat',
+        'shift_jahr'));
+    for ($h = 0; $h < 24; $h++) { $t[] = sprintf('ph%02d', $h); }
+    return $t;
+}
+
+/** Unter Gateway V2 "Noncached": nur die 24 Stundenpreise (Entwurf oc 2.2, E8) - sie gehen zu jeder vollen Stunde
+ *  unveraendert hinaus, und V2 reicht einen gleichen Wert sonst nicht an den Miniserver weiter. */
+function oc_mqtt_noncached()
+{
+    $aus = array();
+    for ($h = 0; $h < 24; $h++) { $aus[] = sprintf('ph%02d', $h); }
+    return $aus;
+}
+
+/** Das eingestellte Praefix, gesaeubert wie beim Senden. Liest nur. */
+function oc_mqtt_praefix()
+{
+    $c = oc_config(false);
+    return oc_mqtt_thema_saeubern($c['mqtt_topic'], 'octopus');
+}
+
+/**
+ * Die Namenstabelle (Reiter "Einbindung in Loxone", Schritt 3) - EINE Liste fuer Tabelle, Hakenliste, Reiter MQTT
+ * und Pruefzeilen. Reihenfolge wie oc_themen(), dazu status/befehle (sendet die Befehlsbruecke). Je Zeile: thema,
+ * name, bedeutung (Klartext), einheit, bereich (mit Fehlwert), im_muster, haken, noncached, retained.
+ * $praefix: fuer die Gegenprobe; sonst das eingestellte.
+ */
+function oc_mqtt_namen($praefix = null)
+{
+    if ($praefix === null) { $praefix = oc_mqtt_praefix(); }
+    $muster = array_flip(oc_mqtt_muster_themen());
+    $nc = array_flip(oc_mqtt_noncached());
+    $aus = array();
+    $themen = oc_themen();
+    $themen['status/befehle'] = array('BEFEHL.TH_STATUS', '');
+    foreach ($themen as $k => $info) {
+        $einheit = isset($info[1]) ? (string) $info[1] : '';
+        $g = ($k === 'status/befehle') ? array(-1, 1) : oc_thema_grenzen($einheit, $k);
+        $aus[] = array('thema' => $k, 'name' => oc_thema_flach($praefix . '/' . $k),
+                       'bedeutung' => ($k === 'status/befehle') ? oc_t('BEFEHL.TH_STATUS') : oc_thema_text($info),
+                       'einheit' => $einheit,
+                       'bereich' => (0 + $g[0]) . ' … ' . (0 + $g[1]) . ($einheit !== '' ? ' ' . $einheit : ''),
+                       'im_muster' => isset($muster[$k]), 'haken' => isset($muster[$k]) || $k === 'status/befehle',
+                       'noncached' => isset($nc[$k]), 'retained' => $k !== 'status/befehle' && oc_retain_fuer($k) === 1);
+    }
+    return $aus;
+}
+
+/** Hakenliste fuer Gateway V2 (Entwurf oc 2.4, E11): die Eingaenge der Musterseiten und status/befehle - 95 Haken
+ *  mit Stundenprofil absolut/beides, sonst 71. Je Zeile array(Thema voll, Name, Bedeutung, noncached). */
+function oc_mqtt_hakenliste($praefix = null)
+{
+    if ($praefix === null) { $praefix = oc_mqtt_praefix(); }
+    $aus = array();
+    foreach (oc_mqtt_namen($praefix) as $z) {
+        if ($z['haken']) { $aus[] = array($praefix . '/' . $z['thema'], $z['name'], $z['bedeutung'], $z['noncached']); }
+    }
+    return $aus;
+}
+
+/**
+ * Pruefzeile "Namenstabelle" (Entwurf oc 2.4): jeder Name der Tabelle ist ein Thema aus oc_themen() (dazu
+ * status/befehle der Bruecke) unter dem eingestellten Praefix, jedes Thema steht in der Tabelle, und jeder Wert, den
+ * oc_werte() gerade bildet (das, was hinausgeht), hat ein Thema. Die Gegenseite wird ohne oc_thema_flach() gebildet.
+ * $namen: fuer die Gegenprobe (ein falsch geschriebener Name muss rot werden). Rueckgabe array(true|false, Text).
+ */
+function oc_mqtt_namen_probe($namen = null, $st = null)
+{
+    $p = oc_mqtt_praefix();
+    if ($namen === null) {
+        $namen = array();
+        foreach (oc_mqtt_namen($p) as $z) { $namen[] = $z['name']; }
+    }
+    $themen = array_keys(oc_themen());
+    $ohne_thema = array_values(array_diff(array_keys(oc_werte($st)), $themen));
+    $soll = array();
+    foreach (array_merge($themen, array('status/befehle'), $ohne_thema) as $t) {
+        $soll[] = str_replace('/', '_', $p . '/' . $t);
+    }
+    $nur_tabelle = array_values(array_diff($namen, $soll));
+    $nur_themen = array_values(array_diff($soll, $namen));
+    if ($nur_tabelle || $nur_themen) {
+        return array(false, sprintf(oc_t('TEST.A_NAMEN_NEIN'), $nur_tabelle ? implode(', ', $nur_tabelle) : '-',
+                                    $nur_themen ? implode(', ', $nur_themen) : '-'));
+    }
+    return array(true, sprintf(oc_t('TEST.A_NAMEN_JA'), count($namen), count(oc_mqtt_hakenliste($p))));
+}
+
+/**
+ * Stehen unter Gateway V2 die Haken? (Entwurf oc E15, Bauart spot_mqtt_v2_haken_lage() aus aWATTar 1.2.38). Gelesen
+ * wird config/system/subscriptions.json (Subscriptions[].Id je Thema, Noncached). Rueckgabe array(1|0|2, Klartext):
+ * 1 jeder Datenpunkt der Hakenliste angehakt und die Stundenpreise Noncached, 0 es fehlt etwas (genannt), 2 nicht
+ * feststellbar (Gateway V1, Fassung oder Datei nicht lesbar).
+ */
+function oc_mqtt_v2_haken_lage()
+{
+    $f = oc_gateway_fassung();
+    if ($f <= 0) { return array(2, oc_t('TEST.V2_HAKEN_UNKLAR')); }
+    if ($f < 2) { return array(2, oc_t('TEST.V2_HAKEN_V1')); }
+    $home = oc_paths()['home'];
+    $d = ($home !== '') ? @json_decode((string) @file_get_contents($home . '/config/system/subscriptions.json'), true) : null;
+    if (!is_array($d)) { return array(2, oc_t('TEST.V2_HAKEN_UNKLAR')); }
+    $liste = array();
+    foreach (array('Subscriptions', 'subscriptions') as $s) {
+        if (isset($d[$s]) && is_array($d[$s])) { $liste = $d[$s]; break; }
+    }
+    $abo = array();
+    foreach ($liste as $e) {
+        if (!is_array($e)) { continue; }
+        $id = '';
+        foreach (array('Id', 'id', 'Topic', 'topic') as $k) {
+            if (isset($e[$k]) && is_string($e[$k])) { $id = $e[$k]; break; }
+        }
+        if ($id === '') { continue; }
+        $nc = false;
+        foreach (array('Noncached', 'noncached') as $k) {
+            if (isset($e[$k])) {
+                $nc = ($e[$k] === true || in_array(strtolower(trim((string) $e[$k])), array('1', 'true', 'yes', 'on'), true));
+            }
+        }
+        $abo[$id] = $nc;
+    }
+    $fehlt = array();
+    $ohne = array();
+    $haken = oc_mqtt_hakenliste();
+    $n_nc = 0;
+    foreach ($haken as $h) {
+        if ($h[3]) { $n_nc++; }
+        if (!array_key_exists($h[0], $abo)) {
+            $fehlt[] = $h[0];
+        } elseif ($h[3] && !$abo[$h[0]]) {
+            $ohne[] = $h[0];
+        }
+    }
+    if (!$fehlt && !$ohne) { return array(1, sprintf(oc_t('TEST.V2_HAKEN_OK'), count($haken), $n_nc)); }
+    return array(0, sprintf(oc_t('TEST.V2_HAKEN_FEHLT'),
+        $fehlt ? implode(', ', array_slice($fehlt, 0, 8)) . (count($fehlt) > 8 ? ' ...' : '') : '-',
+        $ohne ? implode(', ', array_slice($ohne, 0, 8)) . (count($ohne) > 8 ? ' ...' : '') : '-'));
+}
+
+/**
+ * Das Abo fuer Gateway V1 (Entwurf oc 2.7, E9): config/mqtt_subscriptions.cfg im Konfigurationsordner traegt
+ * "<praefix>/#" (ohne Zeilenende, wie mitgeliefert); das Gateway liest die Plugin-Abos selbst. Mitgeliefert mit
+ * "octopus/#", nachgefuehrt im Minutenlauf und beim Speichern des Reiters MQTT - ein Update spielt die alte
+ * octopus.json zurueck, die Datei kommt aber aus dem Archiv (Bauart ev_abo_datei(), EVCC 0.9.45).
+ * Rueckgabe array(Pfad, liegt richtig); null ohne LoxBerry-Wurzel.
+ */
+function oc_abo_datei($schreiben = false)
+{
+    $p = oc_paths();
+    if ($p['home'] === '') { return null; }
+    $dir = dirname($p['config']);
+    $pfad = $dir . '/mqtt_subscriptions.cfg';
+    $soll = oc_mqtt_praefix() . '/#';
+    $roh = is_readable($pfad) ? (string) @file_get_contents($pfad) : '';
+    $da = in_array($soll, array_map('trim', preg_split('/\r?\n/', $roh)), true);
+    if ($schreiben && trim($roh) !== $soll && is_dir($dir)) {
+        if (oc_datei_schreiben($pfad, $soll, 0644)) {
+            oc_log('Gateway-Abo (mqtt_subscriptions.cfg) gesetzt: ' . $soll);
+            $da = true;
+        }
+    }
+    return array($pfad, $da);
+}
+
+/* ---------------- Befehle: EINE Funktion fuer Endpunkt und Befehlsbruecke ----------------
+ * Bis 1.1.25 standen ptest, say und saytomorrow in webfrontend/html/index.php. Seit 1.1.26 rufen der HTTP-Endpunkt
+ * (Quelle 'http', Antwort und Code unveraendert - Wirkungstest) und die Befehlsbruecke (Quelle 'mqtt',
+ * bin/befehle_zuordnung.php) dieselbe Funktion: "Plugin an", Plugin-Bremse (say 20 s gemeinsam fuer beide Ansagen,
+ * ptest 10 s), Merker, Ansage. Das Token prueft weiter nur der Endpunkt; auf dem MQTT-Weg ersetzen es die Anmeldung
+ * am Broker und der Haken (Entwurf gemeinsam E13). */
+
+/**
+ * Die Wiederholsperre des Endpunkts (bis 1.1.25 in webfrontend/html/index.php): eine Datei je Name unter /tmp/<ordner>.
+ * Ist sie nicht schreibbar, wird der Aufruf abgewiesen, damit der Schutz nicht offen ausfaellt.
+ */
+function oc_sperre_frei($name, $sekunden)
+{
+    $f = oc_tmpdir() . '/sperre_' . preg_replace('/[^a-z0-9_]/i', '', (string) $name);
+    if (is_file($f) && time() - (int) filemtime($f) < (int) $sekunden) { return false; }
+    if (!is_dir(dirname($f))) { @mkdir(dirname($f), 0775, true); }
+    if (@file_put_contents($f, (string) time()) === false) {
+        oc_log_if_changed('sperre', 'Wiederholsperre nicht schreibbar (' . $f
+            . ') - der Aufruf wird abgewiesen, damit der Schutz nicht offen ausfaellt');
+        return false;
+    }
+    return true;
+}
+
+/**
+ * Einen Befehl ausfuehren: 'ptest', 'say' oder 'saytomorrow'. Rueckgabe array(HTTP-Code, Antwortzeile ohne
+ * Zeilenende) - die Zeile wortgleich wie bis 1.1.25 am Endpunkt. Auf dem MQTT-Weg liest die Funktion nur (wie der
+ * Endpunkt, oc_nur_lesen()): die Bruecke heilt und schreibt keine Konfiguration.
+ */
+function oc_befehl_ausfuehren($aktion, $quelle = 'http')
+{
+    $mqtt = ($quelle === 'mqtt');
+    $vorher = oc_nur_lesen();
+    if ($mqtt) { oc_nur_lesen(true); }
+    try {
+        $cfg = oc_config();
+        if (empty($cfg['enabled'])) {
+            return array(503, 'OCTOPUS;OK=0;ERR=AUS;TEXT=Das Plugin ist in den Einstellungen abgeschaltet.');
+        }
+        if ($aktion === 'ptest') {
+            if (!oc_sperre_frei('ptest', 10)) { return array(200, 'PTEST;OK=1;DAUER=300;GESPERRT=1'); }
+            /* Den Rueckgabewert ansehen: bis 1.1.3 meldete diese Aktion OK=1, auch wenn der Merker gar nicht
+             * geschrieben werden konnte. */
+            if (@file_put_contents(oc_tmpdir() . '/ptest', '1') === false) {
+                oc_log('Test-Pushnachricht angefordert, aber der Merker liess sich nicht schreiben ('
+                    . oc_tmpdir() . '/ptest)');
+                return array(500, 'PTEST;OK=0;ERR=MERKER;TEXT=Der Merker liess sich nicht schreiben.');
+            }
+            /* SOFORT senden, nicht erst beim naechsten Minutenlauf - auch auf dem MQTT-Weg (Musterseite #33). */
+            oc_mqtt_publish();   // nur die Aenderung (ptest) und das Lebenszeichen
+            oc_log($mqtt ? 'Test-Pushnachricht ueber MQTT angefordert (ptest=1 fuer 5 Minuten), sofort per MQTT gemeldet'
+                         : 'Test-Pushnachricht angefordert (ptest=1 fuer 5 Minuten), sofort per MQTT gemeldet');
+            return array(200, 'PTEST;OK=1;DAUER=300;GESPERRT=0');
+        }
+        if ($aktion === 'say' || $aktion === 'saytomorrow') {
+            /* 20 Sekunden, gemeinsam fuer beide Ansagen. */
+            if (!oc_sperre_frei('say', 20)) { return array(200, 'SAY;OK=0;GESPERRT=1;' . oc_say_feld('')); }
+            $st = oc_state();
+            $text = $aktion === 'saytomorrow' ? oc_tomorrow_text($st) : oc_announce_text($st);
+            if ($text === '') { $text = oc_t('OC_ANSAGE.TEST_LEER'); }
+            if ($mqtt) {
+                oc_log(($aktion === 'saytomorrow' ? 'Ansage der Preise fuer morgen' : 'Preisansage') . ' ueber MQTT angefordert.');
+            }
+            $ok = oc_say($text);
+            /* Seit 1.1.21 (Nr. 40): vom Text nur die Laenge, ausser beim Original-Audioserver. */
+            return array(200, 'SAY;OK=' . ($ok ? 1 : 0) . ';GESPERRT=0;' . oc_say_feld($text));
+        }
+        return array(400, 'OCTOPUS;OK=0;ERR=AKTION');
+    } finally {
+        oc_nur_lesen($vorher);
+    }
+}
+
+/** Die Rueckgabe von oc_befehl_ausfuehren() fuer die Bruecke: array(bool, Grund). Angenommen heisst Code 200, OK=1
+ *  und GESPERRT=0; sonst GESPERRT (Plugin-Bremse), AUS (Plugin aus), MERKER (ptest-Merker nicht schreibbar) oder
+ *  NICHT_GESPROCHEN (Ansage mit OK=0: Ausgabeart "aus" oder "Original Loxone Audioserver", oder die Sprachausgabe
+ *  scheiterte - ansage_kurz() steht im Protokoll). */
+function oc_befehl_bruecke($r)
+{
+    $z = (is_array($r) && isset($r[1])) ? (string) $r[1] : '';
+    $code = (is_array($r) && isset($r[0])) ? (int) $r[0] : 0;
+    if ($code === 200 && strpos($z, ';OK=1;') !== false && strpos($z, 'GESPERRT=0') !== false) { return array(true, ''); }
+    if (strpos($z, 'GESPERRT=1') !== false) { return array(false, 'GESPERRT'); }
+    if (preg_match('/;ERR=([A-Z0-9_]+)/', $z, $m)) { return array(false, $m[1]); }
+    if (strpos($z, 'SAY;OK=0') === 0) { return array(false, 'NICHT_GESPROCHEN'); }
+    return array(false, 'FEHLER');
+}
+
+/** Einstellungen fuer die Zuordnung (Entwurf gemeinsam 2.5): Praefix wie beim Senden, annehmen = Haken "Befehle ueber
+ *  MQTT annehmen" UND MQTT an; kein zweiter Haken - alle drei Befehle sind harmlos (Entwurf oc E1). */
+function oc_befehle_einstellungen()
+{
+    $c = oc_config(false);
+    $mqtt = !empty($c['mqtt_enabled']);
+    return array('praefix' => oc_mqtt_thema_saeubern($c['mqtt_topic'], 'octopus'),
+                 'annehmen' => !empty($c['befehle_mqtt_ein']) && $mqtt, 'eingreifend' => false, 'mqtt_ein' => $mqtt);
+}
+
+/* ---------------- Befehlsbruecke (bin/befehlsbruecke.php, Stammfassung Werkzeuge/gemeinsam) ---------------- */
+
+/** Wo liegt bin/befehlsbruecke.php? Installiert unter bin/plugins/<ordner>, im Archiv neben webfrontend. */
+function oc_bruecke_datei()
+{
+    $p = oc_paths();
+    $kand = array();
+    if ($p['home'] !== '') { $kand[] = $p['home'] . '/bin/plugins/' . $p['plugin'] . '/befehlsbruecke.php'; }
+    $kand[] = dirname(dirname(__DIR__)) . '/bin/befehlsbruecke.php';
+    foreach ($kand as $k) {
+        if (is_file($k)) { return $k; }
+    }
+    return '';
+}
+
+/** Die Bruecke als Bibliothek laden (BB_NUR_LADEN: kein Hauptteil). */
+function oc_bruecke_laden()
+{
+    if (function_exists('bb_waechter')) { return true; }
+    $f = oc_bruecke_datei();
+    if ($f === '') { return false; }
+    if (!defined('BB_NUR_LADEN')) { define('BB_NUR_LADEN', true); }
+    require_once $f;
+    return function_exists('bb_waechter');
+}
+
+/**
+ * Der Waechter der Bruecke aus dem Minutenlauf (bin/oc_cron.php, Entwurf oc E13): startet sie nur mit dem Haken
+ * "Befehle ueber MQTT annehmen", haelt sie sonst an und sendet <praefix>/status/befehle. Der Aufrufer faengt jede
+ * Ausnahme (try/catch in bin/oc_cron.php). Rueckgabe wie bb_waechter() oder array(null, Grund) ohne Bruecke.
+ */
+function oc_bruecke_waechter()
+{
+    if (!oc_bruecke_laden()) { return array(null, 'bin/befehlsbruecke.php fehlt'); }
+    return bb_waechter();
+}
+
+/**
+ * Direktstart bzw. -stopp beim Speichern des Reiters MQTT (Bauart wp_bruecke_schalten()): der Waechter im
+ * Minutenlauf startet nach einem Start hoechstens alle 600 s neu. Rueckgabe array(''|'ein'|'aus'|'start_fehl'|
+ * 'stop_fehl', Ausgabe).
+ */
+function oc_bruecke_schalten()
+{
+    if (!oc_bruecke_laden()) { return array('', ''); }
+    $p = bb_pfade();
+    if (!$p) { return array('', ''); }
+    $e = oc_befehle_einstellungen();
+    $laeuft = (bool) bb_dienste();
+    if ($e['annehmen']) {
+        if ($laeuft) { return array('', ''); }
+        list($rc, $aus) = bb_sh($p, 'start');
+        if ($rc === 0 && bb_dienste()) {
+            oc_log('Befehlsbruecke beim Speichern gestartet.');
+            return array('ein', $aus);
+        }
+        oc_log('Befehlsbruecke: Start beim Speichern gescheitert (Rueckgabe ' . (int) $rc . '): ' . substr($aus, 0, 200));
+        return array('start_fehl', $aus);
+    }
+    if (!$laeuft) { return array('', ''); }
+    list($rc, $aus) = bb_sh($p, 'stop');
+    if ($rc === 0 && !bb_dienste()) {
+        oc_log('Befehlsbruecke beim Speichern angehalten.');
+        return array('aus', $aus);
+    }
+    return array('stop_fehl', $aus);
+}
+
+/** Die Befehlsliste der Bruecke (bb_liste(): EINE Quelle fuer Reiter und Vorlage) oder null. */
+function oc_befehle_liste()
+{
+    if (!oc_bruecke_laden()) { return null; }
+    list($z) = bb_zuordnung_laden();
+    if ($z === null) { return null; }
+    list($f) = bb_zuordnung_pruefen($z);
+    if ($f) { return null; }
+    return bb_liste($z, bb_einstellungen($z));
+}
+
+/** Vorlage "Octopus Dynamic MQTT-Befehle" (bb_vorlage()): eigener Virtueller Ausgang an den UDP-Eingang des
+ *  Gateways mit den drei Befehlen (publish <praefix>/befehl/<name> 1). Rueckgabe array(name, inhalt) oder null. */
+function oc_befehle_vorlage()
+{
+    $l = oc_befehle_liste();
+    if ($l === null) { return null; }
+    $g = oc_gateway();
+    $port = (int) $g['udpport'];
+    $host = isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
+        ? preg_replace('/[^A-Za-z0-9\.\-]/', '', preg_replace('/:\d+\z/', '', (string) $_SERVER['HTTP_HOST']))
+        : oc_eigene_ip();
+    return array('VQ_octopus_mqtt.xml', bb_vorlage($l, $host !== '' ? $host : 'loxberry', $port > 0 ? $port : 11884));
+}
+
+/** Zeile "Laeuft die Befehlsbruecke?" (Entwurf gemeinsam 2.11): array(1|0|-1, Text). Gemessen wird das Erzeugnis
+ *  (zustand.json: ts, abo, Zaehler, letzte Quittung) und ob ein Dienst argumentweise laeuft - wie der Waechter. */
+function oc_pruef_bruecke()
+{
+    if (!oc_bruecke_laden()) { return array(0, oc_t('BEFEHL.P_FEHLT')); }
+    list($z, $fehler) = bb_zuordnung_laden();
+    if ($z === null) { return array(0, sprintf(oc_t('BEFEHL.P_DEFEKT'), oc_e($fehler))); }
+    list($f) = bb_zuordnung_pruefen($z);
+    if ($f) { return array(0, sprintf(oc_t('BEFEHL.P_DEFEKT'), oc_e($f[0]))); }
+    $c = oc_config(false);
+    if (empty($c['befehle_mqtt_ein'])) { return array(-1, oc_t('BEFEHL.P_AUS')); }
+    if (empty($c['mqtt_enabled'])) { return array(-1, oc_t('BEFEHL.P_MQTT_AUS')); }
+    if (!bb_pfade()) { return array(-1, oc_t('BEFEHL.P_ARCHIV')); }
+    $zu = bb_zustand_lesen();
+    $alter = ($zu && isset($zu['ts'])) ? time() - (int) $zu['ts'] : null;
+    if (!bb_dienste()) { return array(0, oc_t('BEFEHL.P_STEHT')); }
+    if ($alter === null || $alter > BB_WACHE_GRENZE) { return array(0, sprintf(oc_t('BEFEHL.P_HAENGT'), (int) $alter)); }
+    if (empty($zu['abo'])) {
+        return array(0, sprintf(oc_t('BEFEHL.P_OHNE_ABO'), oc_e(isset($zu['fehler']) ? (string) $zu['fehler'] : '')));
+    }
+    $zl = (isset($zu['zaehler']) && is_array($zu['zaehler'])) ? $zu['zaehler'] : array();
+    $t = sprintf(oc_t('BEFEHL.P_LAEUFT'), date('d.m.Y H:i', isset($zu['start']) ? (int) $zu['start'] : time()),
+                 isset($zl['angenommen']) ? (int) $zl['angenommen'] : 0, isset($zl['abgelehnt']) ? (int) $zl['abgelehnt'] : 0,
+                 isset($zl['verworfen']) ? (int) $zl['verworfen'] : 0);
+    if (!empty($zu['letzter']) && is_array($zu['letzter'])) {
+        $t .= ' ' . sprintf(oc_t('BEFEHL.P_LETZTER'), oc_e((string) $zu['letzter']['name']),
+                            oc_e((string) $zu['letzter']['ergebnis']), max(0, time() - (int) $zu['letzter']['zeit']));
+    }
+    if (!empty($zl['verworfen'])) { $t .= ' ' . oc_t('BEFEHL.P_VERWORFEN'); }
+    return array(1, $t);
+}
+
+/** Zeile "Ist die Befehlsbruecke richtig eingerichtet?" aus "befehlsbruecke.php --pruefen" (bb_pruefen(), Bauart
+ *  pw_pruef_bruecke_einrichtung()): array(1|0|2, Text) - 0 mit den [FEHL]-Zeilen, 1 mit der ersten und letzten Zeile,
+ *  2 ohne Bruecke bzw. ohne Ausgabe. */
+function oc_pruef_bruecke_einrichtung()
+{
+    if (!oc_bruecke_laden()) { return array(2, oc_t('BEFEHL.P_FEHLT')); }
+    ob_start();
+    bb_pruefen();
+    $aus = array_values(array_filter(explode("\n", (string) ob_get_clean()), 'strlen'));
+    if (!$aus) { return array(2, '-'); }
+    $fehl = preg_grep('/^\[FEHL\]/', $aus);
+    return array($fehl ? 0 : 1, implode(' | ', $fehl ? $fehl : array($aus[0], end($aus))));
 }

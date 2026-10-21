@@ -82,10 +82,31 @@ if ($oc_marke_upgrade !== null && $oc_marke_upgrade['gilt']) {
     exit(0);
 }
 
+/* Gruppe 5 / MQTT (1.1.26, Entwurf oc E13): der Waechter der Befehlsbruecke (gemeinsame Stammfassung). Er startet
+ * sie nur mit dem Haken "Befehle ueber MQTT annehmen" (und MQTT an), haelt sie sonst an und sendet
+ * <praefix>/status/befehle (nie retained). Er steht NACH der Upgrade-Marke (waehrend einer Aktualisierung ruht
+ * alles; befehlsbruecke.sh liest dieselbe Marke) und --mqtt-leeren, aber VOR der Abschaltpruefung "enabled" und
+ * VOR der Sperre cron.lock: ein haengender Kraken-Abruf haelt cron.lock - Antwort BELEGT -, und bei abgeschaltetem
+ * Plugin muss eine laufende Bruecke trotzdem nach dem Haken gerichtet werden ("Waechter vor den Sperren",
+ * Gruppe 4). Bei abgeschaltetem Plugin quittiert sie jeden Befehl mit "abgelehnt: AUS". try/catch: ein Fehler
+ * hier aendert weder Ausgabe noch Rueckgabe des Laufs. Die Bruecke haelt ihre eigene Sperre (waechter.lock). */
+try {
+    oc_bruecke_waechter();
+} catch (Throwable $oc_bw) {
+    oc_log('Befehlsbruecke: Waechter abgebrochen (' . get_class($oc_bw) . ') - der Minutenlauf ist davon nicht betroffen.');
+}
+
 $cfg = oc_config();
 if (empty($cfg['enabled'])) {
     echo "AUS\n";
     exit(0);
+}
+
+/* Gruppe 5 / MQTT (1.1.26, Entwurf oc 2.7, E9): das Gateway-V1-Abo config/mqtt_subscriptions.cfg dem eingestellten
+ * Praefix nachfuehren - ein Update spielt die alte octopus.json zurueck, die Datei kommt aber aus dem Archiv
+ * ("octopus/#"). Schreibt nur, wenn sie abweicht (Bauart EVCC 0.9.45). */
+if (!empty($cfg['mqtt_enabled'])) {
+    oc_abo_datei(true);
 }
 
 /* ==================================================================

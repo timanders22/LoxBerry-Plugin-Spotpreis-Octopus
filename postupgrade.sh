@@ -193,4 +193,19 @@ else
     echo "<INFO> (oder den Demo-Modus einschalten) und einmal speichern."
 fi
 rm -f "$MARKE" 2>/dev/null
+
+# ---------- Befehlsbruecke (Gruppe 5 / MQTT, 1.1.26) ----------
+# Erst NACH dem Entfernen der Marke starten: sonst findet befehlsbruecke.sh die Marke und startet nicht
+# ("Aktualisierung im Gang"). Sie startet nur mit dem Haken "Befehle ueber MQTT annehmen"; ohne ihn sagt sie es,
+# und das ist der Zustand ab Werk.
+BBSH="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
+if [ -f "$BBSH" ]; then
+    BB_AUS=$(timeout 40 bash "$BBSH" start 2>&1 | head -n 1)
+    case "$BB_AUS" in
+        *gestartet*|*laeuft*) echo "<OK> Befehlsbruecke: $BB_AUS" ;;
+        "Haken aus - kein Start.") echo "<INFO> Befehlsbruecke: aus (Reiter MQTT, Haken 'Befehle ueber MQTT annehmen')." ;;
+        Aktualisierung*) echo "<INFO> Befehlsbruecke: $BB_AUS" ;;
+        *) echo "<WARNING> Befehlsbruecke: $BB_AUS - der Minutenlauf versucht es erneut." ;;
+    esac
+fi
 exit 0

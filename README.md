@@ -7,6 +7,39 @@ HTTP-Endpunkt als Rückfallebene.
 
 ---
 
+## Neu in 1.1.26
+
+Umstellung auf MQTT wie im [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt):
+Werte **und** Befehle gehen über das LoxBerry-MQTT-Gateway. Der Weg über HTTP bleibt für bestehende Anlagen
+erhalten.
+
+* **Befehle über MQTT (Befehlsbrücke):** Preisansage, Ansage der Preise für morgen und Test-Push kommen als
+  `publish octopus/befehl/ansage 1`, `publish octopus/befehl/ansage_morgen 1` und `publish octopus/befehl/testpush 1` am
+  gemeinsamen Ausgang „LoxBerry MQTT-Gateway“ an. Jeder Befehl bekommt eine Quittung auf `…/quittung`, die Brücke meldet
+  sich auf `octopus/status/befehle`. Neuer Haken im Reiter MQTT, **ab Werk aus**: „Befehle über MQTT annehmen“. Alle drei
+  Befehle sind harmlos, einen zweiten Haken gibt es nicht. Endpunkt und Brücke rufen dieselbe Funktion; die Bremsen des
+  Plugins (Ansagen 20 s, Test-Push 10 s) gelten auf beiden Wegen, dazu die Sperrminute der Brücke (60 s). `refresh` bleibt
+  nur über HTTP.
+* **Reiter Einbindung in Loxone neu geordnet:** MQTT einschalten, Gateway (V1: das Abo `octopus/#` trägt das Plugin selbst
+  ein – neue Datei `config/mqtt_subscriptions.cfg`, im Minutenlauf dem Präfix nachgeführt; V2: Hakenliste mit 95
+  Datenpunkten, ohne Stundenprofil 71, die Stundenpreise „Noncached“), Namenstabelle der einfachen Virtuellen Eingänge mit
+  Kopierknopf, Befehle samt Knopf „Vorlage MQTT-Befehle“, Ausfallerkennung, die fünf Musterseiten (Bilder neu), Gegenprobe
+  an `octopus_status_zaehler`. Die Vorlage der Eingänge für den MQTT-Weg (Virtuelle HTTP-Eingänge mit `http://localhost`)
+  entfällt. Der HTTP-Weg (Endpunkt mit Aktionstoken, Vorlage für Befehlserkennung, Befehlsvorlage „Octopus Dynamic
+  Befehle“) steht zugeklappt darunter und wirkt unverändert.
+* **Fehlende Werte mit Vorzeichen melden −999** statt −1 bzw. 0 – über MQTT, in der HTTP-Zeile und im JSON: Mittel,
+  Minimum und Maximum für morgen (und heute) ohne Preise, `fenster_ct` ohne Fenster, `dyn_monat`, `diff_monat` und
+  `euro_monat` ohne Tageswerte im Monat, `shift_jahr` ohne Tageswerte der letzten sieben Tage. Wer in Loxone auf −1 (morgen,
+  Fenster) oder 0 (Monatsvergleich) prüft, sieht künftig −999. Die HTTP-Vorlage trägt für diese Felder MinVal −999.
+* **Ohne gültige Preise (ok = 0) gehen über MQTT auch `level`, `rank`, `rankd` und `rank_h` = −1 hinaus** – bisher blieb
+  der alte Wert stehen, und eine Freigabe „günstig“ konnte stehen bleiben.
+* **Die 24 Stundenpreise `ph00` bis `ph23` gehen zu jeder vollen Stunde neu hinaus** (nur mit Stundenprofil „absolut“
+  oder „beides“), damit der Spotpreis-Optimierer in jeder Stunde einen frischen Wert sieht. Die Musterseite
+  „Stundenprofil“ rechnet zusätzlich um 00:35 nach und meldet „keine Preise für heute“.
+* Reiter Test: neue Prüfzeilen „Namenstabelle“, „Haken unter Gateway V2“, „Befehlsbrücke“ und ihre Einrichtungsprüfung.
+* Deinstallation hält die Befehlsbrücke an und tut nichts, wenn sie für ein anderes Plugin aufgerufen wird.
+* Am Gerät noch nicht gemessen; Brücke, Endpunkt und Oberfläche unter PHP 7.4, 8.4 und 8.5 geprüft.
+
 ## Neu in 1.1.25
 
 Einbindung in Loxone in Vollausstattung: fünf Seiten aus dem gemeinsamen Musterprojekt mit fünf Bildern und

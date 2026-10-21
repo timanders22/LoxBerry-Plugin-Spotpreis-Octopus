@@ -202,21 +202,39 @@ if ($oc_ist_post && isset($_POST['plantest'])) {
 
 /* ================= Loxone-Vorlage herunterladen ================= */
 if ($oc_ist_post && isset($_POST['download'])) {
-    /* Feste Liste der Arten; alles andere ist die MQTT-Vorlage wie bisher. 'vq_befehle' seit 1.1.25
-     * (Welle Bild 16, Entwurf Welle 16 oc, Entscheidung 8). */
-    $oc_art = in_array((string) $_POST['download'], array('http_in', 'vq_befehle'), true)
-        ? (string) $_POST['download'] : 'mqtt_in';
-    list($oc_name, $oc_inhalt) = oc_vorlage($oc_art);
-    header('Content-Type: application/x-download');
-    /* Die Anfuehrungszeichen um den Dateinamen sind Pflicht: ohne sie
-     * bricht jeder Name, der ein Leerzeichen enthaelt. Die beiden
-     * anderen Downloads dieser Datei setzen sie seit jeher, nur dieser
-     * nicht - heute faellt es nicht auf, weil kein erzeugter Name ein
-     * Leerzeichen hat. Es ist die Falle fuer den naechsten Namen. */
-    header('Content-Disposition: attachment; filename="' . $oc_name . '"');
-    header('Content-Length: ' . strlen($oc_inhalt));
-    echo $oc_inhalt;
-    exit;
+    /* Feste Liste der Arten. Gruppe 5 / MQTT (1.1.26, Entwurf oc 2.6, E10): die MQTT-Importvorlage
+     * 'mqtt_in' entfaellt; bis 1.1.25 ergab jede unbekannte Art sie. Jetzt wird eine unbekannte Art
+     * abgewiesen und gemeldet (Hausstandard "Eingaben abweisen, nicht stillschweigend zurechtbiegen"). */
+    $oc_art = is_string($_POST['download']) ? (string) $_POST['download'] : '';
+    $oc_vl = in_array($oc_art, array('http_in', 'vq_befehle'), true) ? oc_vorlage($oc_art) : null;
+    if (is_array($oc_vl)) {
+        list($oc_name, $oc_inhalt) = $oc_vl;
+        header('Content-Type: application/x-download');
+        /* Die Anfuehrungszeichen um den Dateinamen sind Pflicht: ohne sie bricht jeder Name, der ein
+         * Leerzeichen enthaelt. */
+        header('Content-Disposition: attachment; filename="' . $oc_name . '"');
+        header('Content-Length: ' . strlen($oc_inhalt));
+        echo $oc_inhalt;
+        exit;
+    }
+    $oc_fehler[] = oc_t('LOX.DL_UNBEKANNT');
+    $oc_tab = 'tab-loxone';
+}
+
+/* ---------- Vorlage der MQTT-Befehle (Gruppe 5 / MQTT, 1.1.26) ----------
+ * Eigener Ausgang "Octopus Dynamic MQTT-Befehle" aus der Tabelle der Befehlsbruecke (bb_vorlage(),
+ * oc_befehle_vorlage()). Liest nur. */
+if ($oc_ist_post && isset($_POST['vorlage_bb'])) {
+    $oc_bv = oc_befehle_vorlage();
+    if (is_array($oc_bv)) {
+        header('Content-Type: application/x-download');
+        header('Content-Disposition: attachment; filename="' . $oc_bv[0] . '"');
+        header('Content-Length: ' . strlen($oc_bv[1]));
+        echo $oc_bv[1];
+        exit;
+    }
+    $oc_fehler[] = oc_t('BEFEHL.FEHLER_VORLAGE');
+    $oc_tab = 'tab-loxone';
 }
 
 /* ================= Protokoll leeren ================= */
@@ -618,6 +636,8 @@ if ($oc_ist_post && isset($_POST['save_mqtt'])) {
     $oc_mcfg = oc_config();
     $oc_alt_praefix = (string) $oc_mcfg['mqtt_topic'];
     $oc_mcfg['mqtt_enabled'] = isset($_POST['mqtt_enabled']) ? 1 : 0;
+    /* Gruppe 5 / MQTT (1.1.26): der Haken der Befehlsbruecke (ab Werk aus). */
+    $oc_mcfg['befehle_mqtt_ein'] = isset($_POST['befehle_mqtt_ein']) ? 1 : 0;
     /* ABWEISEN STATT ENTFERNEN (O4, seit 1.1.16).
      *
      * Bis 1.1.15 wurden unerlaubte Zeichen still entfernt ("haus/strom preis"
@@ -657,6 +677,14 @@ if ($oc_ist_post && isset($_POST['save_mqtt'])) {
         list($oc_pm, $oc_pf) = oc_ui_praefix_wechsel($oc_alt_praefix, (string) $oc_cfg['mqtt_topic']);
         $oc_meldungen = array_merge($oc_meldungen, $oc_pm);
         $oc_fehler = array_merge($oc_fehler, $oc_pf);
+        /* Gruppe 5 / MQTT (1.1.26): das Gateway-V1-Abo dem Praefix nachfuehren und die Befehlsbruecke sofort
+         * schalten - der Waechter im Minutenlauf startet nach einem Start hoechstens alle 600 s neu. */
+        if (!empty($oc_cfg['mqtt_enabled'])) { oc_abo_datei(true); }
+        list($oc_bart, $oc_baus) = oc_bruecke_schalten();
+        if ($oc_bart === 'ein') { $oc_meldungen[] = oc_e(oc_t('BEFEHL.M_EIN')); }
+        elseif ($oc_bart === 'aus') { $oc_meldungen[] = oc_e(oc_t('BEFEHL.M_AUS')); }
+        elseif ($oc_bart === 'start_fehl') { $oc_fehler[] = oc_e(sprintf(oc_t('BEFEHL.M_START_FEHL'), $oc_baus)); }
+        elseif ($oc_bart === 'stop_fehl') { $oc_fehler[] = oc_e(sprintf(oc_t('BEFEHL.M_STOP_FEHL'), $oc_baus)); }
     } else {
         $oc_fehler[] = str_replace('%F%', oc_e($oc_p['config']), oc_t('MELDUNG.SPEICHERN_FEHLER'));
         // Nicht gespeichert: auch dann bleiben die Eingaben stehen (X-2).
@@ -1107,6 +1135,9 @@ if ($oc_rahmen) {
     padding-top: 10px; border-top: 1px solid #e0e0e0; }
 .sm-schritte { margin: 6px 0 0 18px; padding: 0; }
 .sm-schritte li { margin: 3px 0; }
+/* Gruppe 5 / MQTT (1.1.26): Kopierknopf der Namenstabelle, zugeklappte Bereiche (Hakenliste, HTTP-Weg). */
+button.sm-kopie { font-size: 0.8em; padding: 1px 6px; margin-left: 4px; border: 1px solid #ccc; border-radius: 4px; background: #f5f5f5; color: #333; cursor: pointer; }
+details > summary { cursor: pointer; font-weight: 600; color: #4f7d17; margin: 8px 0 6px; }
 </style>
 <div class="sm-wrap">
 
@@ -1849,6 +1880,17 @@ if ($oc_x3_ohne || $oc_x3_mit) { ?>
   <input data-role="none" type="checkbox" name="mqtt_enabled" <?php echo !empty($oc_cfg['mqtt_enabled']) ? 'checked' : ''; ?>>
   <?php echo oc_t('EINST.MQTT_AN'); ?>
 </label>
+<?php /* Gruppe 5 / MQTT (1.1.26, Entwurf oc 3.3): der Haken der Befehlsbruecke, ab Werk aus. */ ?>
+<div style="margin-top:8px;">
+<label style="display:inline-flex;align-items:center;gap:6px;font-weight:600;">
+  <input data-role="none" type="checkbox" name="befehle_mqtt_ein" <?php echo !empty($oc_cfg['befehle_mqtt_ein']) ? 'checked' : ''; ?>>
+  <?php echo oc_e(oc_t('BEFEHL.HAKEN_EIN')); ?>
+</label>
+<div class="sm-hilfe"><?php echo oc_t('BEFEHL.HAKEN_HILFE'); ?></div>
+<?php if (empty($oc_cfg['mqtt_enabled'])) { ?>
+<div class="sm-hilfe"><?php echo oc_t('BEFEHL.HAKEN_MQTT_AUS'); ?></div>
+<?php } ?>
+</div>
 <div class="sm-reihe">
   <div>
     <label><?php echo oc_t('EINST.MQTT_TOPIC'); ?></label>
@@ -1913,6 +1955,10 @@ if ($oc_x3_ohne || $oc_x3_mit) { ?>
     <td><?php echo oc_e(oc_t(oc_retain_fuer($oc_k) ? 'MQTT.RETAIN_JA' : 'MQTT.RETAIN_NEIN')); ?></td>
     <td><?php echo oc_e(isset($oc_werte[$oc_k]) ? $oc_werte[$oc_k] : ''); ?></td></tr>
 <?php } ?>
+<?php /* Gruppe 5 / MQTT (1.1.26): das Lebenszeichen der Befehlsbruecke (bb_status_senden(), nie retained). */ ?>
+<tr><td><span class="sm-mono"><?php echo oc_e($oc_cfg['mqtt_topic'] . '/status/befehle'); ?></span></td>
+    <td><?php echo oc_e(oc_t('BEFEHL.TH_STATUS')); ?></td><td></td>
+    <td><?php echo oc_e(oc_t('MQTT.RETAIN_NEIN')); ?></td><td></td></tr>
 </table>
 </div><!-- /tab-mqtt -->
 
@@ -1925,8 +1971,11 @@ if ($oc_x3_ohne || $oc_x3_mit) { ?>
 <?php echo oc_t('EM.SPOTOPT_TEXT'); ?>
 <table class="sm-tbl">
 <tr><th><?php echo oc_t('EM.T_VONHIER'); ?></th><th><?php echo oc_t('EM.T_ANSCHLUSS'); ?></th><th><?php echo oc_t('EM.T_BEDEUTUNG'); ?></th></tr>
-<tr><td><span class="sm-mono">ph00 &hellip; ph23</span></td><td><span class="sm-mono">00:00 &hellip; 23:00</span></td><td><?php echo oc_t('EM.Z_ABSOLUT'); ?></td></tr>
-<tr><td><span class="sm-mono">pr00 &hellip; pr23</span></td><td><span class="sm-mono">+0 &hellip; +23</span></td><td><?php echo oc_t('EM.Z_RELATIV'); ?></td></tr>
+<?php /* Gruppe 5 / MQTT (1.1.26): zuerst der Name, unter dem das MQTT-Gateway liefert, darunter klein der Titel
+   der HTTP-Vorlage fuer bestehende Anlagen (wie aWATTar). */
+$oc_emp = oc_mqtt_praefix(); ?>
+<tr><td><span class="sm-mono"><?php echo oc_e(oc_thema_flach($oc_emp . '/ph00')); ?> &hellip; <?php echo oc_e(oc_thema_flach($oc_emp . '/ph23')); ?></span><br><small><?php echo oc_e(sprintf(oc_t('EM.HTTP_BESTAND'), 'OCTOPUS_PH00 … OCTOPUS_PH23')); ?></small></td><td><span class="sm-mono">00:00 &hellip; 23:00</span></td><td><?php echo oc_t('EM.Z_ABSOLUT'); ?></td></tr>
+<tr><td><span class="sm-mono"><?php echo oc_e(oc_thema_flach($oc_emp . '/pr00')); ?> &hellip; <?php echo oc_e(oc_thema_flach($oc_emp . '/pr23')); ?></span><br><small><?php echo oc_e(sprintf(oc_t('EM.HTTP_BESTAND'), 'OCTOPUS_PR00 … OCTOPUS_PR23')); ?></small></td><td><span class="sm-mono">+0 &hellip; +23</span></td><td><?php echo oc_t('EM.Z_RELATIV'); ?></td></tr>
 <tr><td><span class="sm-mono">&ndash;</span></td><td><span class="sm-mono">Tr</span></td><td><?php echo oc_t('EM.Z_TRIGGER'); ?></td></tr>
 </table>
 <div class="sm-warnung"><?php echo oc_t('EM.SPOTOPT_WARNUNG'); ?></div>
@@ -1936,70 +1985,130 @@ if ($oc_x3_ohne || $oc_x3_mit) { ?>
 <?php echo oc_t('EM.EM_TEXT'); ?>
 <table class="sm-tbl">
 <tr><th><?php echo oc_t('EM.T_VONHIER'); ?></th><th><?php echo oc_t('EM.T_ANSCHLUSS'); ?></th><th><?php echo oc_t('EM.T_BEDEUTUNG'); ?></th></tr>
-<tr><td><span class="sm-mono">regel1_aktiv &hellip;</span></td><td><span class="sm-mono">Prio</span></td><td><?php echo oc_t('EM.Z_PRIO'); ?></td></tr>
-<tr><td><span class="sm-mono">regel1_aktiv &hellip;</span></td><td><span class="sm-mono">O</span></td><td><?php echo oc_t('EM.Z_OFFSET'); ?></td></tr>
-<tr><td><span class="sm-mono">regel1_aktiv &hellip;</span></td><td><span class="sm-mono">MinSoc</span></td><td><?php echo oc_t('EM.Z_MINSOC'); ?></td></tr>
-<tr><td><span class="sm-mono">regel1_aktiv &hellip;</span></td><td><span class="sm-mono">Off</span></td><td><?php echo oc_t('EM.Z_OFF'); ?></td></tr>
+<tr><td><span class="sm-mono"><?php echo oc_e(oc_thema_flach($oc_emp . '/regel1_aktiv')); ?> &hellip;</span><br><small><?php echo oc_e(sprintf(oc_t('EM.HTTP_BESTAND'), 'OCTOPUS_REGEL1_AKTIV …')); ?></small></td><td><span class="sm-mono">Prio</span></td><td><?php echo oc_t('EM.Z_PRIO'); ?></td></tr>
+<tr><td><span class="sm-mono"><?php echo oc_e(oc_thema_flach($oc_emp . '/regel1_aktiv')); ?> &hellip;</span><br><small><?php echo oc_e(sprintf(oc_t('EM.HTTP_BESTAND'), 'OCTOPUS_REGEL1_AKTIV …')); ?></small></td><td><span class="sm-mono">O</span></td><td><?php echo oc_t('EM.Z_OFFSET'); ?></td></tr>
+<tr><td><span class="sm-mono"><?php echo oc_e(oc_thema_flach($oc_emp . '/regel1_aktiv')); ?> &hellip;</span><br><small><?php echo oc_e(sprintf(oc_t('EM.HTTP_BESTAND'), 'OCTOPUS_REGEL1_AKTIV …')); ?></small></td><td><span class="sm-mono">MinSoc</span></td><td><?php echo oc_t('EM.Z_MINSOC'); ?></td></tr>
+<tr><td><span class="sm-mono"><?php echo oc_e(oc_thema_flach($oc_emp . '/regel1_aktiv')); ?> &hellip;</span><br><small><?php echo oc_e(sprintf(oc_t('EM.HTTP_BESTAND'), 'OCTOPUS_REGEL1_AKTIV …')); ?></small></td><td><span class="sm-mono">Off</span></td><td><?php echo oc_t('EM.Z_OFF'); ?></td></tr>
 </table>
 <div class="sm-hinweis"><?php echo oc_t('EM.EM_HINWEIS'); ?></div>
 </div>
 
 <h2><?php echo oc_t('LOX.H_SCHRITTE'); ?></h2>
-
-<div class="sm-step"><b><?php echo oc_t('LOX.S1_T'); ?></b><br><?php echo oc_t('LOX.S1'); ?></div>
+<?php /* Gruppe 5 / MQTT (1.1.26; Entwurf oc 2.5 und 3.3, Bauvorschrift Gruppe 1 Nachtrag 2): MQTT ist der Weg des
+   LoxBerry-Plugins Musterprojekts, fuer Werte UND Befehle. Schritt 1 MQTT einschalten, Schritt 2 das Gateway nach
+   seiner Fassung (V1: das Plugin bringt sein Abo selbst mit; V2 und "nicht feststellbar": Hakenliste aus
+   oc_mqtt_hakenliste(), die Stundenpreise "Noncached"), Schritt 3 die Namenstabelle (KEINE Importvorlage fuer Werte
+   mehr), Schritt 4 die Befehle aus der Befehlsbruecke (bb_liste(), EINE Quelle mit der Vorlage "Octopus Dynamic
+   MQTT-Befehle"), Schritt 5 die Ausfallerkennung, Schritt 6 die Musterseiten, Schritt 7 die Gegenprobe. Der Weg ueber
+   HTTP (bis 1.1.25 Schritt 4 mit Aktionstoken und die beiden HTTP-Vorlagen) steht darunter, zugeklappt. */
+$oc_gpraefix = oc_mqtt_praefix();
+$oc_gfassung = oc_gateway_fassung();
+$oc_gnamen = oc_mqtt_namen($oc_gpraefix);
+$oc_ghaken = oc_mqtt_hakenliste($oc_gpraefix);
+$oc_gbef = oc_befehle_liste();
+$oc_gabo = oc_abo_datei(false); ?>
+<div class="sm-step"><b><?php echo oc_t('LOX.S1_T'); ?></b><br><?php echo oc_t('LOX.S1'); ?>
+<?php if (empty($oc_cfg['mqtt_enabled'])) { ?>
+<div class="sm-warnung"><?php echo oc_t('LOX.M_MQTT_AUS'); ?></div>
+<?php } else { ?>
+<div class="sm-hinweis"><?php echo oc_t('LOX.M_MQTT_AN'); ?></div>
+<?php } ?>
+</div>
 
 <div class="sm-step"><b><?php echo oc_t('LOX.S2_T'); ?></b><br><?php echo oc_t('LOX.S2'); ?>
-<div class="sm-pre"><?php echo oc_e($oc_cfg['mqtt_topic']); ?>/#</div>
-<b><?php echo oc_abo_text(); ?></b></div>
+<div class="sm-pre"><?php echo oc_e($oc_gpraefix); ?>/#</div>
+<b><?php echo oc_abo_text(); ?></b>
+<?php if ($oc_gabo !== null) {
+    $oc_gd = '<span class="sm-mono">' . oc_e($oc_gabo[0]) . '</span>';
+    $oc_ga = '<span class="sm-mono">' . oc_e($oc_gpraefix) . '/#</span>'; ?>
+<p class="sm-hilfe"><?php echo $oc_gabo[1] ? sprintf(oc_t('LOX.M_ABO_DATEI_JA'), $oc_gd, $oc_ga)
+                                           : sprintf(oc_t('LOX.M_ABO_DATEI_NEIN'), $oc_gd, $oc_ga); ?></p>
+<?php } ?>
+<?php if ($oc_gfassung !== 1) { /* V2 oder nicht feststellbar: die Hakenliste, aufgeklappt */ ?>
+<div class="sm-hinweis"><?php echo sprintf(oc_t('LOX.M_S2_V2'), '<span class="sm-mono">' . oc_e($oc_gpraefix) . '</span>', count($oc_ghaken)); ?></div>
+<details open><summary><?php echo oc_e(sprintf(oc_t('LOX.M_HAKEN_AUF'), count($oc_ghaken))); ?></summary>
+<div class="sm-breit"><table class="sm-tbl">
+<tr><th style="width:34px;">#</th><th><?php echo oc_e(oc_t('LOX.M_T_THEMA')); ?></th><th><?php echo oc_e(oc_t('LOX.M_T_NAME')); ?></th><th style="width:11%"><?php echo oc_e(oc_t('LOX.M_T_NONCACHED')); ?></th><th><?php echo oc_e(oc_t('LOX.SP_BEDEUTUNG')); ?></th></tr>
+<?php foreach ($oc_ghaken as $oc_hi => $oc_hz) { ?>
+<tr><td><?php echo (int) $oc_hi + 1; ?></td><td><span class="sm-mono"><?php echo oc_e($oc_hz[0]); ?></span></td><td><span class="sm-mono"><?php echo oc_e($oc_hz[1]); ?></span></td><td><?php echo oc_e(oc_t($oc_hz[3] ? 'MQTT.RETAIN_JA' : 'MQTT.RETAIN_NEIN')); ?></td><td><?php echo oc_e($oc_hz[2]); ?></td></tr>
+<?php } ?>
+</table></div>
+</details>
+<p class="sm-hilfe"><?php echo oc_t('LOX.M_NONCACHED'); ?></p>
+<?php } ?>
+<p class="sm-hilfe"><?php echo oc_t('LOX.M_RECONNECT'); ?></p>
+<?php if ($oc_gfassung < 2) { /* V1 oder nicht feststellbar */ ?>
+<p class="sm-hilfe"><?php echo oc_t('LOX.M_V1_BEFEHLE'); ?></p>
+<?php } ?>
+</div>
 
 <div class="sm-step"><b><?php echo oc_t('LOX.S3_T'); ?></b><br><?php echo oc_t('LOX.S3'); ?>
-<table class="sm-tbl">
-<tr><th><?php echo oc_t('LOX.SP_TITEL'); ?></th><th><?php echo oc_t('LOX.SP_EINHEIT'); ?></th>
-    <th><?php echo oc_t('LOX.SP_BEDEUTUNG'); ?></th></tr>
-<?php foreach (oc_themen() as $oc_k => $oc_info) { ?>
-<tr><td><span class="sm-mono"><?php
-    // M6 (seit 1.1.16): wie der Gateway den Namen bildet - auch der
-    // Schraegstrich IM Praefix wird zum Unterstrich.
-    echo oc_e(oc_thema_flach($oc_cfg['mqtt_topic'] . '/' . $oc_k)); ?></span></td>
-    <td><?php echo oc_e($oc_info[1] !== '' ? $oc_info[1] : '-'); ?></td>
-    <td><?php echo oc_e(oc_thema_text($oc_info)); ?></td></tr>
+<div class="sm-breit"><table class="sm-tbl">
+<tr><th style="width:34px;">#</th><th><?php echo oc_e(oc_t('LOX.M_T_NAME')); ?></th><th><?php echo oc_e(oc_t('LOX.SP_BEDEUTUNG')); ?></th><th style="width:16%"><?php echo oc_e(oc_t('LOX.M_T_BEREICH')); ?></th></tr>
+<?php $oc_ni = 0; foreach ($oc_gnamen as $oc_nz) { if (!$oc_nz['im_muster']) { continue; } $oc_ni++; ?>
+<tr><td><?php echo $oc_ni; ?></td><td><span class="sm-mono"><?php echo oc_e($oc_nz['name']); ?></span> <button data-role="none" type="button" class="sm-kopie" data-kopie="<?php echo oc_e($oc_nz['name']); ?>"><?php echo oc_e(oc_t('LOX.M_KOPIEREN')); ?></button></td><td><?php echo oc_e($oc_nz['bedeutung']); ?></td><td><?php echo oc_e($oc_nz['bereich']); ?></td></tr>
 <?php } ?>
-</table>
-<form action="index.php" method="post" style="margin-top:8px;">
-<input data-role="none" type="hidden" name="fmt" value="<?php echo oc_e($oc_fmt); ?>">
-<input data-role="none" type="hidden" name="activetab" value="tab-loxone">
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-lesen"></i><?php echo oc_t('LEGENDE.LESEN'); ?></span>
-<span><i class="sm-punkt sm-b-technik"></i><?php echo oc_t('PLAN.LEGENDE_TECHNIK'); ?></span>
-</div>
-<div class="sm-knopfreihe">
-  <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="download" value="mqtt_in"><?php echo oc_t('LOX.DL_MQTT'); ?></button>
-  <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="download" value="http_in"><?php echo oc_t('LOX.DL_HTTP'); ?></button>
-</div>
-</form>
-<div class="sm-hilfe"><?php echo oc_t('LOX.DL_HILFE'); ?></div>
+</table></div>
+<details><summary><?php echo oc_e(oc_t('LOX.M_WEITERE')); ?></summary>
+<p class="sm-hilfe"><?php echo oc_t('LOX.M_WEITERE_TEXT'); ?></p>
+<div class="sm-breit"><table class="sm-tbl">
+<tr><th><?php echo oc_e(oc_t('LOX.M_T_NAME')); ?></th><th><?php echo oc_e(oc_t('LOX.SP_BEDEUTUNG')); ?></th><th style="width:16%"><?php echo oc_e(oc_t('LOX.M_T_BEREICH')); ?></th></tr>
+<?php foreach ($oc_gnamen as $oc_nz) { if ($oc_nz['im_muster']) { continue; } ?>
+<tr><td><span class="sm-mono"><?php echo oc_e($oc_nz['name']); ?></span> <button data-role="none" type="button" class="sm-kopie" data-kopie="<?php echo oc_e($oc_nz['name']); ?>"><?php echo oc_e(oc_t('LOX.M_KOPIEREN')); ?></button></td><td><?php echo oc_e($oc_nz['bedeutung']); ?></td><td><?php echo oc_e($oc_nz['bereich']); ?></td></tr>
+<?php } ?>
+</table></div>
+</details>
+<p class="sm-hilfe"><?php echo oc_t('LOX.M_S3_DIGITAL'); ?></p>
+<p class="sm-hilfe"><?php echo oc_t('LOX.M_S3_FEHLWERT'); ?></p>
+<p class="sm-hilfe"><?php echo oc_t('LOX.M_S3_RECHTE'); ?></p>
+<p class="sm-hilfe"><?php echo oc_t('LOX.M_S3_MUSTER'); ?></p>
+<p class="sm-hilfe"><?php echo oc_t('LOX.M_S3_PRAEFIX'); ?></p>
 <div class="sm-hilfe"><?php echo oc_t('LOX.DL_PROFIL'); ?></div>
-<!-- Hausstandard: der Satz zum zweimaligen Import gehoert SICHTBAR in
-     den Reiter, nicht nur in die Hilfe. Er fehlte bis 1.1.3 ganz -
-     gemessen mit einer Suche ueber Sprachdateien und Hilfetext. -->
-<div class="sm-warnung"><?php echo oc_t('LOX.DL_DOPPELT'); ?></div>
+<script>
+(function () {
+    document.querySelectorAll('.sm-kopie').forEach(function (k) {
+        k.addEventListener('click', function () {
+            var n = k.getAttribute('data-kopie');
+            var fertig = function () { k.textContent = <?php echo json_encode(oc_t('LOX.M_KOPIERT')); ?>; };
+            if (navigator.clipboard && window.isSecureContext) {
+                navigator.clipboard.writeText(n).then(fertig);
+            } else {
+                var f = document.createElement('textarea');
+                f.value = n; document.body.appendChild(f); f.select();
+                try { document.execCommand('copy'); fertig(); } catch (e) {}
+                document.body.removeChild(f);
+            }
+        });
+    });
+})();
+</script>
 </div>
 
-<div class="sm-step"><b><?php echo oc_t('LOX.S4_T'); ?></b><br><?php echo oc_t('LOX.S4'); ?>
-<div class="sm-pre"><?php echo oc_e($oc_endpunkt); ?>?token=<?php echo oc_e($oc_cfg['aktionstoken']); ?>&amp;aktion=say
-<?php echo oc_e($oc_endpunkt); ?>?token=<?php echo oc_e($oc_cfg['aktionstoken']); ?>&amp;aktion=saytomorrow
-<?php echo oc_e($oc_endpunkt); ?>?token=<?php echo oc_e($oc_cfg['aktionstoken']); ?>&amp;aktion=ptest
-<?php echo oc_e($oc_endpunkt); ?>?token=<?php echo oc_e($oc_cfg['aktionstoken']); ?>&amp;aktion=refresh</div>
-<!-- Welle Bild 16 (1.1.25; Entwurf Welle 16 oc, Entscheidung 8): die ersten drei Aktionen als fertige Vorlage
-     fuer einen virtuellen Ausgang (oc_vorlage('vq_befehle')). -->
+<div class="sm-step"><b><?php echo oc_t('LOX.S4_T'); ?></b><br><?php echo sprintf(oc_t('LOX.S4'), '<span class="sm-mono">' . oc_e($oc_gpraefix) . '/befehl/#</span>'); ?>
+<?php if ($oc_gbef === null) { ?>
+<div class="sm-warnung"><?php echo oc_t('LOX.M_S4_KEINE'); ?></div>
+<?php } else { ?>
+<div class="sm-breit"><table class="sm-tbl">
+<tr><th><?php echo oc_e(oc_t('BEFEHL.T_BEDEUTUNG')); ?></th><th><?php echo oc_e(oc_t('BEFEHL.T_TITEL')); ?></th><th><?php echo oc_e(oc_t('BEFEHL.T_LOXONE')); ?></th><th><?php echo oc_e(oc_t('BEFEHL.T_SPERRE')); ?></th></tr>
+<?php foreach ($oc_gbef['befehle'] as $oc_bb) { ?>
+<tr><td><?php echo oc_e(oc_t($oc_bb['kachel'])); ?></td><td><?php echo oc_e($oc_bb['titel']); ?></td><td><span class="sm-mono"><?php echo oc_e($oc_bb['loxone']['ein']); ?></span></td><td><?php echo (int) $oc_bb['sperre_s']; ?> s</td></tr>
+<?php } ?>
+</table></div>
+<p class="sm-hilfe"><?php echo oc_e(oc_t('BEFEHL.T_QUITTUNG')); ?>: <span class="sm-mono"><?php echo oc_e($oc_gpraefix); ?>/befehl/…/quittung</span> – <?php echo oc_e(oc_t('BEFEHL.Q_AUSGEFUEHRT')); ?></p>
+<?php } ?>
+<p class="sm-hilfe"><?php echo oc_t('LOX.M_S4_NICHTS'); ?></p>
+<p class="sm-hilfe"><?php echo oc_t('LOX.M_S4_SPERRE'); ?></p>
+<?php if (empty($oc_cfg['befehle_mqtt_ein'])) { ?>
+<div class="sm-warnung"><?php echo oc_t('LOX.M_S4_HAKEN'); ?></div>
+<?php } ?>
 <form action="index.php" method="post" style="margin-top:8px;">
 <input data-role="none" type="hidden" name="fmt" value="<?php echo oc_e($oc_fmt); ?>">
 <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
 <div class="sm-knopfreihe">
-  <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="download" value="vq_befehle"><?php echo oc_t('LOX.DL_VQ'); ?></button>
+  <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="vorlage_bb" value="1"><?php echo oc_e(oc_t('BEFEHL.K_VORLAGE')); ?></button>
 </div>
 </form>
-<div class="sm-hilfe"><?php echo oc_e(oc_t('LOX.VQ_HILFE')); ?></div>
+<p class="sm-hilfe"><?php echo oc_t('LOX.M_S4_VORLAGE'); ?></p>
 </div>
 
 <div class="sm-step"><b><?php echo oc_t('LOX.S5_T'); ?></b><br><?php echo oc_t('LOX.S5'); ?></div>
@@ -2043,7 +2152,34 @@ $oc_bl = oc_bausteinliste(); ?>
 <div class="sm-hilfe"><?php echo oc_t('LOX.MUSTERPROJEKT'); ?></div>
 <?php } ?>
 
-<div class="sm-step"><b><?php echo oc_t('LOX.S7_T'); ?></b><br><?php echo oc_t('LOX.S7'); ?></div>
+<div class="sm-step"><b><?php echo oc_t('LOX.S7_T'); ?></b><br><?php echo sprintf(oc_t('LOX.S7'),
+    '<span class="sm-mono">' . oc_e(oc_thema_flach(oc_mqtt_praefix() . '/status/zaehler')) . '</span>'); ?></div>
+
+<?php /* Gruppe 5 / MQTT (1.1.26): der Weg ueber HTTP (bis 1.1.25 Schritt 4 dieses Reiters und die beiden Vorlagen)
+         fuer bestehende Anlagen, zugeklappt. Inhalt wie bis 1.1.25; die Vorlage fuer virtuelle Eingaenge ueber MQTT
+         (localhost-Kunstgriff) entfaellt (Gruppe 1 Nachtrag 2, Entwurf oc E10). */ ?>
+<details class="sm-step"><summary><b><?php echo oc_e(oc_t('LOX.H_HTTP')); ?></b></summary>
+<p class="sm-hilfe"><?php echo oc_t('LOX.HTTP_ERKLAERUNG'); ?></p>
+<b><?php echo oc_t('LOX.HTTP_BEFEHLE_T'); ?></b><br><?php echo oc_t('LOX.HTTP_BEFEHLE'); ?>
+<div class="sm-pre"><?php echo oc_e($oc_endpunkt); ?>?token=<?php echo oc_e($oc_cfg['aktionstoken']); ?>&amp;aktion=say
+<?php echo oc_e($oc_endpunkt); ?>?token=<?php echo oc_e($oc_cfg['aktionstoken']); ?>&amp;aktion=saytomorrow
+<?php echo oc_e($oc_endpunkt); ?>?token=<?php echo oc_e($oc_cfg['aktionstoken']); ?>&amp;aktion=ptest
+<?php echo oc_e($oc_endpunkt); ?>?token=<?php echo oc_e($oc_cfg['aktionstoken']); ?>&amp;aktion=refresh</div>
+<form action="index.php" method="post" style="margin-top:8px;">
+<input data-role="none" type="hidden" name="fmt" value="<?php echo oc_e($oc_fmt); ?>">
+<input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i><?php echo oc_t('LEGENDE.LESEN'); ?></span>
+<span><i class="sm-punkt sm-b-technik"></i><?php echo oc_t('PLAN.LEGENDE_TECHNIK'); ?></span>
+</div>
+<div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="download" value="vq_befehle"><?php echo oc_t('LOX.DL_VQ'); ?></button>
+  <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="download" value="http_in"><?php echo oc_t('LOX.DL_HTTP'); ?></button>
+</div>
+</form>
+<div class="sm-hilfe"><?php echo oc_e(oc_t('LOX.VQ_HILFE')); ?></div>
+<div class="sm-hilfe"><?php echo oc_t('LOX.DL_HILFE'); ?></div>
+</details>
 </div><!-- /tab-loxone -->
 
 <!-- ==================== Reiter: Kostenvergleich ==================== -->

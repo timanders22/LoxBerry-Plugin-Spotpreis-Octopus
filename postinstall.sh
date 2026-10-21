@@ -192,6 +192,18 @@ fi
 # wird genau so bestimmt wie in preupgrade.sh und postupgrade.sh (sechstes
 # Argument, sonst die Kennung aus dem ersten). Bauart AWM-Abfuhr 1.4.13,
 # ACTiKamera 1.9.22, FerienFeiertage 1.2.16, MGiSmart 1.1.17.
+# Gruppe 5 / MQTT (1.1.26): bei einer Neuinstallation die Befehlsbruecke starten (startet nur mit dem Haken
+# "Befehle ueber MQTT annehmen", ab Werk aus). Bei einem Update startet sie postupgrade.sh nach der Marke.
+BBSH="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
+if [ "$UPGRADE" = 0 ] && [ -f "$BBSH" ]; then
+    BB_AUS=$(timeout 40 bash "$BBSH" start 2>&1 | head -n 1)
+    case "$BB_AUS" in
+        *gestartet*|*laeuft*) echo "<OK> Befehlsbruecke: $BB_AUS" ;;
+        "Haken aus - kein Start.") echo "<INFO> Befehlsbruecke: aus (Reiter MQTT, Haken 'Befehle ueber MQTT annehmen')." ;;
+        *) echo "<WARNING> Befehlsbruecke: $BB_AUS - der Minutenlauf versucht es erneut." ;;
+    esac
+fi
+
 if [ -n "$6" ] && [ -d "$6/octopus_upgrade" ]; then
     OC_SICHERUNG="$6/octopus_upgrade"
 else

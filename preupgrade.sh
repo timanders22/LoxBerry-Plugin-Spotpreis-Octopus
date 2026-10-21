@@ -104,6 +104,14 @@ case "$PFOLDER" in
         fi ;;
 esac
 
+# ---------- Befehlsbruecke anhalten (Gruppe 5 / MQTT, 1.1.26) ----------
+# Die Marke liegt schon (oben) - der Waechter im Minutenlauf startet sie bis postupgrade.sh nicht neu; es ist
+# dieselbe Marke, die befehlsbruecke.sh liest. Bis 1.1.25 gab es keine Bruecke (dann fehlt die Datei).
+BBSH="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
+if [ -f "$BBSH" ]; then
+    echo "<INFO> Befehlsbruecke: $(timeout 40 bash "$BBSH" stop 2>&1 | head -n 1)"
+fi
+
 if [ -n "$ARGV6" ] && [ -d "$ARGV6" ]; then
     SICHERUNG="$ARGV6/octopus_upgrade"
 else

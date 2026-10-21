@@ -83,36 +83,9 @@ function oc_ende($code, $text)
     exit;
 }
 
-/**
- * Wiederholsperre. Rueckgabe: true = darf laufen.
- *
- * Kein Zaehler, kein Verlauf - eine Datei mit einem Zeitstempel. Wer sie
- * innerhalb der Sperrzeit wieder anfasst, bekommt false.
- *
- * EIN SCHUTZ, DER OFFEN AUSFAELLT, IST KEINER. Bis 1.1.3 wurde der
- * Rueckgabewert von file_put_contents verworfen. Gemessen mit einem
- * /tmp/octopus, das sich nicht anlegen liess: dreimal hintereinander
- * PTEST;OK=1;GESPERRT=0, weil die Sperrdatei nie entstand - der Schutz
- * gegen den schleifenden virtuellen Ausgang (sekuendliche Ansage,
- * sekuendliche Kraken-Anmeldung bei 'refresh') war vollstaendig weg, und
- * nichts sagte es. Mit beschreibbarem Ordner: 0 / 1 / 1.
- *
- * Laesst sich die Sperre nicht schreiben, gilt der Aufruf als GESPERRT und
- * es wird protokolliert. Fail closed: lieber eine Ansage zu wenig als eine
- * Schleife, die den Music Server sekuendlich sprechen laesst.
- */
-function oc_sperre_frei($name, $sekunden)
-{
-    $f = oc_tmpdir() . '/sperre_' . preg_replace('/[^a-z0-9_]/i', '', (string) $name);
-    if (is_file($f) && time() - (int) filemtime($f) < (int) $sekunden) { return false; }
-    if (!is_dir(dirname($f))) { @mkdir(dirname($f), 0775, true); }
-    if (@file_put_contents($f, (string) time()) === false) {
-        oc_log_if_changed('sperre', 'Wiederholsperre nicht schreibbar (' . $f
-            . ') - der Aufruf wird abgewiesen, damit der Schutz nicht offen ausfaellt');
-        return false;
-    }
-    return true;
-}
+/* Die Wiederholsperre oc_sperre_frei() steht seit 1.1.26 in oc_lib.php (Gruppe 5 / MQTT): der
+ * HTTP-Endpunkt und die Befehlsbruecke bremsen mit derselben Funktion. Begruendung ("ein Schutz, der
+ * offen ausfaellt, ist keiner") dort. */
 
 /* NUR LESEN, fuer den ganzen Aufruf.
  *
@@ -231,52 +204,17 @@ if (empty($cfg['enabled'])) {
     oc_ende(503, 'OCTOPUS;OK=0;ERR=AUS;TEXT=Das Plugin ist in den Einstellungen abgeschaltet.');
 }
 
-/* ---------- Test-Pushnachricht ---------- */
-if ($aktion === 'ptest') {
-    if (!oc_sperre_frei('ptest', 10)) {
-        oc_ende(200, 'PTEST;OK=1;DAUER=300;GESPERRT=1');
-    }
-    /* Den Rueckgabewert ansehen: bis 1.1.3 meldete diese Aktion OK=1, auch
-     * wenn der Merker gar nicht geschrieben werden konnte. Loxone bekam
-     * dann eine Erfolgsmeldung fuer eine Pushnachricht, die nie kommt, und
-     * der Anwender suchte den Fehler im Benachrichtigungs-Baustein. */
-    if (@file_put_contents(oc_tmpdir() . '/ptest', '1') === false) {
-        oc_log('Test-Pushnachricht angefordert, aber der Merker liess sich nicht schreiben ('
-            . oc_tmpdir() . '/ptest)');
-        oc_ende(500, 'PTEST;OK=0;ERR=MERKER;TEXT=Der Merker liess sich nicht schreiben.');
-    }
-    /* SOFORT senden, nicht erst beim naechsten Cron-Lauf.
-     *
-     * Das Fenster des Merkers ist fuenf Minuten breit. Wer bis zum
-     * naechsten Minutentakt wartet, verschenkt davon bis zu eine ganze -
-     * und wenn die Sendebremse gerade greift, laege der Merker sogar bis
-     * zum halbstuendlichen Lebenszeichen. Der Sinn des Knopfes ist, dass
-     * es in Loxone SOFORT blinkt.
-     *
-     * Seit 1.1.11 geht dabei nur die Aenderung hinaus (ptest) und das
-     * Lebenszeichen. Das Zuruecksetzen auf 0 meldet der naechste
-     * Cron-Lauf von selbst: der Merker mqtt_letzte.json kennt die Eins. */
-    oc_mqtt_publish();   // nur die Aenderung (ptest) und das Lebenszeichen
-    oc_log('Test-Pushnachricht angefordert (ptest=1 fuer 5 Minuten), sofort per MQTT gemeldet');
-    oc_ende(200, 'PTEST;OK=1;DAUER=300;GESPERRT=0');
-}
-
-/* ---------- Testansagen ---------- */
-if ($aktion === 'say' || $aktion === 'saytomorrow') {
-    header('Content-Type: text/plain; charset=utf-8');
-    /* 20 Sekunden: lang genug, dass eine Schleife nicht durchkommt, kurz
-     * genug, dass zwei gewollte Ansagen hintereinander moeglich bleiben. */
-    if (!oc_sperre_frei('say', 20)) {
-        echo 'SAY;OK=0;GESPERRT=1;' . oc_say_feld('') . "\n";
-        exit;
-    }
-    $st = oc_state();
-    $text = $aktion === 'saytomorrow' ? oc_tomorrow_text($st) : oc_announce_text($st);
-    if ($text === '') { $text = oc_t('OC_ANSAGE.TEST_LEER'); }
-    $ok = oc_say($text);
-    /* Seit 1.1.21 (Nr. 40): vom Text nur die Laenge, ausser beim Original-Audioserver. */
-    echo 'SAY;OK=' . ($ok ? 1 : 0) . ';GESPERRT=0;' . oc_say_feld($text) . "\n";
-    exit;
+/* ---------- Test-Pushnachricht und Testansagen ----------
+ * Gruppe 5 / MQTT (1.1.26, Entwurf oc 3.2): die Wirkung steht in oc_befehl_ausfuehren() (oc_lib.php); dieselbe
+ * Funktion ruft die Befehlsbruecke (bin/befehle_zuordnung.php, Quelle 'mqtt'). Antwortzeile und Code dieses
+ * Endpunkts sind unveraendert (Wirkungstest Quelle gegen Bau): PTEST;OK=1;DAUER=300;GESPERRT=0|1, 500
+ * PTEST;OK=0;ERR=MERKER, SAY;OK=0|1;GESPERRT=0|1;... - auch die gesperrte Ansage antwortet 200 mit text/plain.
+ * Token, Aktionsliste und "Plugin an" prueft dieser Endpunkt oben wie bisher. Bis 1.1.25 standen hier die
+ * Merker- und Ansagezweige selbst; die Begruendungen (Merker sofort per MQTT melden, 20 s gemeinsam fuer beide
+ * Ansagen) stehen jetzt an der Funktion. */
+if ($aktion === 'ptest' || $aktion === 'say' || $aktion === 'saytomorrow') {
+    list($oc_bcode, $oc_bzeile) = oc_befehl_ausfuehren($aktion, 'http');
+    oc_ende($oc_bcode, $oc_bzeile);
 }
 
 /* Der erzwungene Abruf ist der teuerste Aufruf ueberhaupt: er verwirft das
