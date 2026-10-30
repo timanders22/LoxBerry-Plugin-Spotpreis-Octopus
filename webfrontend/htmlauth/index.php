@@ -252,6 +252,23 @@ if ($oc_ist_post && isset($_POST['test'])) {
     list($oc_test_titel, $oc_test_text) = oc_test_ausfuehren((string) $_POST['test']);
     $oc_tab = 'tab-test';
 }
+/* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): die Knoepfe "Testansage an Ziel n" schicken ansage_test_ziel=n - es spricht
+ * nur dieses Ziel; der bisherige Knopf spricht an alle Ziele gleichzeitig. Eine unbrauchbare Nummer spricht nichts. */
+if ($oc_ist_post && (isset($_POST['ansage_test']) || isset($_POST['ansage_test_ziel']))) {
+    require_once __DIR__ . '/oc_test.php';
+    $oc_tk = oc_ansage_k();
+    $oc_tnur = (isset($_POST['ansage_test_ziel']) && oc_mit_zielen()) ? ansage_test_ziel($_POST) : 0;
+    if (isset($_POST['ansage_test_ziel']) && $oc_tnur === 0) {
+        $oc_tr = array('stand' => 0, 'kennung' => 'ZIEL_UNBEKANNT|-', 'art' => '-', 'http' => 0, 'zeile' => '', 'zeichen' => 0);
+    } elseif ($oc_tnur >= 1) {
+        $oc_tr = ansage_testansage(oc_tts($oc_cfg), $oc_tk, $oc_tnur);
+    } else {
+        $oc_tr = oc_say_ergebnis(oc_test_say_text(false));
+    }
+    oc_log('Testansage' . ($oc_tnur >= 1 ? ' an Ziel ' . $oc_tnur : '') . ': ' . ansage_kurz($oc_tr));
+    list($oc_test_titel, $oc_test_text) = oc_test_say_zeigen($oc_tr);
+    $oc_tab = 'tab-test';
+}
 
 /* ================= Zugangsdaten speichern ================= */
 if ($oc_ist_post && isset($_POST['save_zugang'])) {
@@ -605,8 +622,9 @@ if ($oc_ist_post && isset($_POST['save'])) {
      * sind dieselben wie bis 1.1.21. */
     $oc_tmangel = array();
     $oc_tbean = array();
+    $oc_thinw = array();     // Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Hinweise des Moduls, die das Speichern nicht verhindern
     $oc_neu['tts'] = ansage_formular_lesen($_POST, oc_tts($oc_cfg), $oc_tmangel, $oc_tbean,
-                                           oc_ansage_opt(), oc_ansage_k());
+        oc_ansage_opt() + array('ziele' => oc_mit_zielen()), oc_ansage_k(), $oc_thinw);
     foreach ($oc_tmangel as $oc_tm) { $oc_abweis[] = oc_e($oc_tm['text']); }
     foreach ($oc_tbean as $oc_tb) { $oc_bean[] = $oc_tb; }
 
@@ -617,6 +635,7 @@ if ($oc_ist_post && isset($_POST['save'])) {
         $oc_eingaben = oc_eingaben_sammeln('save', $oc_bean);
     } elseif (oc_config_write($oc_neu)) {
         $oc_gespeichert = true;
+        foreach ($oc_thinw as $oc_th) { $oc_meldungen[] = $oc_th['text']; }     // Welle Mehrfach-Ziele: erst nach dem Speichern
         $oc_cfg = oc_config();
         if (isset($_POST['token_neu'])) { $oc_hinweis = oc_t('MELDUNG.TOKEN_NEU'); }
     } else {
@@ -879,10 +898,16 @@ if ($oc_ist_post && isset($_POST['oc_zurueck'])) {
                 $oc_neu['tts']['alexa_token'] = (string) $oc_cfg['tts']['alexa_token'];
                 $oc_neu['tts']['google_token'] = (string) $oc_cfg['tts']['google_token'];   // Ansage-3
             }
+            /* Welle Mehrfach-Ziele (1.1.27): fehlt die Liste der weiteren Ziele in der Sicherung (aeltere Fassung),
+             * gelten die jetzigen weiteren Ziele (oc_sicherung_spaet(), genannt in der Meldung). */
+            list($oc_neu, $oc_spaet) = oc_sicherung_spaet($oc_neu, $oc_cfg);
             if (!oc_config_write($oc_neu)) {
                 $oc_fehler[] = oc_t('EINST.SICH_SCHREIBFEHLER');
             } else {
                 $oc_meldungen[] = sprintf(oc_t('EINST.SICH_UEBERNOMMEN'), $oc_n);
+                if ($oc_spaet) {
+                    $oc_meldungen[] = sprintf(oc_t('EINST.SICH_SPAET'), oc_e(implode(', ', $oc_spaet)));
+                }
                 if ($oc_tok_lage === 'behalten') {
                     $oc_meldungen[] = oc_t('EINST.SICH_TOKEN_BEHALTEN');
                 } elseif ($oc_tok_lage === 'neu') {
@@ -1728,8 +1753,10 @@ $oc_th['m'] = function ($n) use ($oc_eingaben) {
             && $oc_eingaben['formular'] === 'save' && is_array($oc_eingaben['felder'])
             && in_array($n, $oc_eingaben['felder'], true)) ? ' class="sm-beanstandet" aria-invalid="true"' : '';
 };
-echo ansage_formular_html(oc_tts($oc_cfg), $oc_th, oc_ansage_k());
-?>
+echo ansage_formular_html(oc_tts($oc_cfg), $oc_th + array(
+/* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Tabelle der weiteren Ausgabeziele; nach einer Beanstandung traegt sie das Eingetippte. */
+'ziele' => oc_mit_zielen(),
+'ziele_post' => (is_array($oc_eingaben) && isset($oc_eingaben['formular']) && $oc_eingaben['formular'] === 'save') ? oc_ziele_x2_post($oc_eingaben['werte']) : null), oc_ansage_k()); ?>
 <div class="sm-hilfe"><?php echo sprintf(oc_t('EINST.TTS_TEST_HINWEIS'), '<b>' . oc_e(oc_t('REITER.TEST')) . '</b>'); ?></div>
 
 <?php /* MQTT stand hier bis zu dieser Fassung. Es wohnt jetzt
@@ -2549,7 +2576,13 @@ foreach (array_slice($pl_summen, 1) as $pl_e) {
                      'saytomorrow' => 'TEST.K_SAYTOMORROW', 'ptest' => 'TEST.K_PTEST') as $oc_a => $oc_l) { ?>
   <form action="index.php" method="post">
 <input data-role="none" type="hidden" name="fmt" value="<?php echo oc_e($oc_fmt); ?>"><input data-role="none" type="hidden" name="activetab" value="tab-test">
-  <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="<?php echo $oc_a; ?>"><?php echo oc_t($oc_l); ?></button></form>
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="<?php echo $oc_a; ?>"><?php echo oc_t($oc_l); ?></button>
+<?php if ($oc_a === 'say') { ?>
+<?php /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): je weiteres Ziel ein Knopf "Testansage an Ziel n (Geraet (Plugin))";
+   ohne weitere Ziele nichts. */
+if (oc_mit_zielen()) { echo ansage_testknoepfe_html(oc_tts($oc_cfg), oc_ansage_k(), array('klasse' => 'sm-btn sm-b-aktion')); } ?>
+<?php } ?>
+  </form>
 <?php } ?>
 </div>
 

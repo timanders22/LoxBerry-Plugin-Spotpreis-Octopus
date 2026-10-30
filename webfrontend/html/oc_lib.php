@@ -42,7 +42,8 @@ define('OC_API', 'https://api.oeg-kraken.energy/v1/graphql/');
  * Spotpreis-aWATTar-Plugin - Frist, Rangfolge, Leistungsbudget und
  * PV-Gutschrift stecken dort. Naeheres im Kopf von planer.php. */
 require_once __DIR__ . '/planer.php';
-/* Die gemeinsame Sprachausgabe (seit 1.1.21, Nr. 36 b). Eigene Datei daneben,
+/* Die gemeinsame Sprachausgabe (seit 1.1.21, Nr. 36 b; seit 1.1.27 Stamm 1.2.1 mit weiteren Ausgabezielen,
+ * oc_mit_zielen(), Welle Mehrfach-Ziele). Eigene Datei daneben,
  * byteweise gleich mit der Stammfassung Werkzeuge/gemeinsam/sprachausgabe.php
  * im Arbeitsordner und mit den Abschriften der anderen Linien; Naeheres im
  * Kopf von sprachausgabe.php. Sie tut beim Laden nichts ausser Funktionen
@@ -1107,7 +1108,9 @@ function oc_config($heilen = null)
     /* Seit 1.1.22 (Sprachausgabe Stufe 2, Nr. 36 b): Vorgaben des Blocks tts aus der gemeinsamen
      * Sprachausgabe - EINE Vorgabeliste (oc_tts()), ab Werk musicserver wie bisher (mit leerer IP spricht
      * er nicht). Neu im Block: alexa_laut (-1 = Ansagelautstaerke von Alexa-NG), sonos_zone, sonos_laut
-     * (vom Modul vorgegeben; Sonos4Lox bietet diese Linie nicht an).
+     * (vom Modul vorgegeben; Sonos4Lox bietet diese Linie seit 1.1.27 an, dazu SonoX mit sonox_raum, sonox_laut,
+     * sonox_sprache - Nachtwelle N2, Modul 1.2.0; seit 1.1.27 Stamm 1.2.1 mit der Liste 'ziele' der weiteren
+     * Ausgabeziele - oc_tts() laesst sie stehen, geprueft wird sie wie jeder Wert beim Speichern und Zurueckspielen).
      *
      * Hier wird nur noch der TYP gesichert (ein Text bleibt ein Text, eine Zahl eine Zahl). Bis 1.1.21
      * filterte diese Stelle IP, Zonen, Sprache und Vorlage still zurecht - das haette eine IPv6-Adresse im
@@ -4338,11 +4341,59 @@ function oc_mqtt_publish($st = null, $nur_lebenszeichen = false, $erzwingen = fa
  * ebenso die Pruefstand-Konstante OC_ALEXANG_ADRESSE (die Adresse kommt aus dem Webport).
  */
 
-/** Ausgabearten dieser Linie: alle des Moduls ausser Sonos4Lox (bis 1.1.21 nicht angeboten). 'aus' ist
- *  neu waehlbar; ab Werk bleibt es musicserver (oc_tts()). */
+/** Ausgabearten dieser Linie: 'aus' ist waehlbar; ab Werk bleibt es musicserver (oc_tts()). Seit 1.1.27 (Nachtwelle
+ *  N2, Pflegewelle 22) auch Sonos4Lox und, ab Modul 1.1.4, SonoX (ungemessen, kein Sonos im Haus; das Modul prueft
+ *  Installation und Zone bzw. Raum). Weitere Ausgabeziele (Tabelle, 'ziele') seit 1.1.27 mit Stamm 1.2.1 -
+ *  oc_mit_zielen() unten; ohne Tabelle wie 1.1.4. Die Fassungspruefung schuetzt vor einer zuerst geladenen aelteren
+ *  Abschrift (Modul 1.1.4, Kopf "Wer 'sonox' anbietet"); in dieser Linie laedt nur oc_lib.php das Modul. */
 function oc_ansage_modi()
 {
-    return array('aus', 'musicserver', 'ms4h', 'audioserver', 'custom', 'alexang', 'cc4lox');
+    $m = array('aus', 'musicserver', 'ms4h', 'audioserver', 'custom', 'alexang', 'cc4lox', 'sonos4lox');
+    if (version_compare(ANSAGE_FASSUNG, '1.1.4', '>=')) { $m[] = 'sonox'; }
+    return $m;
+}
+
+/** Welle Mehrfach-Ziele (Sprachmodul 1.2.1): bietet diese Linie die Tabelle der weiteren Ausgabeziele an? Nur, wenn die
+ *  geladene Abschrift sie kann - laden zwei Abschriften im selben Prozess, gilt die zuerst geladene. */
+function oc_mit_zielen() {
+    return version_compare(ANSAGE_FASSUNG, '1.2.0', '>=') && function_exists('ansage_ziele_html')
+        && function_exists('ansage_ziele_pruefen') && function_exists('ansage_testknoepfe_html');
+}
+
+/** Welle Mehrfach-Ziele (Sprachmodul 1.2.1): die Schluessel des Ansageblocks, die diese Linie prueft und aus einer
+ *  Sicherung annimmt - die des Moduls und, wenn die geladene Abschrift sie kann, die Liste der weiteren Ziele. */
+function oc_ansage_schluessel() {
+    $s = array_keys(ansage_vorgaben());
+    if (oc_mit_zielen()) { $s[] = 'ziele'; }
+    return $s;
+}
+
+/** Welle Mehrfach-Ziele (1.1.27), X-2: aus den gesammelten Eingaben (oc_eingaben_sammeln(), Schluessel name[N]) wieder
+ *  das POST der Tabelle (ziele_post); null, wenn die Tabelle nicht darin steht (die gespeicherten Ziele bleiben sichtbar). */
+function oc_ziele_x2_post(array $werte)
+{
+    $p = array();
+    foreach ($werte as $k => $v) {
+        if (is_string($v) && preg_match('/^(tts_ziel_[a-z]+)\[([2-9])\]\z/', (string) $k, $m)) { $p[$m[1]][(int) $m[2]] = $v; }
+    }
+    return isset($p['tts_ziel_art']) ? $p : null;
+}
+
+/** Welle Mehrfach-Ziele (1.1.27): beim Zurueckspielen die Spaetliste (Stueck d) - $neu aus oc_sicherung_lesen(), $jetzt
+ *  die geltende Einstellung. Rueckgabe: array(neu, Namen der behaltenen Schluessel). */
+function oc_sicherung_spaet($neu, $jetzt)
+{
+    $liste = array();
+    /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1, Spaetliste): fehlt die Liste der weiteren Ziele in der Sicherung (Datei einer
+     * aelteren Fassung), gelten die jetzigen weiteren Ziele weiter - genannt im Hinweis. Eine Sicherung MIT leerer Liste
+     * heisst "keine weiteren Ziele" und wird so uebernommen. */
+    $oc_spaete = array();
+    if (isset($neu['tts']) && is_array($neu['tts']) && function_exists('ansage_sicherung_spaet')) {
+        list($neu['tts'], $oc_spaete) = ansage_sicherung_spaet($neu['tts'],
+            (isset($jetzt['tts']) && is_array($jetzt['tts'])) ? $jetzt['tts'] : null);
+    }
+    foreach ($oc_spaete as $oc_sn) { $liste[] = $oc_sn; }     // Welle Mehrfach-Ziele: tts.ziele (Spaetliste)
+    return array($neu, $liste);
 }
 
 /** Optionen fuer Formular-Baustein und Formular-Lesen: die erlaubten Arten und die POST-Namen der
@@ -5588,14 +5639,16 @@ function oc_sicherung_feld_mangel($k, $w)
         /* Seit 1.1.22 prueft die gemeinsame Sprachausgabe jeden Wert - dieselbe Pruefung wie das Formular
          * (Heimnetz fuer Adresse und Vorlage, Entscheidung Nr. 40). Fremde innere Schluessel werden wie
          * bisher uebergangen. Das Sprechtoken geht nie in eine Sicherung, das Zurueckspielen behaelt das
-         * laufende; traegt eine Datei trotzdem eines (auch als Liste), ist sie beanstandet. */
+         * laufende; traegt eine Datei trotzdem eines (auch als Liste), ist sie beanstandet. Seit 1.1.27 (Welle
+         * Mehrfach-Ziele) gehoert die Liste 'ziele' dazu (oc_ansage_schluessel()) - bis dahin wurde sie hier als
+         * fremd uebergangen, und die eigene Sicherung verlor die weiteren Ziele still. */
         foreach ($w as $oc_sk => $oc_sv) {
             $oc_sk = (string) $oc_sk;
             if ($oc_sk === 'alexa_token' || $oc_sk === 'google_token') {
                 if ($oc_sv !== '') { $aus[] = 'tts.' . $oc_sk; }
                 continue;
             }
-            if (!array_key_exists($oc_sk, ansage_vorgaben())) { continue; }
+            if (!in_array($oc_sk, oc_ansage_schluessel(), true)) { continue; }
             $oc_g = '';
             if (ansage_wert_pruefen(array($oc_sk => $oc_sv), $oc_g, oc_ansage_modi()) === null) {
                 $aus[] = 'tts.' . $oc_sk;

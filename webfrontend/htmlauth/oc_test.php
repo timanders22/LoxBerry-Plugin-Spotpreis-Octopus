@@ -402,11 +402,24 @@ function oc_test_say($morgen)
 {
     /* Seit 1.1.22 (Sprachausgabe Stufe 2): ueber die gemeinsame Sprachausgabe wie die Stundenansage. Die
      * Antwort nennt Ergebnis, Zeichenzahl und HTTP-Code (bei Alexa-NG/Chromecast deren Antwortzeile ohne
-     * Token) - den Ansagetext nicht mehr: er reist in der Einmalmeldung durch den Datenordner (Nr. 40). */
+     * Token) - den Ansagetext nicht mehr: er reist in der Einmalmeldung durch den Datenordner (Nr. 40).
+     * Seit 1.1.27 (Welle Mehrfach-Ziele) in drei Teile zerlegt - Text, Sprechen, Anzeige -, damit die Knoepfe
+     * "Testansage an Ziel n" (index.php) dieselbe Anzeige benutzen; das Verhalten dieses Knopfes ist gleich. */
+    return oc_test_say_zeigen(oc_say_ergebnis(oc_test_say_text($morgen)));
+}
+
+/** Der Text der Testansage: die Preisansage bzw. die Preise fuer morgen (leer: der Ersatzsatz). */
+function oc_test_say_text($morgen)
+{
     $st = oc_state();
     $text = $morgen ? oc_tomorrow_text($st) : oc_announce_text($st);
     if ($text === '') { $text = oc_t('OC_ANSAGE.TEST_LEER'); }
-    $r = oc_say_ergebnis($text);
+    return $text;
+}
+
+/** Die Anzeige im Reiter Test zu einem Ergebnis der Sprachausgabe: array(Titel, HTML-Text). */
+function oc_test_say_zeigen(array $r)
+{
     $k = oc_ansage_k();
     if ($r['stand'] === -1) {
         return array(oc_t('TEST.T_SAY'), '<div class="sm-hinweis">'
