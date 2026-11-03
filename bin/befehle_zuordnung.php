@@ -37,7 +37,8 @@ return array(
         return oc_befehle_einstellungen();
     },
     'protokoll' => function ($stufe, $text) {
-        oc_log('Befehlsbruecke ' . ($stufe === 'INFO' ? '' : $stufe . ': ') . $text);
+        // 1.1.28: bb_log() setzt "Befehlsbruecke: " schon vor den Text - bis 1.1.27 stand es doppelt (Nachzug 01.11.2026, wie MGiSmart 1.1.30).
+        oc_log(($stufe === 'INFO' ? '' : $stufe . ': ') . $text);
     },
     'befehle' => array(
         'ansage'        => array('art' => 'puls', 'eingreifend' => false,

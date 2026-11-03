@@ -96,8 +96,9 @@ try {
     oc_log('Befehlsbruecke: Waechter abgebrochen (' . get_class($oc_bw) . ') - der Minutenlauf ist davon nicht betroffen.');
 }
 
-$cfg = oc_config();
-if (empty($cfg['enabled'])) {
+/* bis 1.1.27 hiess dieses Feld $cfg: das LoxBerry-SDK ueberschreibt ein globales $cfg beim ersten Lesen von general.json (Ausfall MGiSmart 01.11.2026). */
+$oc_lauf_cfg = oc_config();
+if (empty($oc_lauf_cfg['enabled'])) {
     echo "AUS\n";
     exit(0);
 }
@@ -105,7 +106,7 @@ if (empty($cfg['enabled'])) {
 /* Gruppe 5 / MQTT (1.1.26, Entwurf oc 2.7, E9): das Gateway-V1-Abo config/mqtt_subscriptions.cfg dem eingestellten
  * Praefix nachfuehren - ein Update spielt die alte octopus.json zurueck, die Datei kommt aber aus dem Archiv
  * ("octopus/#"). Schreibt nur, wenn sie abweicht (Bauart EVCC 0.9.45). */
-if (!empty($cfg['mqtt_enabled'])) {
+if (!empty($oc_lauf_cfg['mqtt_enabled'])) {
     oc_abo_datei(true);
 }
 
@@ -244,13 +245,13 @@ if ((int) date('j') === 1 && (int) date('G') >= 8 && !is_file($oc_marke)) {
             . ' ct, fest ' . $vm['fix'] . ' ct -> '
             . ($vm['diff'] >= 0 ? 'dynamisch waere guenstiger gewesen um ' : 'fester Tarif war guenstiger um ')
             . abs($vm['diff']) . ' ct/kWh (' . abs($vm['euro']) . ' EUR)');
-        if (!empty($cfg['notify']['audio'])) {
+        if (!empty($oc_lauf_cfg['notify']['audio'])) {
             $t = str_replace(array('%DYN%', '%FIX%'),
                 array(oc_num($vm['dynp'], 1), oc_num($vm['fix'], 1)),
                 oc_t('OC_ANSAGE.MONATSBERICHT'));
             $t .= ' ' . str_replace('%D%', oc_num(abs($vm['diff']), 1),
                 oc_t($vm['diff'] >= 0 ? 'OC_ANSAGE.MONAT_DYN_BESSER' : 'OC_ANSAGE.MONAT_FIX_BESSER'));
-            oc_say($t);
+            oc_ansage_legen(array(array('schluessel' => 'monat', 'text' => $t)));     // 1.1.28
         }
     }
 }

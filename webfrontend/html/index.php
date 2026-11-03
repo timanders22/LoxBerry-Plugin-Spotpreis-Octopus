@@ -100,7 +100,8 @@ function oc_ende($code, $text)
  * nur fuer diese eine Zeile: oc_state() und die Themenbildung rufen
  * oc_config() ihrerseits weiter. Naeheres an oc_nur_lesen(). */
 oc_nur_lesen(true);
-$cfg = oc_config();
+/* bis 1.1.27 hiess dieses Feld $cfg: das LoxBerry-SDK ueberschreibt ein globales $cfg beim ersten Lesen von general.json (Ausfall MGiSmart 01.11.2026). */
+$oc_lauf_cfg = oc_config();
 
 /* ---------- Selbsttest ----------
  *
@@ -116,7 +117,7 @@ $cfg = oc_config();
  * und zwar VOR jeder Tokenpruefung, ein unangemeldeter Aufrufer konnte das
  * Protokoll also beliebig fuellen. */
 if (isset($_GET['selftest']) && is_string($_GET['selftest']) && $_GET['selftest'] === '1') {
-    $s = (string) $cfg['aktionstoken'];
+    $s = (string) $oc_lauf_cfg['aktionstoken'];
     if ($s === '') {
         oc_ende(403, 'SELFTEST;OK=0;ERR=KEIN_TOKEN_EINGERICHTET');
     }
@@ -124,7 +125,7 @@ if (isset($_GET['selftest']) && is_string($_GET['selftest']) && $_GET['selftest'
     if ($i === '' || !hash_equals($s, $i)) {
         oc_ende(403, 'SELFTEST;OK=0;ERR=TOKEN');
     }
-    oc_ende(200, 'SELFTEST;OK=1;TOKEN=OK;AKTIV=' . (empty($cfg['enabled']) ? 0 : 1)
+    oc_ende(200, 'SELFTEST;OK=1;TOKEN=OK;AKTIV=' . (empty($oc_lauf_cfg['enabled']) ? 0 : 1)
                . ';FASSUNG=' . (oc_version() !== '' ? oc_version() : '-')
                . ';PLANER=' . PLAN_FASSUNG);
 }
@@ -156,7 +157,7 @@ if (isset($_GET['selftest']) && is_string($_GET['selftest']) && $_GET['selftest'
  * Wirkung - Hausstandard "Der Endpunkt prueft die Anfrage, bevor er den
  * Dienst prueft". Der Selbsttest oben bleibt davor: gerade wenn das
  * Plugin aus ist, will man wissen, ob Adresse und Token stimmen. */
-$soll = (string) $cfg['aktionstoken'];
+$soll = (string) $oc_lauf_cfg['aktionstoken'];
 if ($soll === '') {
     oc_ende(403, 'OCTOPUS;OK=0;ERR=KEIN_TOKEN_EINGERICHTET;TEXT=Reiter Einstellungen '
                . 'aufrufen und einmal speichern - dann wird eines erzeugt.');
@@ -200,7 +201,7 @@ if (!in_array($aktion, $erlaubt, true)) {
 
 /* ---------- Erst jetzt: laeuft der Dienst ueberhaupt? ----------
  * Die Begruendung fuer diese Stelle steht oben ueber der Tokenpruefung. */
-if (empty($cfg['enabled'])) {
+if (empty($oc_lauf_cfg['enabled'])) {
     oc_ende(503, 'OCTOPUS;OK=0;ERR=AUS;TEXT=Das Plugin ist in den Einstellungen abgeschaltet.');
 }
 

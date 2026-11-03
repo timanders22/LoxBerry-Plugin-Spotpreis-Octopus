@@ -784,6 +784,8 @@ function oc_vorgaben()
         // Meldungen
         'notify'        => array(),
         'tts'           => array(),
+        'ansage_regeln' => array(),     // 1.1.28: Wann gesprochen wird (leer: die Vorgaben des Stamms)
+        'ansage_token_herkunft' => array(),     // nie in einer Sicherung
         // Fahrplaner (ab 1.0.0): Leistungsbudget und PV-Gutschrift.
         // Vorgabe 0 heisst jeweils "aus".
         'pv_quelle'     => '',     // '' | forecast_solar | objekt | liste
@@ -1077,7 +1079,7 @@ function oc_config($heilen = null)
 
     if (!is_array($cfg['notify'])) { $cfg['notify'] = array(); }
     $cfg['notify'] += array(
-        'audio'      => 0,
+        'audio'      => 1,     // 1.1.28: nie gesetzt = an
         'push'       => 0,
         'hours'      => array(),   // Stunden 0-23 mit Ansage/Push
         'only_cheap' => 0,         // nur melden, wenn unter der Schwelle "guenstig"
@@ -1104,7 +1106,7 @@ function oc_config($heilen = null)
     sort($std);
     $cfg['notify']['hours'] = $std;
 
-    if (!is_array($cfg['tts'])) { $cfg['tts'] = array(); }
+    if (!is_array($cfg['tts']) || !$cfg['tts']) { $cfg['tts'] = ansage_werk_block(); }     // 1.1.28: nie gesetzt = ab Werk EIN; ein gespeicherter bleibt
     /* Seit 1.1.22 (Sprachausgabe Stufe 2, Nr. 36 b): Vorgaben des Blocks tts aus der gemeinsamen
      * Sprachausgabe - EINE Vorgabeliste (oc_tts()), ab Werk musicserver wie bisher (mit leerer IP spricht
      * er nicht). Neu im Block: alexa_laut (-1 = Ansagelautstaerke von Alexa-NG), sonos_zone, sonos_laut
@@ -1321,6 +1323,8 @@ function oc_schranken()
         'months'         => array('f'),
         'notify'         => array('f'),
         'tts'            => array('f'),
+        'ansage_regeln'  => array('f'),
+        'ansage_token_herkunft' => array('f'),
     );
 }
 
@@ -3733,7 +3737,10 @@ function oc_mqtt_behalten_liste(array $themen, $leeren = false)
     /* Genau $n Bytes lesen oder null - bei Zeitablauf und Verbindungsende. */
     $lies = function ($n) use ($s) {
         $d = '';
+        /* bis 1.1.27 ohne Frist: ein Broker, der ein Paket ankuendigt und nur tropfenweise liefert, hielt den Leser fest. Schweigt er ganz, greift schon stream_set_timeout(). */
+        $lies_bis = microtime(true) + 5.0;
         while (strlen($d) < $n) {
+            if (microtime(true) >= $lies_bis) { return null; }
             $t = @fread($s, $n - strlen($d));
             if ($t === false || $t === '') {
                 $meta = stream_get_meta_data($s);
@@ -4434,9 +4441,179 @@ function oc_ansage_k()
  * (1 gesendet, 0 gescheitert, -1 nichts gesendet ohne Fehler: aus, Original-Audioserver, leerer Text),
  * kennung, art, http, zeile, zeichen; nie Text oder Token. Ins Protokoll kommt genau eine Zeile.
  */
+/* ---------------- Sprachansagen: Regeln aus dem Stamm (1.1.28, Welle S2, Stamm sprachausgabe.php 1.3.2) ----------------
+ *
+ * Nachtruhe, Sperre und Schalter "Ansagen aus" stehen im Stamm. Ab Werk EIN: ansage_werk_block() in den Vorgaben, also nur fuer einen
+ * nie gespeicherten Block; ein gespeicherter bleibt, auch 'aus'. Ein Minutenlauf und ein Dienst sprechen nie selbst: Sie legen den Anlass
+ * in <Daten>/ansage_warte.json, ein abgekoppelter Sender (php -r, eigene Sperre) spricht und wartet auf die Lautsprecher.
+ */
+
+/** So alt darf ein wartender Anlass werden (nach einem Update oder Hang wird nichts Aufgestautes angesagt). */
+if (!defined('OC_ANSAGE_HOECHSTALTER')) { define('OC_ANSAGE_HOECHSTALTER', 600); }
+
+/** Die Regeln: gespeichert und gueltig, sonst aus einer alten Einstellung dieser Linie, sonst die Vorgabe (mit Nachtruhe). */
+function oc_ansage_regeln($cfg = null)
+{
+    if ($cfg === null) { $cfg = oc_config(); }
+    $g = '';
+    if (!empty($cfg['ansage_regeln'])) {
+        $r = ansage_regeln_wert($cfg['ansage_regeln'], $g);
+        return $r === null ? ansage_regeln_vorgaben() : $r;
+    }
+    $r = ansage_regeln_vorgaben();
+    $p = ansage_regeln_wert($r, $g);
+    return $p === null ? ansage_regeln_vorgaben() : $p;
+}
+
+/** Die Warteliste unter einer Dateisperre aendern: $fn(Liste) -> array(neue Liste, Ergebnis). */
+function oc_ansage_warte($fn)
+{
+    $d = oc_paths()['datadir'];
+    if (!is_dir($d)) { @mkdir($d, 0775, true); }
+    $f = $d . '/ansage_warte.json';
+    $h = @fopen($f, 'c+');
+    if ($h === false) { return null; }
+    if (!flock($h, LOCK_EX)) { fclose($h); return null; }
+    $alt = json_decode((string) stream_get_contents($h), true);
+    list($neu, $erg) = call_user_func($fn, is_array($alt) ? $alt : array());
+    rewind($h);
+    ftruncate($h, 0);
+    fwrite($h, (string) json_encode($neu));
+    fflush($h);
+    flock($h, LOCK_UN);
+    fclose($h);
+    @chmod($f, 0600);
+    return $erg;
+}
+
+/**
+ * Anlaesse hinlegen und den Sender starten; wartet auf nichts. $l: Eintraege fuer ansage_regel_sprechen() (schluessel, text, dringend,
+ * sperre_min, nur_nach). Die Schale schliesst vor dem exec jede Deskriptor-Nummer ueber 2, sonst erbte der Sender die Sperren des Rufers.
+ */
+function oc_ansage_legen(array $l, $jetzt = null)
+{
+    if (!$l) { return 'nichts'; }
+    $jetzt = $jetzt === null ? time() : (int) $jetzt;
+    oc_ansage_warte(function ($alt) use ($l, $jetzt) {
+        foreach ($l as $e) { $alt[] = $e + array('zeit' => $jetzt); }
+        return array(array_slice($alt, -50), null);
+    });
+    $php = (defined('PHP_BINARY') && PHP_BINARY !== '' && is_executable(PHP_BINARY) && stripos(basename(PHP_BINARY), 'php') === 0 && stripos(basename(PHP_BINARY), 'fpm') === false) ? PHP_BINARY : 'php';
+    $befehl = 'for f in /proc/$$/fd/*; do n=${f##*/}; [ "$n" -gt 2 ] 2>/dev/null && eval "exec $n>&-"; done; '
+            . 'exec ' . escapeshellarg($php) . ' -r ' . escapeshellarg('chdir(dirname($argv[1])); $_SERVER["SCRIPT_FILENAME"] = $_SERVER["PHP_SELF"] = $argv[1]; require $argv[1]; oc_ansage_senden();') . ' -- ' . escapeshellarg(__FILE__);
+    $aus = array();
+    $rc = 1;
+    @exec('bash -c ' . escapeshellarg($befehl) . ' </dev/null >/dev/null 2>&1 &', $aus, $rc);
+    return $rc === 0 ? 'gestartet' : 'kein_start';
+}
+
+/** Das Sprechtoken aus Alexa-NG und Chromecast4lox uebernehmen (Stamm 1.3.1). Schreibt NUR bei einer Aenderung, nennt nie das Token. */
+function oc_ansage_token_pflegen($cfg = null)
+{
+    if ($cfg === null) { $cfg = oc_config(); }
+    list($neu, $her2, $g) = ansage_token_abgleich(oc_tts($cfg), isset($cfg['ansage_token_herkunft']) ? $cfg['ansage_token_herkunft'] : array(), oc_ansage_k());
+    if (!$g) { return false; }
+    $cfg = oc_config();
+    $cfg['tts'] = $neu;
+    $cfg['ansage_token_herkunft'] = $her2;
+    if (!oc_config_write($cfg)) { return false; }
+    oc_log('Ansage: Sprechtoken uebernommen (' . implode(', ', $g) . ').');
+    return true;
+}
+
+/** Der Block fuer Testansage und Pruefzeile: uebernommene Token aufgeloest. Nur im Speicher. */
+function oc_ansage_vor_ort($cfg = null)
+{
+    if ($cfg === null) { $cfg = oc_config(); }
+    return ansage_token_fuer_lauf(oc_tts($cfg), isset($cfg['ansage_token_herkunft']) ? $cfg['ansage_token_herkunft'] : array(), oc_ansage_k());
+}
+
+/** Der Block fuer die Pruefzeile: nur die eingerichteten Ziele; ist keines eingerichtet, sagt die Zeile "aus" statt eines Kreuzes. */
+function oc_ansage_pruefblock($cfg = null)
+{
+    if ($cfg === null) { $cfg = oc_config(); }
+    $t = oc_tts($cfg);
+    if ($t['mode'] === 'aus') { return $t; }
+    list($b) = ansage_ziele_bereit(oc_ansage_vor_ort($cfg), oc_ansage_k());
+    if ($b === null) { $t['mode'] = 'aus'; return $t; }
+    return $b;
+}
+
+/** Die Lage im Reiter Test: Ziele, Nachtruhe, Schalter. Nur im geoeffneten Reiter (der Schalter fragt den Broker). */
+function oc_ansage_lage_html($cfg = null)
+{
+    if ($cfg === null) { $cfg = oc_config(); }
+    $k = oc_ansage_k();
+    $o = array();
+    foreach (ansage_regel_lage(oc_tts($cfg), oc_ansage_regeln($cfg), $k, true) as $z) {
+        $o[] = '<div class="sm-hilfe">' . htmlspecialchars((string) $z[1], ENT_QUOTES, 'UTF-8') . '</div>';
+    }
+    return implode("\n", $o) . "\n";
+}
+
+/** Die Felder der Regeln fuer die Einmalmeldung (X-2). */
+function oc_ansage_regel_felder(array $anlaesse = array())
+{
+    return ansage_regeln_x2_felder($anlaesse);
+}
+
+/**
+ * Im Vorgang sprechen, wo der Rufer das Ergebnis braucht (Antwort an Loxone, Befehl): Regeln aus dem Stamm mit "dringend, ohne Sperre" - es zaehlt nur der Schalter.
+ * Schalter gesetzt: stand -1, Kennung SCHALTER. Nichts bereit oder Original-Audioserver: wie bisher ansage_sprechen(), damit die Antwort sagt, was fehlt.
+ */
+function oc_ansage_direkt($text, array $e = array(), $tts = null)
+{
+    $conf = oc_config();
+    $k = oc_ansage_k();
+    $t = $tts === null ? oc_tts($conf) : $tts;
+    $a = ansage_regel_sprechen(array($e + array('schluessel' => 'direkt', 'text' => (string) $text, 'dringend' => true, 'sperre_min' => 0)), $t, oc_ansage_regeln($conf), $k);
+    if ($a['r'] !== null) { return $a['r']; }
+    if ($a['regel'] === 'SCHALTER') {
+        return array('stand' => -1, 'kennung' => 'SCHALTER', 'art' => isset($t['mode']) ? (string) $t['mode'] : '-', 'http' => 0, 'zeile' => '', 'zeichen' => 0);
+    }
+    return ansage_sprechen((string) $text, $t, $k);
+}
+
+/**
+ * Der Sender: eigene Sperre, nimmt die Warteliste und spricht nach den Regeln. "aus" und "kein Ziel eingerichtet" hinterlassen keine Zeile;
+ * ein gescheitertes Ziel genau eine je Aenderung (ab Werk EIN darf kein Protokoll vollaufen). Text und Token stehen nie im Protokoll.
+ */
+function oc_ansage_senden($jetzt = null)
+{
+    $d = oc_paths()['datadir'];
+    if (!is_dir($d)) { @mkdir($d, 0775, true); }
+    $fh = @fopen($d . '/ansage_senden.lock', 'c');
+    if ($fh === false || !flock($fh, LOCK_EX | LOCK_NB)) { return 'laeuft'; }
+    $erg = 'nichts';
+    $l = oc_ansage_warte(function ($alt) { return array(array(), $alt); });
+    $jetzt = $jetzt === null ? time() : (int) $jetzt;
+    $frisch = array();
+    foreach (is_array($l) ? $l : array() as $e) {
+        if (is_array($e) && isset($e['zeit']) && $jetzt - (int) $e['zeit'] <= OC_ANSAGE_HOECHSTALTER) { $frisch[] = $e; }
+    }
+    if ($frisch) {
+        $conf = oc_config();
+        oc_ansage_token_pflegen($conf);
+        $conf = oc_config();
+        $a = ansage_regel_sprechen($frisch, oc_tts($conf), oc_ansage_regeln($conf), oc_ansage_k());
+        $erg = $a['regel'] !== '' ? $a['regel'] : 'gesprochen';
+        if ($a['r'] !== null) {
+            $merk = $d . '/ansage_lage.txt';
+            $lage = $a['r']['stand'] === 1 ? 'gesprochen' : ansage_kurz($a['r']);
+            if ($a['r']['stand'] === 1 || (string) @file_get_contents($merk) !== $lage) { oc_log('Ansage: ' . ansage_regel_kurz($a)); }
+            @file_put_contents($merk, $lage);
+        } elseif ($a['regel'] !== 'AUS' && $a['regel'] !== 'KEIN_ZIEL') {
+            oc_log('Ansage entfaellt: ' . ansage_regel_kurz($a));
+        }
+    }
+    flock($fh, LOCK_UN);
+    fclose($fh);
+    return $erg;
+}
+
 function oc_say_ergebnis($text)
 {
-    $r = ansage_sprechen((string) $text, oc_tts(), oc_ansage_k());
+    $r = ansage_sprechen((string) $text, oc_ansage_vor_ort(), oc_ansage_k());
     oc_log('Ansage: ' . ansage_kurz($r));
     return $r;
 }
@@ -4444,7 +4621,8 @@ function oc_say_ergebnis($text)
 /** Wie bis 1.1.21: true nur, wenn gesendet. */
 function oc_say($text)
 {
-    $r = oc_say_ergebnis($text);
+    $r = oc_ansage_direkt($text);     // 1.1.28: im Vorgang (Befehl), es zaehlt nur der Schalter
+    oc_log('Ansage: ' . ansage_kurz($r));
     return $r['stand'] === 1;
 }
 
@@ -4490,7 +4668,7 @@ function oc_webport()
  */
 function oc_ansage_pruefzeile($offen)
 {
-    return ansage_pruefzeile(oc_tts(), (bool) $offen, oc_ansage_k());
+    return ansage_pruefzeile(oc_ansage_pruefblock(), (bool) $offen, oc_ansage_k());
 }
 
 /** Zahl deutsch aussprechen: 24.3 -> "24,3" */
@@ -4586,7 +4764,10 @@ function oc_announce_check($st = null)
             if (($sel || $neg) && !$skip) {
                 @file_put_contents($flag, '1');
                 $txt = oc_announce_text($st);
-                if ($txt !== '') { oc_say($txt); }
+                if ($txt !== '') {
+                    oc_ansage_token_pflegen($cfg);
+                    oc_ansage_legen(array(array('schluessel' => 'preis', 'text' => $txt)));     // 1.1.28: eigener Vorgang, Regeln aus dem Stamm
+                }
             }
         }
     }
@@ -4596,7 +4777,7 @@ function oc_announce_check($st = null)
             @file_put_contents($flag, '1');
             if (!empty($cfg['notify']['audio'])) {
                 $txt = oc_tomorrow_text($st);
-                if ($txt !== '') { oc_say($txt); }
+                if ($txt !== '') { oc_ansage_legen(array(array('schluessel' => 'morgen', 'text' => $txt))); }     // 1.1.28
             }
             oc_log('Preise fuer morgen da: min ' . $st['morgen']['minp'] . ' ct um '
                 . $st['morgen']['minh'] . ':' . sprintf('%02d', $st['morgen']['minm'])
@@ -5250,6 +5431,15 @@ function oc_sicherung_lesen($roh)
         /* ---- 3. Unbekannte Schluessel ----
          * Eine Beanstandung, kein stiller Verlust: sie stammen aus einer
          * anderen Fassung oder aus einem anderen Plugin. */
+        if ($k === 'ansage_token_herkunft') { continue; }     // S2: nie aus einer Datei
+        if ($k === 'ansage_regeln') {     // S2: ungueltig = abgewiesen, gueltig = uebernommen
+            $s2_g = '';
+            $s2_r = ansage_regeln_wert($w, $s2_g);
+            if ($s2_r === null) { $mangel[] = sprintf(oc_t('EINST.SICH_WERT'), 'ansage_regeln'); continue; }
+            $neu['ansage_regeln'] = $s2_r;
+            $anzahl++;
+            continue;
+        }
         if (!in_array($k, $bekannt, true)) {
             $mangel[] = sprintf(oc_t('EINST.SICH_FREMD'),
                                  htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
@@ -5339,6 +5529,11 @@ function oc_sicherung_lesen($roh)
     foreach (array_keys(oc_vorgaben()) as $fk) {
         /* Gruppe 5 / MQTT (1.1.26, Entwurf oc 3.3): eine Sicherung bis 1.1.25 kennt den Haken der
          * Befehlsbruecke nicht - damals gab es keine Bruecke. Sie ergibt "aus" (Vorgabe 0) ohne Beanstandung. */
+        /* 1.1.28: eine aeltere Sicherung kennt die Regeln nicht: Es gilt der geltende Stand. Der Vermerk reist nie mit. */
+        if ($fk === 'ansage_regeln' || $fk === 'ansage_token_herkunft') {
+            if (!array_key_exists($fk, $daten) || $fk === 'ansage_token_herkunft') { $oc_j = oc_config(); $neu[$fk] = $oc_j[$fk]; }
+            continue;
+        }
         if (!array_key_exists($fk, $daten) && $fk !== 'befehle_mqtt_ein') {
             $fehlend[] = $fk;
         }
@@ -5507,6 +5702,7 @@ function oc_sicherung_teile($mit_zugang = false)
      * Zurueckspielen behaelt das laufende. */
     // ebenso das Google-Sprechtoken (Ansage-3); seit 1.1.21 aus der gemeinsamen Sprachausgabe
     $cfg['tts'] = ansage_sicherung_bereinigen($cfg['tts']);
+    unset($cfg['ansage_token_herkunft']);     // 1.1.28
     $kopf = array(
         '_hinweis' => 'Sicherung der Einstellungen des LoxBerry-Plugins Octopus Dynamic.'
                     . ' Im Reiter Einstellungen unter "Einstellungen zurueckspielen"'

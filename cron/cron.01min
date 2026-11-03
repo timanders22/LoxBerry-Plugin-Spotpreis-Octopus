@@ -35,7 +35,10 @@ mkdir -p "$LOGD" 2>/dev/null
 if [ -f "$ERR" ] && [ "$(wc -c < "$ERR" 2>/dev/null || echo 0)" -gt 262144 ]; then
     tail -n 300 "$ERR" > "$ERR.neu" 2>/dev/null && mv -f "$ERR.neu" "$ERR"
 fi
-if [ -e "$ERR" ] && [ ! -w "$ERR" ]; then
+# 1.1.28 (Nachzug 01.11.2026, Bauart Renault NG 2.1.23): touch allein genuegt nicht - es gelingt auch auf einem
+# Verzeichnis und, beim Eigentuemer, auf einer schreibgeschuetzten Datei. Bis 1.1.27 brach dann die Umlenkung
+# den Befehl ab, BEVOR er startete.
+if [ -e "$ERR" ] && { [ ! -f "$ERR" ] || [ ! -w "$ERR" ]; }; then
     ERR=/dev/null
 else
     touch "$ERR" 2>/dev/null || ERR=/dev/null

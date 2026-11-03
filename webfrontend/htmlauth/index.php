@@ -261,7 +261,7 @@ if ($oc_ist_post && (isset($_POST['ansage_test']) || isset($_POST['ansage_test_z
     if (isset($_POST['ansage_test_ziel']) && $oc_tnur === 0) {
         $oc_tr = array('stand' => 0, 'kennung' => 'ZIEL_UNBEKANNT|-', 'art' => '-', 'http' => 0, 'zeile' => '', 'zeichen' => 0);
     } elseif ($oc_tnur >= 1) {
-        $oc_tr = ansage_testansage(oc_tts($oc_cfg), $oc_tk, $oc_tnur);
+        $oc_tr = ansage_testansage(oc_ansage_vor_ort(), $oc_tk, $oc_tnur);
     } else {
         $oc_tr = oc_say_ergebnis(oc_test_say_text(false));
     }
@@ -624,7 +624,8 @@ if ($oc_ist_post && isset($_POST['save'])) {
     $oc_tbean = array();
     $oc_thinw = array();     // Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Hinweise des Moduls, die das Speichern nicht verhindern
     $oc_neu['tts'] = ansage_formular_lesen($_POST, oc_tts($oc_cfg), $oc_tmangel, $oc_tbean,
-        oc_ansage_opt() + array('ziele' => oc_mit_zielen()), oc_ansage_k(), $oc_thinw);
+        oc_ansage_opt() + array('ziele' => oc_mit_zielen(), 'token_vor_ort' => true, 'aus_gewinnt' => true), oc_ansage_k(), $oc_thinw);
+    list($oc_neu['ansage_regeln']) = ansage_regeln_formular($_POST, oc_ansage_regeln($oc_cfg), array(), $oc_tmangel, $oc_tbean, oc_ansage_k());     // S2: Wann gesprochen wird (Stamm)
     foreach ($oc_tmangel as $oc_tm) { $oc_abweis[] = oc_e($oc_tm['text']); }
     foreach ($oc_tbean as $oc_tb) { $oc_bean[] = $oc_tb; }
 
@@ -1745,18 +1746,19 @@ foreach (oc_regel_arten() as $oc_a) { ?>
  * Eingaben der Einmalmeldung. */
 $oc_th = oc_ansage_opt();
 $oc_th['w'] = function ($n, $g) use ($oc_eingaben) {
-    return ($n === 'tts_template' && is_array($oc_eingaben) && isset($oc_eingaben['formular'], $oc_eingaben['werte'][$n])
+    return (($n === 'tts_template' || strpos($n, 'ansage_') === 0) && is_array($oc_eingaben) && isset($oc_eingaben['formular'], $oc_eingaben['werte'][$n])
             && $oc_eingaben['formular'] === 'save' && is_string($oc_eingaben['werte'][$n])) ? $oc_eingaben['werte'][$n] : $g;
 };
 $oc_th['m'] = function ($n) use ($oc_eingaben) {
-    return ($n === 'tts_template' && is_array($oc_eingaben) && isset($oc_eingaben['formular'], $oc_eingaben['felder'])
+    return (($n === 'tts_template' || strpos($n, 'ansage_') === 0) && is_array($oc_eingaben) && isset($oc_eingaben['formular'], $oc_eingaben['felder'])
             && $oc_eingaben['formular'] === 'save' && is_array($oc_eingaben['felder'])
             && in_array($n, $oc_eingaben['felder'], true)) ? ' class="sm-beanstandet" aria-invalid="true"' : '';
 };
 echo ansage_formular_html(oc_tts($oc_cfg), $oc_th + array(
 /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Tabelle der weiteren Ausgabeziele; nach einer Beanstandung traegt sie das Eingetippte. */
 'ziele' => oc_mit_zielen(),
-'ziele_post' => (is_array($oc_eingaben) && isset($oc_eingaben['formular']) && $oc_eingaben['formular'] === 'save') ? oc_ziele_x2_post($oc_eingaben['werte']) : null), oc_ansage_k()); ?>
+'ziele_post' => (is_array($oc_eingaben) && isset($oc_eingaben['formular']) && $oc_eingaben['formular'] === 'save') ? oc_ziele_x2_post($oc_eingaben['werte']) : null), oc_ansage_k());
+echo ansage_regeln_html(oc_ansage_regeln($oc_cfg), array(), array(), $oc_th + array('token_vor_ort' => true), oc_ansage_k()); ?>
 <div class="sm-hilfe"><?php echo sprintf(oc_t('EINST.TTS_TEST_HINWEIS'), '<b>' . oc_e(oc_t('REITER.TEST')) . '</b>'); ?></div>
 
 <?php /* MQTT stand hier bis zu dieser Fassung. Es wohnt jetzt
@@ -2583,6 +2585,7 @@ foreach (array_slice($pl_summen, 1) as $pl_e) {
 if (oc_mit_zielen()) { echo ansage_testknoepfe_html(oc_tts($oc_cfg), oc_ansage_k(), array('klasse' => 'sm-btn sm-b-aktion')); } ?>
 <?php } ?>
   </form>
+<?= oc_ansage_lage_html() ?>
 <?php } ?>
 </div>
 
