@@ -7,6 +7,10 @@ HTTP-Endpunkt als Rückfallebene.
 
 ---
 
+## Neu in 1.1.30
+
+- Die Oberfläche zeigt PHP-Fehler nicht mehr im Browser an: Sie verrieten Serverpfade und hätten heruntergeladene Dateien beschädigt.
+
 ## Neu in 1.1.29
 
 * **Ansagen auch auf den offenen Dashboard-Tafeln, ab Werk an.** Mit Dashboard ab 0.9.40 und einer offenen Tafel kommt jede Ansage dieses Plugins auch dort an: Gong, Sprache und der Text groß. Ohne Dashboard oder ohne offene Tafel wird das Ziel ohne Fehler übergangen. Ausschalten: Reiter *Einstellungen*, Haken „Auch auf offenen Dashboard-Tafeln ansagen“; ein gespeichertes Aus bleibt. Es gelten dieselben Regeln wie für die Lautsprecher.
