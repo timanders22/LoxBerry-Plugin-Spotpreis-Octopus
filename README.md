@@ -7,6 +7,10 @@ HTTP-Endpunkt als Rückfallebene.
 
 ---
 
+## Neu in 1.1.31
+
+- Vor einem Download wird jeder offene Ausgabepuffer geleert: PHP-Warnungen oder Reste landen nicht mehr in der heruntergeladenen Vorlage oder Sicherung.
+
 ## Neu in 1.1.30
 
 - Die Oberfläche zeigt PHP-Fehler nicht mehr im Browser an: Sie verrieten Serverpfade und hätten heruntergeladene Dateien beschädigt.

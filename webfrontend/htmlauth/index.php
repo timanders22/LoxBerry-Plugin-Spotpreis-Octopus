@@ -209,6 +209,7 @@ if ($oc_ist_post && isset($_POST['download'])) {
     $oc_vl = in_array($oc_art, array('http_in', 'vq_befehle'), true) ? oc_vorlage($oc_art) : null;
     if (is_array($oc_vl)) {
         list($oc_name, $oc_inhalt) = $oc_vl;
+        while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/x-download');
         /* Die Anfuehrungszeichen um den Dateinamen sind Pflicht: ohne sie bricht jeder Name, der ein
          * Leerzeichen enthaelt. */
@@ -227,6 +228,7 @@ if ($oc_ist_post && isset($_POST['download'])) {
 if ($oc_ist_post && isset($_POST['vorlage_bb'])) {
     $oc_bv = oc_befehle_vorlage();
     if (is_array($oc_bv)) {
+        while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/x-download');
         header('Content-Disposition: attachment; filename="' . $oc_bv[0] . '"');
         header('Content-Length: ' . strlen($oc_bv[1]));
@@ -825,6 +827,7 @@ if ($oc_ist_post && isset($_POST['oc_sichern'])) {
     $oc_mit_zugang = isset($_POST['mit_zugang']);
     $oc_js = oc_sicherung_bauen($oc_mit_zugang);
     if ($oc_js !== '') {
+        while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/json; charset=utf-8');
         header('Content-Disposition: attachment; filename="octopus_einstellungen'
                . ($oc_mit_zugang ? '_mit_zugang' : '') . '_'
@@ -839,6 +842,7 @@ if ($oc_ist_post && isset($_POST['oc_sichern'])) {
 /* ================= Historie als CSV herunterladen ================= */
 if ($oc_ist_post && isset($_POST['oc_csv'])) {
     $oc_csv = oc_history_csv();
+    while (ob_get_level() > 0) { @ob_end_clean(); }
     header('Content-Type: text/csv; charset=utf-8');
     header('Content-Disposition: attachment; filename="octopus_historie_'
            . date('Ymd') . '.csv"');
