@@ -7,6 +7,12 @@ HTTP-Endpunkt als Rückfallebene.
 
 ---
 
+## Neu in 1.1.32
+
+- **Update:** Scheitert die Sicherung oder die Marke, bricht das Update ab und die bisherige Fassung bleibt.
+- **Sprechtoken:** Ein von Hand eingetragenes Alexa- oder Google-Token wird nicht mehr vom Token des Nachbar-Plugins überschrieben.
+- **Planer:** Eine Regel mit Frist läuft jetzt nur noch die bestellte Dauer, sobald die Preise bis zur Frist bekannt sind; vorher lief sie bei steigenden Preisen bis zur Frist durch.
+
 ## Neu in 1.1.31
 
 - Vor einem Download wird jeder offene Ausgabepuffer geleert: PHP-Warnungen oder Reste landen nicht mehr in der heruntergeladenen Vorlage oder Sicherung.

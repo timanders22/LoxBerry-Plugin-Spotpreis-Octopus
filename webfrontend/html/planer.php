@@ -231,7 +231,7 @@ if (PHP_SAPI !== 'cli') {
  * 1.1.9: Direktaufruf ueber den Webserver antwortet mit 403 (Planer-k1,
  *        Fund Sprachmodul-Bau 02.10.2026; Schranke oben im Kopf). An der
  *        Rechnung und am Einbinden durch die Linien aendert sich nichts. */
-define('PLAN_FASSUNG', '1.1.9');
+define('PLAN_FASSUNG', '1.1.10');
 
 /** Entscheidung Nr. 30 (01.10.2026): eine Regel der Arten 'fenster',
  *  'stunden' und 'scheiben' urteilt nur, wenn mindestens so viele kuenftige
@@ -454,6 +454,82 @@ function plan_frist_ende($jetzt, $frist)
         $ziel = (int) strtotime(sprintf('%s %02d:00:00 +1 day', $tag, $frist));
     }
     return $ziel;
+}
+
+/**
+ * 1.1.10 (OC-1): Gedaechtnis einer Regel mit Frist.
+ *
+ * plan_rechnen() kennt nur "jetzt". Bei leicht steigenden Preisen war nach jedem Takt das guenstigste
+ * Fenster im Rest bis zur Frist wieder "jetzt": eine Regel n=2, frist=7 lief ab 22:00 volle 9 Stunden statt 2
+ * (gemessen auf Kopie: 36 Scheiben statt 8, mit und ohne Hysterese). Jetzt zaehlt der Takt die gelaufenen
+ * Scheiben je Fristlauf (von einer Frist bis zur naechsten), und die Regel plant nur noch, was fehlt.
+ *
+ * Gezaehlt wird erst, wenn die bekannten Preise bis zur Frist reichen ('frist_zaehlt'). Vorher ist das Fenster
+ * nur das beste des bekannten Teils; an der Regel haengt vielleicht ein Geraet, das erst abends angesteckt wird,
+ * und gezaehlt stuende es dann morgens ohne Energie da. Bis dahin bleibt es beim bisherigen Verhalten.
+ *
+ * Nur die Arten mit Sollmenge. 'schwelle' und 'mittel' nehmen, was unter der Grenze liegt.
+ */
+function plan_frist_gilt($r)
+{
+    return isset($r['frist']) && (int) $r['frist'] >= 0 && (int) $r['frist'] <= 23
+        && in_array(isset($r['art']) ? (string) $r['art'] : 'fenster', array('fenster', 'stunden', 'scheiben'), true);
+}
+
+/** Scheiben, die in diesem Fristlauf VOR der laufenden Scheibe gelaufen sind. */
+function plan_frist_gelaufen($m, $ende, $jetzt)
+{
+    if (!is_array($m) || !isset($m['ende'], $m['gelaufen'], $m['letzte']) || (int) $m['ende'] !== (int) $ende) {
+        return 0;
+    }
+    // Die laufende Scheibe ist schon gezaehlt, aber noch nicht vorbei - sie darf sich nicht selbst abschalten.
+    return max(0, (int) $m['gelaufen'] - ((int) $m['letzte'] >= (int) $jetzt ? 1 : 0));
+}
+
+/**
+ * Den Merker nach der Rechnung fortschreiben - rein, ohne Datei (Selbsttest).
+ * $fp: Ergebnis von plan_rechnen() (die Linien lassen 'nr', 'aktiv' und die 'frist_'-Felder stehen).
+ * Eine gesperrte Regel behaelt ihren Stand; abgelaufene Eintraege fallen weg.
+ */
+function plan_frist_fortschreiben($alt, $fp, $jetzt)
+{
+    $jetzt = (int) $jetzt;
+    $neu = array();
+    foreach ((array) $alt as $i => $m) {
+        if (is_array($m) && isset($m['ende']) && (int) $m['ende'] > $jetzt) { $neu[(int) $i] = $m; }
+    }
+    foreach ((array) $fp as $e) {
+        if (!is_array($e) || empty($e['frist_ende']) || !isset($e['nr'])) { continue; }
+        $i = (int) $e['nr'] - 1;
+        $ende = (int) $e['frist_ende'];
+        if (!isset($neu[$i]) || (int) $neu[$i]['ende'] !== $ende) {
+            $neu[$i] = array('ende' => $ende, 'gelaufen' => 0, 'letzte' => 0);
+        }
+        if (!empty($e['aktiv']) && !empty($e['frist_zaehlt']) && $jetzt > (int) $neu[$i]['letzte']) {
+            $neu[$i]['gelaufen'] = (int) $neu[$i]['gelaufen'] + 1;
+            $neu[$i]['letzte'] = $jetzt;
+        }
+    }
+    return $neu;
+}
+
+/** Merker lesen; kaputt oder fehlend heisst: nichts gelaufen. */
+function plan_frist_lesen($f)
+{
+    $d = is_file($f) ? json_decode((string) @file_get_contents($f), true) : null;
+    return is_array($d) ? $d : array();
+}
+
+/** Nur der Takt schreibt, und nur bei Aenderung - sonst haengt das Gedaechtnis an der Zahl der Abrufe. */
+function plan_frist_schreiben($f, $fp, $jetzt)
+{
+    $alt = plan_frist_lesen($f);
+    $neu = plan_frist_fortschreiben($alt, $fp, $jetzt);
+    if ($neu === $alt) { return; }
+    $tmp = $f . '.tmp';
+    if (@file_put_contents($tmp, json_encode($neu)) !== false) {
+        @rename($tmp, $f);
+    }
 }
 
 /**
@@ -1281,6 +1357,8 @@ function plan_rechnen($preise, $slotlen, $jetzt, $regeln, $umwelt, $g, $rang_min
             // ---- ab 1.1.0 ----
             'ct_sofort' => 0.0, 'spart_ct' => 0.0, 'spart_eur' => 0.0, 'kwh' => 0.0,
             'mangel' => '',
+            // ---- ab 1.1.10 (OC-1) ----
+            'gelaufen' => 0, 'frist_ende' => 0, 'frist_zaehlt' => 0,
         );
 
         /* ---- Maengel an der Regel selbst ----
@@ -1334,6 +1412,16 @@ function plan_rechnen($preise, $slotlen, $jetzt, $regeln, $umwelt, $g, $rang_min
         $noetig = plan_slots_noetig($r, $slotlen);
         $e['noetig'] = $noetig;
 
+        /* 1.1.10 (OC-1): 'noetig' bleibt die Bestellung, geplant wird nur noch der Rest ($noetig unten). */
+        if (plan_frist_gilt($r)) {
+            $e['frist_ende'] = plan_frist_ende($jetzt, $r['frist']);
+            $e['frist_zaehlt'] = ($preise && max(array_keys($preise)) + $slotlen >= $e['frist_ende']) ? 1 : 0;
+            $e['gelaufen'] = plan_frist_gelaufen(
+                (isset($umwelt['frist']) && is_array($umwelt['frist']) && isset($umwelt['frist'][$i])) ? $umwelt['frist'][$i] : null,
+                $e['frist_ende'], $jetzt);
+            $noetig = max(0, $noetig - $e['gelaufen']);
+        }
+
         /* Wie viele Scheiben faenden ohne Budget Platz? Die Differenz zu dem,
          * was uebrig bleibt, ist die Verdraengung - sie steht in der
          * Oberflaeche und beantwortet die Frage "warum laedt es nicht?". */
@@ -1352,7 +1440,7 @@ function plan_rechnen($preise, $slotlen, $jetzt, $regeln, $umwelt, $g, $rang_min
             $ohne_frist = count(plan_kandidaten($rf, $eff, $jetzt, $slotlen, array(), 0, null));
         }
 
-        $treffer = plan_waehlen($r, $mit, $slotlen, $noetig, $mittel);
+        $treffer = $noetig > 0 ? plan_waehlen($r, $mit, $slotlen, $noetig, $mittel) : array();   // 1.1.10 (OC-1)
 
         /* Taktschutz auf die gewaehlten Scheiben, bevor irgendetwas gebucht
          * wird - sonst stuende in der Belegung eine andere Leistung als im
@@ -1365,7 +1453,7 @@ function plan_rechnen($preise, $slotlen, $jetzt, $regeln, $umwelt, $g, $rang_min
          * stehen - auch wenn die neue Preisreihe inzwischen eine billigere
          * Scheibe kennt. Ohne das schaltet die Wallbox bei jedem Abruf um,
          * und der Fahrplan von vor fuenf Minuten war eine Luege. */
-        $bis = isset($laufend[$i]) ? (int) $laufend[$i] : 0;
+        $bis = ($noetig > 0 && isset($laufend[$i])) ? (int) $laufend[$i] : 0;   // 1.1.10 (OC-1): erfuellt haelt nichts fest
         /* Vor der Hysterese merken, ob die laufende Scheibe ohnehin gewaehlt
          * war. Nur wenn NICHT, laeuft die Regel allein wegen des begonnenen
          * Blocks - und nur dann sagt 'laeuft' mehr als der Name der
@@ -1427,6 +1515,9 @@ function plan_rechnen($preise, $slotlen, $jetzt, $regeln, $umwelt, $g, $rang_min
                     $belegt[$ts] = (isset($belegt[$ts]) ? (float) $belegt[$ts] : 0.0) + $leistung;
                 }
             }
+        } elseif ($noetig <= 0) {
+            // 1.1.10 (OC-1): die bestellte Dauer ist in diesem Fristlauf gelaufen.
+            $e['grund'] = 'erfuellt';
         } elseif ($e['verdraengt'] > 0) {
             // Nichts gefunden, aber es waere etwas dagewesen: das war das
             // Budget. Das gehoert unterschieden von "es gibt keine Stunde".
@@ -2842,6 +2933,73 @@ function plan_selbsttest()
         array_merge($u0, array('pv_summe' => 9.0)), $g0);
     $pruefe('4 Preisstunden: eine PV-Sperre wird weiter genannt',
         array($fp[0]['grund'], $fp[0]['gesperrt']), array('horizont', 'pv'));
+
+    /* ---------- 1.1.10 (OC-1): eine Regel mit Frist laeuft die bestellte Dauer ----------
+     *
+     * Uhr von 22:00 bis 07:00 im Viertelstundentakt, Preise steigen leicht. Ohne Gedaechtnis 36 Scheiben.
+     * Nach Pfad der Linien: rechnen, Merker fortschreiben, naechster Takt.
+     */
+    $of_t = (int) strtotime('2026-11-10 22:00:00');
+    $of_p = array();
+    for ($k = 0; $k < 16 * 4; $k++) { $of_p[$of_t + $k * 900] = 10.0 + $k * 0.01; }
+    $of_lauf = function ($regel, $preise, $von, $bis, $neg = false, $hyst = false) {
+        $merk = array();
+        $lauf = array();
+        $an = 0;
+        $letzte_an = 0;
+        for ($ts = $von; $ts < $bis; $ts += 900) {
+            $u = array('laufend' => $lauf, 'frist' => $merk, 'neg' => $neg ? 1 : 0);
+            $fp = plan_rechnen($preise, 900, $ts, array($regel), $u, array('budget_kw' => 0.0, 'pv_bonus' => 0.0, 'pv_schwelle' => 500), 0);
+            $merk = plan_frist_fortschreiben($merk, $fp, $ts);
+            if ($fp[0]['aktiv']) { $an++; $letzte_an = $ts; }
+            if ($hyst && $fp[0]['aktiv'] && !isset($lauf[0])) { $lauf[0] = $ts + $fp[0]['rest'] * 60; }
+            if (isset($lauf[0]) && ($lauf[0] <= $ts + 900 || !$fp[0]['aktiv'])) { unset($lauf[0]); }
+        }
+        return array($an, isset($fp) ? $fp[0]['grund'] : '', $letzte_an);
+    };
+    $of_r = plan_test_regel(array('art' => 'fenster', 'n' => 2, 'frist' => 7));
+    $of_e = $of_lauf($of_r, $of_p, $of_t, $of_t + 9 * 3600);
+    $pruefe('Frist (OC-1): n=2, frist=7, steigende Preise: 8 Scheiben statt 36', $of_e[0], 8);
+    $pruefe('Frist (OC-1): danach Grund erfuellt', $of_e[1], 'erfuellt');
+    $of_e = $of_lauf($of_r, $of_p, $of_t, $of_t + 9 * 3600, false, true);
+    $pruefe('Frist (OC-1): mit Hysterese genauso 8 Scheiben', $of_e[0], 8);
+    $of_e = $of_lauf(plan_test_regel(array('art' => 'stunden', 'n' => 2, 'frist' => 7)), $of_p, $of_t, $of_t + 9 * 3600);
+    $pruefe('Frist (OC-1): Art stunden bleibt bei der Bestellung', $of_e[0] <= 8, true);
+    /* Die letzte bestellte Scheibe laeuft zu Ende: sie schaltet sich nicht selbst ab. */
+    $pruefe('Frist (OC-1): die laufende Scheibe zaehlt nicht gegen sich selbst',
+        plan_frist_gelaufen(array('ende' => 500, 'gelaufen' => 8, 'letzte' => 100), 500, 100), 7);
+    $pruefe('Frist (OC-1): andere Frist heisst neuer Lauf',
+        plan_frist_gelaufen(array('ende' => 500, 'gelaufen' => 8, 'letzte' => 100), 600, 200), 0);
+    /* Preise reichen nicht bis zur Frist: nichts zaehlt, sonst fehlt abends die Energie. */
+    $of_kurz = array();
+    for ($k = 0; $k < 8; $k++) { $of_kurz[$of_t + $k * 900] = 10.0 + $k * 0.01; }
+    $of_fp = plan_rechnen($of_kurz, 900, $of_t, array($of_r), array(), array('budget_kw' => 0.0, 'pv_bonus' => 0.0, 'pv_schwelle' => 500), 0);
+    $of_m = plan_frist_fortschreiben(array(), $of_fp, $of_t);
+    $pruefe('Frist (OC-1): reichen die Preise nicht bis zur Frist, wird nicht gezaehlt',
+        array($of_fp[0]['aktiv'], $of_fp[0]['frist_zaehlt'], $of_m[0]['gelaufen']), array(1, 0, 0));
+    /* Der naechste Fristlauf beginnt neu. */
+    $of_m = array(0 => array('ende' => $of_fp[0]['frist_ende'], 'gelaufen' => 8, 'letzte' => $of_t));
+    $of_nach = plan_frist_ende($of_t, 7);
+    $of_fp2 = plan_rechnen($of_p, 900, $of_nach, array($of_r), array('frist' => $of_m), array('budget_kw' => 0.0, 'pv_bonus' => 0.0, 'pv_schwelle' => 500), 0);
+    $pruefe('Frist (OC-1): nach der Frist zaehlt der neue Lauf von vorn', $of_fp2[0]['gelaufen'], 0);
+    /* Ohne Frist und bei 'schwelle' aendert sich nichts. */
+    $of_fp3 = plan_rechnen($of_p, 900, $of_t, array(plan_test_regel(array('art' => 'fenster', 'n' => 2))), array(), array('budget_kw' => 0.0, 'pv_bonus' => 0.0, 'pv_schwelle' => 500), 0);
+    $pruefe('Frist (OC-1): ohne Frist kein Merker', $of_fp3[0]['frist_ende'], 0);
+    /* Negativer Preis sticht auch eine erfuellte Regel. */
+    $of_m5 = array(0 => array('ende' => plan_frist_ende($of_t, 7), 'gelaufen' => 8, 'letzte' => $of_t - 900));
+    $of_fp4 = plan_rechnen($of_p, 900, $of_t, array(plan_test_regel(array('art' => 'fenster', 'n' => 2, 'frist' => 7, 'neg' => 1))),
+        array('frist' => $of_m5, 'neg' => 1), array('budget_kw' => 0.0, 'pv_bonus' => 0.0, 'pv_schwelle' => 500), 0);
+    $pruefe('Frist (OC-1): negativer Preis sticht auch eine erfuellte Regel', array($of_fp4[0]['aktiv'], $of_fp4[0]['grund']), array(1, 'negativ'));
+    $of_fp5 = plan_rechnen($of_p, 900, $of_t, array($of_r), array('frist' => $of_m5, 'neg' => 1), array('budget_kw' => 0.0, 'pv_bonus' => 0.0, 'pv_schwelle' => 500), 0);
+    $of_lf = array('frist' => $of_m5, 'laufend' => array(0 => $of_t + 3600));
+    $of_fp6 = plan_rechnen($of_p, 900, $of_t, array($of_r), $of_lf, array('budget_kw' => 0.0, 'pv_bonus' => 0.0, 'pv_schwelle' => 500), 0);
+    $pruefe('Frist (OC-1): die Hysterese haelt eine erfuellte Regel nicht fest', array($of_fp6[0]['aktiv'], $of_fp6[0]['grund']), array(0, 'erfuellt'));
+    $of_zw = array(array('nr' => 1, 'aktiv' => 1, 'frist_ende' => $of_t + 9 * 3600, 'frist_zaehlt' => 1));
+    $of_z1 = plan_frist_fortschreiben(array(), $of_zw, $of_t);
+    $pruefe('Frist (OC-1): zwei Rechnungen derselben Scheibe zaehlen einmal', plan_frist_fortschreiben($of_z1, $of_zw, $of_t)[0]['gelaufen'], 1);
+    $pruefe('Frist (OC-1): eine neue Scheibe zaehlt weiter', plan_frist_fortschreiben($of_z1, $of_zw, $of_t + 900)[0]['gelaufen'], 2);
+    $pruefe('Frist (OC-1): ein abgelaufener Merker faellt weg', plan_frist_fortschreiben($of_z1, array(), $of_t + 10 * 3600), array());
+    $pruefe('Frist (OC-1): erfuellt bucht und plant nichts', array($of_fp5[0]['aktiv'], $of_fp5[0]['anzahl'], $of_fp5[0]['fehlt'], $of_fp5[0]['grund']), array(0, 0, 0, 'erfuellt'));
 
     /* ---------- PV-Prognose: nur endliche, nicht negative Werte (Befund 9) ----------
      *

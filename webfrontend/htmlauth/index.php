@@ -628,6 +628,8 @@ if ($oc_ist_post && isset($_POST['save'])) {
     $oc_neu['tts'] = ansage_formular_lesen($_POST, oc_tts($oc_cfg), $oc_tmangel, $oc_tbean,
         oc_ansage_opt() + array('ziele' => oc_mit_zielen(), 'token_vor_ort' => true, 'aus_gewinnt' => true), oc_ansage_k(), $oc_thinw);
     list($oc_neu['ansage_regeln']) = ansage_regeln_formular($_POST, oc_ansage_regeln($oc_cfg), array(), $oc_tmangel, $oc_tbean, oc_ansage_k());     // S2: Wann gesprochen wird (Stamm)
+    // 1.1.32: ein eingetipptes oder geloeschtes Sprechtoken ist nicht mehr vom Nachbarn; bis 1.1.31 ueberschrieb es der naechste Abgleich.
+    $oc_neu['ansage_token_herkunft'] = ansage_token_herkunft_formular($_POST, isset($oc_neu['ansage_token_herkunft']) ? $oc_neu['ansage_token_herkunft'] : array(), oc_ansage_opt());
     foreach ($oc_tmangel as $oc_tm) { $oc_abweis[] = oc_e($oc_tm['text']); }
     foreach ($oc_tbean as $oc_tb) { $oc_bean[] = $oc_tb; }
 

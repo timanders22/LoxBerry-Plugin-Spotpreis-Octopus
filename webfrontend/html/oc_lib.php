@@ -2460,6 +2460,7 @@ function oc_regeln($slots, $st)
         'mittel'   => (!empty($st['ok']) && !empty($st['heute']['n']))
                       ? (float) $st['heute']['avg'] : null,
         'laufend'  => oc_laufend_lesen(),
+        'frist'    => plan_frist_lesen(oc_tmpdir() . '/frist.json'),   // 1.1.32 (OC-1)
     ), array(
         'budget_kw'   => $cfg['budget_kw'],
         'pv_bonus'    => $cfg['pv_bonus'],
@@ -2521,6 +2522,7 @@ function oc_fahrplan($st = null)
         'mittel'   => (!empty($st['ok']) && !empty($st['heute']['n']))
                       ? (float) $st['heute']['avg'] : null,
         'laufend'  => oc_laufend_lesen(),
+        'frist'    => plan_frist_lesen(oc_tmpdir() . '/frist.json'),   // 1.1.32 (OC-1)
     ), array(
         'budget_kw'   => $cfg['budget_kw'],
         'pv_bonus'    => $cfg['pv_bonus'],
@@ -2886,6 +2888,7 @@ function oc_state($force = false)
      * wann? Erst NACH der Rechnung, damit der naechste Lauf ihn vorfindet.
      * Siehe oc_laufend_fortschreiben(). */
     oc_laufend_fortschreiben($st['regeln'], $slotstart);
+    plan_frist_schreiben(oc_tmpdir() . '/frist.json', $st['regeln'], $slotstart);   // 1.1.32 (OC-1)
 
     /* ERST JETZT den Zwischenspeicher schreiben - $st ist vollstaendig. */
     @file_put_contents($cache, json_encode($st));
