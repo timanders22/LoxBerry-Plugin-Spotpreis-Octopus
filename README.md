@@ -7,6 +7,10 @@ HTTP-Endpunkt als Rückfallebene.
 
 ---
 
+## Neu in 1.1.34
+
+- Gemeinsames Sprachmodul 1.4.2: Wird eine Ansage bewusst nicht gesprochen (gerade eben schon gesagt, gesperrt oder Ruhezeit), steht das im Protokoll jetzt so – und nicht mehr als Fehler.
+
 ## Neu in 1.1.33
 
 - PV-Prognose: Unter der Adresse der PV-Prognose steht ein Link zum Azimut-Werkzeug (azimut.polka-umwelt.de). Dort das Haus im Luftbild suchen und mit „Orthogonales Messen“ am First entlang klicken. Die angezeigte Gradzahl („Abweichung von Süden“, 0 = Süden, Osten negativ, Westen positiv) zählt wie forecast.solar und kommt unverändert an die Stelle „Ausrichtung“ in der Adresse.
