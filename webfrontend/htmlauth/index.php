@@ -1499,7 +1499,8 @@ $oc_reiter = array(
     </select></div>
   <div><label><?php echo oc_t('PLAN.L_PV_URL'); ?></label>
     <input data-role="none" type="text" name="pv_url" value="<?php echo oc_e($oc_cfg['pv_url']); ?>" placeholder="https://api.forecast.solar/estimate/...">
-    <div class="sm-hilfe"><?php echo oc_t('PLAN.H_PV_URL'); ?></div></div>
+    <div class="sm-hilfe"><?php echo oc_t('PLAN.H_PV_URL'); ?></div>
+    <div class="sm-hilfe"><a href="https://azimut.polka-umwelt.de/" target="_blank" rel="noopener"><?php echo oc_e(oc_t('PLAN.AZIMUT_LINK')); ?></a>. <?php echo oc_e(oc_t('PLAN.AZIMUT_PV')); ?></div></div>
   <div><label><?php echo oc_t('PLAN.L_PV_EINHEIT'); ?></label>
     <select data-role="none" name="pv_einheit">
 <?php foreach (array('wh', 'w', 'kw') as $oc_e4) { ?>

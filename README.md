@@ -7,6 +7,10 @@ HTTP-Endpunkt als Rückfallebene.
 
 ---
 
+## Neu in 1.1.33
+
+- PV-Prognose: Unter der Adresse der PV-Prognose steht ein Link zum Azimut-Werkzeug (azimut.polka-umwelt.de). Dort das Haus im Luftbild suchen und mit „Orthogonales Messen“ am First entlang klicken. Die angezeigte Gradzahl („Abweichung von Süden“, 0 = Süden, Osten negativ, Westen positiv) zählt wie forecast.solar und kommt unverändert an die Stelle „Ausrichtung“ in der Adresse.
+
 ## Neu in 1.1.32
 
 - **Update:** Scheitert die Sicherung oder die Marke, bricht das Update ab und die bisherige Fassung bleibt.
