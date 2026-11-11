@@ -1392,6 +1392,78 @@ function oc_config_write($cfg)
     return true;
 }
 
+/** Leere Objekte des Rohtextes ($o, json_decode ohne true) im Feld $a wieder als Objekt fuehren (11.11.2026, Muster
+ *  bw_json_leere_objekte() aus Bewaesserung 0.9.56), damit json_encode() sie als {} und nicht als [] schreibt - oben,
+ *  verschachtelt und unter fremden Schluesseln. Nur fuer oc_config_vervollstaendigen(); das Speichern im Formular
+ *  bleibt, wie es ist. */
+function oc_json_leere_objekte($a, $o)
+{
+    if (!is_array($a)) { return $a; }
+    if (is_object($o)) {
+        if (!get_object_vars($o) && $a === array()) { return new stdClass(); }
+        foreach ($a as $k => $v) {
+            $ks = (string) $k;
+            if (is_array($v) && property_exists($o, $ks)) { $a[$k] = oc_json_leere_objekte($v, $o->$ks); }
+        }
+    } elseif (is_array($o)) {
+        foreach ($a as $k => $v) {
+            if (is_array($v) && array_key_exists($k, $o)) { $a[$k] = oc_json_leere_objekte($v, $o[$k]); }
+        }
+    }
+    return $a;
+}
+
+/**
+ * Fehlende Schluessel EINMAL mit ihrer Vorgabe in die Datei schreiben (seit 1.1.36).
+ *
+ * Regeln/05, Bauform Docker NG 1.3.7; Entscheidung des Hausherrn vom
+ * 11.11.2026. Bis 1.1.35 ergaenzte oc_config() fehlende Schluessel nur im
+ * Speicher - in die Datei kamen sie erst beim naechsten Speichern im
+ * Formular. Aufgerufen vom Minutentakt (bin/oc_cron.php), VOR dem ersten
+ * Lesen der Konfiguration.
+ *
+ * Nur an einer heilen Datei: vorhanden, lesbar, ein JSON-Objekt mit einem
+ * Aktionstoken in gueltiger Form. Eine fehlende, leere, kaputte oder
+ * tokenlose Datei ist Sache der Selbstheilung in oc_config().
+ *
+ * Geschrieben werden die WERTE AUS DER DATEI plus die fehlenden Vorgaben,
+ * nicht die normierten Werte aus oc_config() - sonst ersetzte das
+ * Vervollstaendigen still einen Wert, den die Lesefunktion nur in ihre
+ * Schranken stellt. Fremde Schluessel bleiben stehen. Geschrieben wird nur,
+ * wenn etwas fehlt, und ueber oc_config_write() (0600, Zweitschrift wie beim
+ * Speichern im Formular, das ebenfalls jeden Schluessel aus oc_vorgaben()
+ * schreibt). Die Protokollzeile nennt die Namen, nie die Werte. Nicht im
+ * Nur-Lesen-Betrieb des Endpunkts. Rueckgabe: die ergaenzten Schluessel.
+ */
+function oc_config_vervollstaendigen()
+{
+    if (oc_nur_lesen()) { return array(); }
+    $p = oc_paths();
+    if ($p['home'] === '') { return array(); }
+    clearstatcache(true, $p['config']);
+    if (!is_file($p['config']) || !is_readable($p['config'])) { return array(); }
+    $roh = @file_get_contents($p['config']);
+    if (!is_string($roh) || substr(ltrim($roh), 0, 1) !== '{') { return array(); }
+    $datei = json_decode($roh, true);
+    if (!is_array($datei) || !isset($datei['aktionstoken']) || !oc_token_form($datei['aktionstoken'])) {
+        return array();
+    }
+    // Ein leeres Objekt der Datei ({}) bliebe nach json_decode(..., true) ein leeres Feld und kaeme beim Schreiben
+    // als [] zurueck - die leeren Objekte des Rohtextes bleiben Objekte (11.11.2026).
+    $datei = oc_json_leere_objekte($datei, json_decode($roh));
+    $fehlend = array();
+    foreach (oc_vorgaben() as $k => $w) {
+        if (!array_key_exists($k, $datei)) {
+            $datei[$k] = $w;
+            $fehlend[] = (string) $k;
+        }
+    }
+    if (!$fehlend) { return array(); }
+    if (!oc_config_write($datei)) { return array(); }
+    oc_log('Konfiguration vervollstaendigt, mit Vorgabe eingetragen: ' . implode(', ', $fehlend));
+    return $fehlend;
+}
+
 /** Zufallstoken fuer den Aktionsendpunkt. */
 function oc_token_erzeugen($laenge = 24)
 {

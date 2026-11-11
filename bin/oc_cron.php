@@ -82,6 +82,17 @@ if ($oc_marke_upgrade !== null && $oc_marke_upgrade['gilt']) {
     exit(0);
 }
 
+/* Seit 1.1.36 (Regeln/05, Entscheidung des Hausherrn 11.11.2026): fehlende Schluessel einmal mit ihrer
+ * Vorgabe in die Datei schreiben - NACH der Upgrade-Marke und VOR dem ersten Lesen der Konfiguration (der
+ * Waechter der Befehlsbruecke darunter liest sie schon). Nur an einer heilen Datei mit Aktionstoken,
+ * geschrieben nur, wenn etwas fehlt; eine kaputte Datei heilt danach oc_config(). try/catch: ein Fehler hier
+ * aendert den Minutenlauf nicht. */
+try {
+    oc_config_vervollstaendigen();
+} catch (Throwable $oc_vv) {
+    oc_log('Konfiguration vervollstaendigen abgebrochen (' . get_class($oc_vv) . ') - der Minutenlauf ist davon nicht betroffen.');
+}
+
 /* Gruppe 5 / MQTT (1.1.26, Entwurf oc E13): der Waechter der Befehlsbruecke (gemeinsame Stammfassung). Er startet
  * sie nur mit dem Haken "Befehle ueber MQTT annehmen" (und MQTT an), haelt sie sonst an und sendet
  * <praefix>/status/befehle (nie retained). Er steht NACH der Upgrade-Marke (waehrend einer Aktualisierung ruht

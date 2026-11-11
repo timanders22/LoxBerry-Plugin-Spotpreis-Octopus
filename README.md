@@ -7,6 +7,12 @@ HTTP-Endpunkt als Rückfallebene.
 
 ---
 
+## Neu in 1.1.36
+
+- **Konfiguration wird vervollständigt:** Fehlen in `octopus.json` Einstellungen, die eine neuere Fassung mitbringt, trägt der Minutentakt sie jetzt einmal mit ihrer Vorgabe in die Datei ein, bevor er die Konfiguration liest. Das Protokoll nennt die ergänzten Namen, nie die Werte. Bisher ergänzte das Plugin fehlende Einstellungen nur beim Lesen; in die Datei kamen sie erst beim nächsten Speichern im Formular. Am Verhalten ändert sich nichts, denn die eingetragenen Werte sind dieselben Vorgaben, mit denen das Plugin bisher schon rechnete.
+- Angefasst wird nur eine lesbare Datei mit gültigem Aktionstoken; eine fehlende, leere oder beschädigte Datei bleibt Sache der Selbstheilung. Alle vorhandenen Werte werden so geschrieben, wie sie in der Datei stehen, auch solche, die das Plugin beim Lesen in seine Grenzen stellt; Schlüssel, die das Plugin nicht kennt, bleiben stehen. Fehlt nichts, wird nichts geschrieben. Die Zweitschrift zieht wie beim Speichern mit. Gemessen am Prüfstand unter PHP 7.4 und 8.4 in einem nachgebauten LoxBerry-Baum; am Gerät ist es noch nicht gemessen.
+- Leere Objekte (`{}`) in der Datei bleiben beim Vervollständigen erhalten, auch verschachtelte und solche unter unbekannten Schlüsseln; sie werden dabei nicht zu leeren Listen (`[]`).
+
 ## Neu in 1.1.35
 
 - Gemeinsames Sprachmodul 1.4.3: Als LoxBerry-Wurzel aus `LBHOMEDIR` gilt für die Sprachausgabe nur noch ein Ordner mit `config/plugins`, `data/plugins` und `config/system/general.json`; bis 1.4.2 genügte `config/system`, und ein Prüfstand oder Rest mit diesem Ordner wurde wie ein LoxBerry gelesen. Auf einem LoxBerry ändert sich nichts.
