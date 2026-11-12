@@ -165,6 +165,14 @@ if ($oc_sperre === false) {
 
 $st = oc_state();
 oc_announce_check($st);
+/* Schwellen-Push (1.1.37, ab Werk aus): ein Schritt je Minutenlauf, VOR dem MQTT-Versand - das Meldefenster
+ * geht im selben Lauf hinaus. Ein Fehler darin darf den Minutenlauf nicht aufhalten. */
+try {
+    oc_schwelle_pruefen($st);
+} catch (Throwable $oc_e) {
+    oc_log('Schwellen-Push abgebrochen (' . get_class($oc_e) . ': ' . $oc_e->getMessage()
+        . ') - der Minutenlauf ist davon nicht betroffen.');
+}
 
 /* ---- Monatsbericht am Monatsersten, ab 8 Uhr, genau einmal ----
  *

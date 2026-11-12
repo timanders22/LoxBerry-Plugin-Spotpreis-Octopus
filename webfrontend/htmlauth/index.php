@@ -616,6 +616,11 @@ if ($oc_ist_post && isset($_POST['save'])) {
         'lb'         => isset($_POST['notify_lb']) ? 1 : 0,
         'lb_stunden' => $oc_g('notify_lb_stunden', $oc_cfg['notify']['lb_stunden'], 1, 72),
     );
+    // Schwellen-Push (1.1.37): abgewiesen und gemeldet wie jedes Zahlenfeld, nichts zurechtgebogen.
+    $oc_neu['schwelle_ein']    = isset($_POST['schwelle_ein']) ? 1 : 0;
+    $oc_neu['schwelle_ct']     = $oc_z('schwelle_ct', $oc_cfg['schwelle_ct'], -100, 200);
+    $oc_neu['schwelle_hyst']   = $oc_z('schwelle_hyst', $oc_cfg['schwelle_hyst'], 0, 50);
+    $oc_neu['schwelle_sperre'] = $oc_g('schwelle_sperre', $oc_cfg['schwelle_sperre'], 0, 1440);
     /* Sprachausgabe (seit 1.1.22, Nr. 36 b Stufe 2): der Formular-Baustein der gemeinsamen Sprachausgabe
      * liest und prueft den ganzen Block - Adresse und Vorlage nur im Heimnetz (Entscheidung Nr. 40),
      * Sprechtoken wie ein Kennwort (leer = unveraendert, der Haken loescht, beides zugleich ist ein
@@ -1740,6 +1745,30 @@ foreach (oc_regel_arten() as $oc_a) { ?>
     <input data-role="none" type="number" name="notify_lb_stunden" value="<?php echo (int) $oc_cfg['notify']['lb_stunden']; ?>" min="1" max="72"></div>
 </div>
 <div class="sm-hilfe"><?php echo oc_t('EINST.NOTIFY_LB_HILFE'); ?></div>
+
+<h3><?php echo oc_t('SCHWELLE.TITEL'); ?></h3>
+<label style="display:inline-flex;align-items:center;gap:6px;font-weight:600;">
+  <input data-role="none" type="checkbox" name="schwelle_ein" <?php echo !empty($oc_cfg['schwelle_ein']) ? 'checked' : ''; ?>>
+  <?php echo oc_t('SCHWELLE.EIN'); ?>
+</label>
+<div class="sm-hilfe"><?php echo oc_t('SCHWELLE.H_EIN'); ?></div>
+<div class="sm-reihe">
+  <div>
+    <label><?php echo oc_t('SCHWELLE.CT'); ?></label>
+    <input data-role="none" type="text" name="schwelle_ct" value="<?php echo oc_e($oc_cfg['schwelle_ct']); ?>" placeholder="20">
+    <div class="sm-hilfe"><?php echo oc_t('SCHWELLE.H_CT'); ?></div>
+  </div>
+  <div>
+    <label><?php echo oc_t('SCHWELLE.HYST'); ?></label>
+    <input data-role="none" type="text" name="schwelle_hyst" value="<?php echo oc_e($oc_cfg['schwelle_hyst']); ?>" placeholder="1">
+    <div class="sm-hilfe"><?php echo oc_t('SCHWELLE.H_HYST'); ?></div>
+  </div>
+  <div>
+    <label><?php echo oc_t('SCHWELLE.SPERRE'); ?></label>
+    <input data-role="none" type="text" name="schwelle_sperre" value="<?php echo (int) $oc_cfg['schwelle_sperre']; ?>" placeholder="60">
+    <div class="sm-hilfe"><?php echo oc_t('SCHWELLE.H_SPERRE'); ?></div>
+  </div>
+</div>
 
 <h3><?php echo oc_t('EINST.H_TTS'); ?></h3>
 <div class="sm-hinweis"><?php echo oc_t('EINST.TTS_HAUSFORM'); ?></div>

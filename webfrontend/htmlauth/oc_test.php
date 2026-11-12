@@ -227,6 +227,16 @@ function oc_test_selbst()
             ? str_replace('%N%', (int) $rund[2], oc_t('TEST.SICH_RUNDLAUF_OK'))
             : oc_e(implode(' ', $rund[1])));
 
+    /* ---- Schwellen-Push (1.1.37) ----
+     * Die Logik an einer festen Preisreihe (Unterschreiten, Hysterese, Sperrzeit, Wiederkehr), dann die
+     * Wirkung: rechnet der Minutenlauf, und passt der abgelegte Zustand zum Preis, den er gesehen hat?
+     * Ausgeschaltet oder ohne gueltigen Preis ist ein Strich, kein Kreuz. Beides schreibt nichts. */
+    list($oc_swl, $oc_swlt) = oc_schwelle_selbstpruefung();
+    $h .= oc_zeile($oc_swl === 1, oc_t('TEST.SCHWELLE_LOGIK'), oc_e($oc_swlt));
+    list($oc_sw, $oc_swt) = oc_schwelle_lage();
+    $h .= $oc_sw === 2 ? $oc_strich(oc_t('TEST.SCHWELLE'), oc_e($oc_swt))
+                       : oc_zeile($oc_sw === 1, oc_t('TEST.SCHWELLE'), oc_e($oc_swt));
+
     return array(oc_t('TEST.T_SELBST'), $h);
 }
 

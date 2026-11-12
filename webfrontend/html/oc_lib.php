@@ -781,6 +781,13 @@ function oc_vorgaben()
         /* Gruppe 5 / MQTT (1.1.26, Entwurf oc 3.3, E1): "Befehle ueber MQTT annehmen" - Preisansage, Ansage
          * morgen, Test-Push ueber die Befehlsbruecke. Ab Werk aus; einen zweiten Haken gibt es nicht. */
         'befehle_mqtt_ein' => 0,
+        /* Schwellen-Push (1.1.37, ab Werk aus): eine Meldung, wenn der Endpreis unter schwelle_ct faellt,
+         * eine, wenn er wieder ueber schwelle_ct + schwelle_hyst steigt; je Richtung hoechstens eine in
+         * schwelle_sperre Minuten (oc_schwelle_schritt()). Unabhaengig von notify.hours und only_cheap. */
+        'schwelle_ein'    => 0,
+        'schwelle_ct'     => 20.0,
+        'schwelle_hyst'   => 1.0,
+        'schwelle_sperre' => 60,
         // Meldungen
         'notify'        => array(),
         'tts'           => array(),
@@ -1213,6 +1220,11 @@ function oc_config($heilen = null)
     $cfg['fix_rabatt']   = oc_zahl($cfg['fix_rabatt'], 0.0, 0, 100);
     $cfg['consumption']  = oc_ganz($cfg['consumption'], 3500, 100, 100000);
     $cfg['shift_kwh']    = oc_zahl($cfg['shift_kwh'], 3.0, 0, 100);
+    // Schwellen-Push (1.1.37): dieselben Schranken wie oc_schranken() und das Formular.
+    $cfg['schwelle_ein']    = empty($cfg['schwelle_ein']) ? 0 : 1;
+    $cfg['schwelle_ct']     = oc_zahl($cfg['schwelle_ct'], 20.0, -100, 200);
+    $cfg['schwelle_hyst']   = oc_zahl($cfg['schwelle_hyst'], 1.0, 0, 50);
+    $cfg['schwelle_sperre'] = oc_ganz($cfg['schwelle_sperre'], 60, 0, 1440);
 
     /* Das Praefix geht in die UDP-Zeile an den MQTT-Gateway. Siehe
      * oc_mqtt_thema_saeubern() - dort steht, was ohne diese Zeile passiert. */
@@ -1295,6 +1307,11 @@ function oc_schranken()
         'fix_rabatt'     => array('z', 0.0, 0, 100),
         'consumption'    => array('g', 3500, 100, 100000),
         'shift_kwh'      => array('z', 3.0, 0, 100),
+        // Schwellen-Push (1.1.37)
+        'schwelle_ein'   => array('b'),
+        'schwelle_ct'    => array('z', 20.0, -100, 200),
+        'schwelle_hyst'  => array('z', 1.0, 0, 50),
+        'schwelle_sperre' => array('g', 60, 0, 1440),
         'budget_kw'      => array('z', 0.0, 0, 200),
         'pv_bonus'       => array('z', 0.0, 0, 100),
         'pv_schwelle'    => array('g', 500, 1, 100000),
@@ -3371,6 +3388,11 @@ function oc_themen()
         'audio'         => array('THEMA.AUDIO', ''),
         'push'          => array('THEMA.PUSH', ''),
         'ptest'         => array('THEMA.PTEST', ''),
+        /* Schwellen-Push (1.1.37): Zustand (zurueckbehalten) und die beiden Meldefenster - dieselben Themen
+         * wie in Spotpreis aWATTar. In der HTTP-Zeile SCHWELLE_UNTER, SCHWELLE_MELDUNG_UNTER, ..._UEBER. */
+        'schwelle/unter'         => array('THEMA.SCHWELLE_UNTER', ''),
+        'schwelle/meldung_unter' => array('THEMA.SCHWELLE_MELDUNG_UNTER', ''),
+        'schwelle/meldung_ueber' => array('THEMA.SCHWELLE_MELDUNG_UEBER', ''),
         'alter'         => array('THEMA.ALTER', 'min'),
     );
     // Schaltregeln: je Regel vier Themen. 'aktiv' ist das digitale Signal,
@@ -3501,11 +3523,327 @@ function oc_kachel_text($info)
     return isset($info[2]) ? sprintf($roh, (int) $info[2]) : $roh;
 }
 
+/* ==================================================================
+ * Schwellen-Push (neu in 1.1.37, ab Werk aus)
+ * ==================================================================
+ *
+ * Eine Meldung, wenn der Preis unter die eingestellte Schwelle FAELLT, und
+ * eine, wenn er wieder ueber Schwelle + Hysterese STEIGT - unabhaengig von
+ * Stunden, Ansagezeiten und Meldefenstern, die diese Linie sonst kennt (die
+ * bleiben, wie sie sind). Den Push verschickt wie bei jeder Meldung dieser
+ * Linie der Miniserver: das Plugin setzt ein Meldefenster fuer fuenf Minuten
+ * auf 1 (Feld SCHWELLE_MELDUNG_UNTER bzw. SCHWELLE_MELDUNG_UEBER, MQTT schwelle/meldung_unter bzw.
+ * schwelle/meldung_ueber), ein Benachrichtigungsbaustein in Loxone reagiert
+ * auf die steigende Flanke. Der Zustand selbst (SCHWELLE_UNTER, MQTT
+ * schwelle/unter, zurueckbehalten) sagt "der Preis liegt unter der
+ * Schwelle".
+ *
+ * Hysterese: "unter", sobald der Preis kleiner als die Schwelle ist; "wieder
+ * ueber" erst, wenn er groesser als Schwelle + Hysterese ist. Sperrzeit: je
+ * Richtung hoechstens eine Meldung in dieser Zeit; ein Wechsel innerhalb der
+ * Sperrzeit aendert den Zustand, meldet aber nicht (Protokollzeile
+ * "gesperrt").
+ *
+ * Ohne bekannten Ausgangszustand - erster Lauf nach dem Einschalten, nach
+ * einer Aenderung von Schwelle oder Hysterese, nach einem Update, das den
+ * Datenordner abraeumt - wird der Zustand OHNE Meldung uebernommen: gemeldet
+ * wird ein Uebergang, nicht ein Stand. Ohne gueltigen Preis (Abruf
+ * gescheitert, Ersatzwert) wird nicht gerechnet; der Zustand bleibt, nach
+ * aussen geht "unter" als 0.
+ */
+
+/** Die Einstellungen des Schwellen-Pushs aus der Konfiguration (geprueft und gekappt beim Lesen). */
+function oc_schwelle_einstellung($cfg = null) {
+    if ($cfg === null) {
+        $cfg = oc_config();
+    }
+    return array(
+        'ein' => empty($cfg['schwelle_ein']) ? 0 : 1,
+        'ct' => (float) $cfg['schwelle_ct'],
+        'hyst' => max(0.0, (float) $cfg['schwelle_hyst']),
+        'sperre' => max(0, (int) $cfg['schwelle_sperre']),
+    );
+}
+
+/** Ein Meldefenster: 1 in den fuenf Minuten nach dem Zeitpunkt $t (0 = nie gemeldet). */
+function oc_schwelle_fenster($t, $jetzt) {
+    $t = (int) $t;
+    $jetzt = (int) $jetzt;
+    return ($t > 0 && $jetzt >= $t && $jetzt - $t < 300) ? 1 : 0;
+}
+
+/**
+ * Ein Schritt der Schwellenpruefung - ohne Datei, ohne Uhr, ohne Protokoll;
+ * deshalb im Reiter Test und im Pruefstand mit einer Preisreihe nachrechenbar.
+ * $z bisheriger Zustand (leer = unbekannt), $preis in ct/kWh, $gueltig: der
+ * Preis der laufenden Zeit liegt vor, $e die Einstellung, $jetzt Unix-Zeit.
+ * Rueckgabe array(Zustand, Ereignis); Ereignis '' (nichts), 'aus',
+ * 'ungueltig', 'start', 'unter', 'unter_gesperrt', 'ueber', 'ueber_gesperrt'.
+ */
+function oc_schwelle_schritt($z, $preis, $gueltig, array $e, $jetzt) {
+    $leer = array('unter' => -1, 'ct' => null, 'hyst' => null, 'meld_u' => 0, 'meld_o' => 0, 'seit' => 0);
+    $z = is_array($z) ? $z + $leer : $leer;
+    $jetzt = (int) $jetzt;
+    if (empty($e['ein'])) {
+        $war = (int) $z['unter'] !== -1 || (int) $z['meld_u'] > 0 || (int) $z['meld_o'] > 0;
+        return array($leer, $war ? 'aus' : '');
+    }
+    if (!$gueltig || !is_numeric($preis) || !is_finite((float) $preis)) {
+        return array($z, 'ungueltig');
+    }
+    $x = (float) $e['ct'];
+    $h = max(0.0, (float) $e['hyst']);
+    $p = (float) $preis;
+    $sperre = max(0, (int) $e['sperre']) * 60;
+    /* Frei, wenn noch nie gemeldet, die Sperrzeit um ist - oder die Uhr
+     * zurueckgestellt wurde: eine Meldung "in der Zukunft" sperrt nicht. */
+    $frei = function ($t) use ($jetzt, $sperre) {
+        $t = (int) $t;
+        return $t <= 0 || $t > $jetzt || $jetzt - $t >= $sperre;
+    };
+    if ($z['ct'] === null || $z['hyst'] === null || abs((float) $z['ct'] - $x) > 1e-9
+        || abs((float) $z['hyst'] - $h) > 1e-9 || !in_array((int) $z['unter'], array(0, 1), true)) {
+        $z['unter'] = $p < $x ? 1 : 0;
+        $z['ct'] = $x;
+        $z['hyst'] = $h;
+        $z['seit'] = $jetzt;
+        return array($z, 'start');
+    }
+    if ((int) $z['unter'] === 0 && $p < $x) {
+        $z['unter'] = 1;
+        $z['seit'] = $jetzt;
+        if ($frei($z['meld_u'])) {
+            $z['meld_u'] = $jetzt;
+            return array($z, 'unter');
+        }
+        return array($z, 'unter_gesperrt');
+    }
+    if ((int) $z['unter'] === 1 && $p > $x + $h) {
+        $z['unter'] = 0;
+        $z['seit'] = $jetzt;
+        if ($frei($z['meld_o'])) {
+            $z['meld_o'] = $jetzt;
+            return array($z, 'ueber');
+        }
+        return array($z, 'ueber_gesperrt');
+    }
+    return array($z, '');
+}
+
+/** Der Zustand liegt im Datenordner (uebersteht einen Neustart; ein Update raeumt ihn ab - dann wird der
+ *  Ausgangszustand ohne Meldung uebernommen). Geschrieben wird er nur bei einer Aenderung. */
+function oc_schwelle_datei() {
+    return oc_datadir() . '/schwelle.json';
+}
+
+/** Der Puls (Zeit, gesehener Preis, Ereignis) liegt im fluechtigen Zwischenspeicher und wird bei jedem
+ *  Minutenlauf geschrieben - die Pruefzeile im Reiter Test misst daran, ob der Minutenlauf rechnet. */
+function oc_schwelle_pulsdatei() {
+    return oc_tmpdir() . '/schwelle_puls.json';
+}
+
+function oc_schwelle_json_lesen($f) {
+    if (!is_file($f)) {
+        return array();
+    }
+    $d = json_decode((string) @file_get_contents($f), true);
+    return is_array($d) ? $d : array();
+}
+
+/** Erst in eine Nebendatei, dann umbenennen - niemand liest einen halben Zustand. */
+function oc_schwelle_ablegen($f, array $d) {
+    $neu = $f . '.neu';
+    $j = json_encode($d);
+    if ($j === false || @file_put_contents($neu, $j . "\n") === false) {
+        @unlink($neu);
+        return false;
+    }
+    if (!@rename($neu, $f)) {
+        @unlink($neu);
+        return false;
+    }
+    return true;
+}
+
+/** Eine Zahl fuer Protokoll und Reiter Test: zwei Nachkommastellen, Komma. */
+function oc_schwelle_zahl($v) {
+    return number_format((float) $v, 2, ',', '');
+}
+
+/**
+ * Minutenlauf: einen Schritt rechnen, den Zustand ablegen, je Ausloesung eine
+ * Protokollzeile. $st ist der Zustand der Linie (ok, cur, cur_fehlt).
+ * Rueckgabe das Ereignis (fuer den Pruefstand), 'schreibfehler', wenn der
+ * Zustand nicht abgelegt werden konnte - dann ging auch keine Meldung hinaus,
+ * und der naechste Lauf versucht es noch einmal.
+ */
+function oc_schwelle_pruefen($st, $jetzt = null) {
+    $jetzt = $jetzt === null ? time() : (int) $jetzt;
+    $e = oc_schwelle_einstellung();
+    $f = oc_schwelle_datei();
+    $alt = oc_schwelle_json_lesen($f);
+    if (!$e['ein'] && !$alt) {
+        if (is_file(oc_schwelle_pulsdatei())) {
+            @unlink(oc_schwelle_pulsdatei());
+        }
+        return '';
+    }
+    $gueltig = is_array($st) && !empty($st['ok']) && empty($st['cur_fehlt']);
+    $preis = (is_array($st) && isset($st['cur'])) ? $st['cur'] : null;
+    list($neu, $ereignis) = oc_schwelle_schritt($alt, $preis, $gueltig, $e, $jetzt);
+    if ($ereignis === 'aus') {
+        @unlink($f);
+        @unlink(oc_schwelle_pulsdatei());
+        oc_log('Schwellen-Push ausgeschaltet - Zustand verworfen, es geht keine Meldung mehr hinaus.');
+        return 'aus';
+    }
+    oc_schwelle_ablegen(oc_schwelle_pulsdatei(),
+        array('ts' => $jetzt, 'preis' => $gueltig ? (float) $preis : null, 'ereignis' => $ereignis));
+    if ($neu != $alt && !oc_schwelle_ablegen($f, $neu)) {
+        oc_log('Schwellen-Push: Zustand nicht schreibbar (' . $f . ') - keine Meldung, der naechste Lauf versucht es noch einmal.');
+        return 'schreibfehler';
+    }
+    $p = oc_schwelle_zahl($preis);
+    $x = oc_schwelle_zahl($e['ct']);
+    $bis = function ($t) use ($e) {
+        return date('d.m. H:i', (int) $t + $e['sperre'] * 60);
+    };
+    switch ($ereignis) {
+        case 'start':
+            oc_log(sprintf('Schwellen-Push: Ausgangszustand uebernommen - Preis %s ct/kWh liegt %s der Schwelle %s ct/kWh. Keine Meldung; gemeldet wird erst ein Wechsel.',
+                $p, (int) $neu['unter'] === 1 ? 'unter' : 'nicht unter', $x));
+            break;
+        case 'unter':
+            oc_log(sprintf('Schwellen-Push: Preis %s ct/kWh unter der Schwelle %s ct/kWh - Meldung "unter Schwelle" (SCHWELLE_MELDUNG_UNTER=1 fuer 5 Minuten).', $p, $x));
+            break;
+        case 'unter_gesperrt':
+            oc_log(sprintf('Schwellen-Push: Preis %s ct/kWh unter der Schwelle %s ct/kWh - keine Meldung, gesperrt bis %s (letzte Meldung %s).',
+                $p, $x, $bis($neu['meld_u']), date('d.m. H:i', (int) $neu['meld_u'])));
+            break;
+        case 'ueber':
+            oc_log(sprintf('Schwellen-Push: Preis %s ct/kWh wieder ueber %s ct/kWh (Schwelle %s + Hysterese %s) - Meldung "wieder ueber" (SCHWELLE_MELDUNG_UEBER=1 fuer 5 Minuten).',
+                $p, oc_schwelle_zahl($e['ct'] + $e['hyst']), $x, oc_schwelle_zahl($e['hyst'])));
+            break;
+        case 'ueber_gesperrt':
+            oc_log(sprintf('Schwellen-Push: Preis %s ct/kWh wieder ueber %s ct/kWh - keine Meldung, gesperrt bis %s (letzte Meldung %s).',
+                $p, oc_schwelle_zahl($e['ct'] + $e['hyst']), $bis($neu['meld_o']), date('d.m. H:i', (int) $neu['meld_o'])));
+            break;
+    }
+    return $ereignis;
+}
+
+/**
+ * Was nach Loxone geht: unter (Zustand), meld_u und meld_o (Meldefenster,
+ * fuenf Minuten nach einer Meldung). Aus, ohne Zustand oder ohne gueltigen
+ * Preis ist unter 0 - ein zurueckbehaltenes 1 bliebe sonst stehen.
+ */
+function oc_schwelle_werte($st = null, $jetzt = null) {
+    $jetzt = $jetzt === null ? time() : (int) $jetzt;
+    $aus = array('unter' => 0, 'meld_u' => 0, 'meld_o' => 0);
+    $e = oc_schwelle_einstellung();
+    $z = oc_schwelle_json_lesen(oc_schwelle_datei());
+    if (!$e['ein'] || !$z) {
+        return $aus;
+    }
+    $gueltig = !is_array($st) || (!empty($st['ok']) && empty($st['cur_fehlt']));
+    $aus['unter'] = ($gueltig && isset($z['unter']) && (int) $z['unter'] === 1) ? 1 : 0;
+    $aus['meld_u'] = oc_schwelle_fenster(isset($z['meld_u']) ? $z['meld_u'] : 0, $jetzt);
+    $aus['meld_o'] = oc_schwelle_fenster(isset($z['meld_o']) ? $z['meld_o'] : 0, $jetzt);
+    return $aus;
+}
+
+/**
+ * Pruefzeile "Logik" im Reiter Test (und im Pruefstand): eine feste
+ * Preisreihe - Unterschreiten, Hysterese, Sperrzeit je Richtung, Wiederkehr
+ * nach der Sperrzeit, ungueltiger Preis, geaenderte Schwelle, Ausschalten -
+ * und die Meldefenster. Schreibt nichts. Rueckgabe array(0|1, Klartext).
+ */
+function oc_schwelle_selbstpruefung() {
+    $e = array('ein' => 1, 'ct' => 10.0, 'hyst' => 1.0, 'sperre' => 60);
+    $e8 = array('ct' => 8.0) + $e;
+    $aus = array('ein' => 0) + $e;
+    $t0 = 1700000000;
+    $reihe = array(
+        array(0, 12.0, true, $e, 'start'),
+        array(60, 9.5, true, $e, 'unter'),
+        array(120, 10.5, true, $e, ''),
+        array(180, 11.5, true, $e, 'ueber'),
+        array(240, 9.0, true, $e, 'unter_gesperrt'),
+        array(300, 11.5, true, $e, 'ueber_gesperrt'),
+        array(4000, 9.0, true, $e, 'unter'),
+        array(4060, 50.0, false, $e, 'ungueltig'),
+        array(4120, 11.5, true, $e, 'ueber'),
+        array(4180, 7.5, true, $e8, 'start'),
+        array(4240, 9.5, true, $e8, 'ueber_gesperrt'),
+        array(4300, 7.0, true, $aus, 'aus'),
+    );
+    $z = array();
+    $falsch = array();
+    foreach ($reihe as $i => $r) {
+        list($z, $ev) = oc_schwelle_schritt($z, $r[1], $r[2], $r[3], $t0 + $r[0]);
+        if ($ev !== $r[4]) {
+            $falsch[] = sprintf('%d: %s statt %s', $i + 1, $ev === '' ? '-' : $ev, $r[4] === '' ? '-' : $r[4]);
+        }
+    }
+    if (oc_schwelle_fenster($t0 + 60, $t0 + 160) !== 1 || oc_schwelle_fenster($t0 + 60, $t0 + 360) !== 0
+        || oc_schwelle_fenster(0, $t0) !== 0) {
+        $falsch[] = 'Meldefenster';
+    }
+    if ($falsch) {
+        return array(0, sprintf(oc_t('TEST.SCHWELLE_LOGIK_FALSCH'), implode('; ', $falsch)));
+    }
+    return array(1, sprintf(oc_t('TEST.SCHWELLE_LOGIK_OK'), count($reihe)));
+}
+
+/**
+ * Pruefzeile "Wirkung" im Reiter Test: rechnet der Minutenlauf die Schwelle,
+ * und passt der abgelegte Zustand zu dem Preis, den er dabei gesehen hat?
+ * Rueckgabe array(0|1|2, Klartext). Schreibt nichts.
+ */
+function oc_schwelle_lage($jetzt = null) {
+    $jetzt = $jetzt === null ? time() : (int) $jetzt;
+    $e = oc_schwelle_einstellung();
+    if (!$e['ein']) {
+        return array(2, oc_t('TEST.SCHWELLE_AUS'));
+    }
+    $puls = oc_schwelle_json_lesen(oc_schwelle_pulsdatei());
+    if (!isset($puls['ts'])) {
+        return array(0, oc_t('TEST.SCHWELLE_NIE'));
+    }
+    $alter = $jetzt - (int) $puls['ts'];
+    if ($alter > 900) {
+        return array(0, sprintf(oc_t('TEST.SCHWELLE_ALT'), (int) round($alter / 60)));
+    }
+    if (!isset($puls['preis']) || !is_numeric($puls['preis'])) {
+        return array(2, sprintf(oc_t('TEST.SCHWELLE_OHNE_PREIS'), max(0, $alter)));
+    }
+    $z = oc_schwelle_json_lesen(oc_schwelle_datei());
+    if (!isset($z['ct']) || !is_numeric($z['ct']) || abs((float) $z['ct'] - $e['ct']) > 1e-9
+        || !isset($z['hyst']) || !is_numeric($z['hyst']) || abs((float) $z['hyst'] - $e['hyst']) > 1e-9) {
+        return array(2, oc_t('TEST.SCHWELLE_NEU'));
+    }
+    $p = (float) $puls['preis'];
+    $u = isset($z['unter']) ? (int) $z['unter'] : -1;
+    $passt = ($u === 1 && $p <= $e['ct'] + $e['hyst']) || ($u === 0 && $p >= $e['ct']);
+    $wann = function ($t) {
+        return (int) $t > 0 ? date('d.m. H:i', (int) $t) : oc_t('TEST.SCHWELLE_NIE_GEMELDET');
+    };
+    if (!$passt) {
+        return array(0, sprintf(oc_t('TEST.SCHWELLE_WIDERSPRUCH'), oc_schwelle_zahl($p), $u,
+            oc_schwelle_zahl($e['ct']), oc_schwelle_zahl($e['hyst'])));
+    }
+    return array(1, sprintf(oc_t('TEST.SCHWELLE_OK'), oc_schwelle_zahl($p), oc_schwelle_zahl($e['ct']),
+        oc_schwelle_zahl($e['hyst']), oc_t($u === 1 ? 'TEST.SCHWELLE_JA' : 'TEST.SCHWELLE_NEIN'),
+        $wann(isset($z['meld_u']) ? $z['meld_u'] : 0), $wann(isset($z['meld_o']) ? $z['meld_o'] : 0),
+        (int) $e['sperre'], max(0, $alter)));
+}
+
 /** Werte zu den Themen. */
 function oc_werte($st = null)
 {
     $cfg = oc_config();
     if ($st === null) { $st = oc_state(); }
+    $oc_sw = oc_schwelle_werte($st);
     $w = array(
         'ok'            => $st['ok'],
         'demo'          => $st['demo'],
@@ -3548,6 +3886,9 @@ function oc_werte($st = null)
         'audio'         => empty($cfg['notify']['audio']) ? 0 : 1,
         'push'          => empty($cfg['notify']['push']) ? 0 : 1,
         'ptest'         => oc_ptest_active(),
+        'schwelle/unter'         => $oc_sw['unter'],
+        'schwelle/meldung_unter' => $oc_sw['meld_u'],
+        'schwelle/meldung_ueber' => $oc_sw['meld_o'],
         'alter'         => $st['stand'] > 0 ? (int) round((time() - $st['stand']) / 60) : 9999,
     );
     /* Gruppe 5 / MQTT (1.1.26, Entwurf oc 2.3, E4): fehlende Werte MIT Vorzeichen gehen als -999 hinaus, nicht
@@ -3706,6 +4047,10 @@ function oc_retain_liste()
         'plan_budget2' => 1,
         /* Der eingetragene feste Arbeitspreis. */
         'fix'          => 1,
+        /* 1.1.37, Auftrag des Hausherrn vom 12.11.2026: der Zustand des Schwellen-Pushs geht zurueckbehalten
+         * hinaus. Aus, ohne gueltigen Preis und im Ausfall (oc_mqtt_ausfall_themen()) wird er 0 gesendet;
+         * stirbt der Minutenlauf, sagt es das Lebenszeichen. */
+        'schwelle/unter' => 1,
     );
 }
 
@@ -4213,7 +4558,10 @@ function oc_mqtt_ausfall_themen()
     /* Gruppe 5 / MQTT (1.1.26, Entwurf oc E3, wie aWATTar E6): dazu level, rank, rankd und rank_h - sie gehen im
      * Ausfall als -1 hinaus (fest gesetzt in oc_mqtt_publish()); sonst bliebe in Loxone eine alte Freigabe
      * "guenstig" stehen, solange der Laufzaehler laeuft. Preise bleiben weiter auf ihrem letzten Wert. */
-    return array('ok', 'alter', 'status/ok', 'status/ts', 'status/zaehler', 'level', 'rank', 'rankd', 'rank_h');
+    /* 1.1.37: dazu der Schwellen-Push - ohne gueltigen Preis ist schwelle/unter 0 (oc_schwelle_werte()), ein
+     * zurueckbehaltenes 1 bliebe sonst ueber den Ausfall hinweg stehen. */
+    return array('ok', 'alter', 'status/ok', 'status/ts', 'status/zaehler', 'level', 'rank', 'rankd', 'rank_h',
+                 'schwelle/unter', 'schwelle/meldung_unter', 'schwelle/meldung_ueber');
 }
 
 /** Wo der Merker der zuletzt gesendeten Werte liegt. */
@@ -4935,7 +5283,8 @@ function oc_thema_grenzen($einheit, $schluessel = '')
     /* Welle Bild 16 (1.1.25; Entwurf Welle 16 oc, Entscheidung 14): die 0/1-Felder MinVal 0 / MaxVal 1 statt
      * 0..999. Erst ein Eingang mit MaxVal 1 fuehrt in Loxone den digitalen Ausgang (Regeln/09); aWATTar fuehrt
      * diese Felder schon so. Bestehende Anlagen muessen nicht neu einlesen - nur die Grenzen aendern sich. */
-    if (in_array($k, array('ok', 'demo', 'cur_fehlt', 'neg', 'morgen_ok', 'co2_clean', 'ann', 'audio', 'push', 'ptest'), true)
+    if (in_array($k, array('ok', 'demo', 'cur_fehlt', 'neg', 'morgen_ok', 'co2_clean', 'ann', 'audio', 'push', 'ptest',
+                           'schwelle/unter', 'schwelle/meldung_unter', 'schwelle/meldung_ueber'), true)
         || preg_match('/^regel[0-9]+_aktiv$/', $k)) { return array(0, 1); }
     /* M5 (seit 1.1.16): die Grenze gegen den rechenbaren Wert. Ein Wert ueber
      * MaxVal wird im Miniserver zu 0 (Regeln/07). 'alter' traegt ohne je einen
@@ -5607,6 +5956,12 @@ function oc_sicherung_lesen($roh)
         /* 1.1.28: eine aeltere Sicherung kennt die Regeln nicht: Es gilt der geltende Stand. Der Vermerk reist nie mit. */
         if ($fk === 'ansage_regeln' || $fk === 'ansage_token_herkunft') {
             if (!array_key_exists($fk, $daten) || $fk === 'ansage_token_herkunft') { $oc_j = oc_config(); $neu[$fk] = $oc_j[$fk]; }
+            continue;
+        }
+        /* 1.1.37: eine Sicherung bis 1.1.36 kennt den Schwellen-Push nicht - es gilt der geltende Stand (ein
+         * eingeschalteter Schwellen-Push wird durch das Zurueckspielen nicht still abgeschaltet). */
+        if (in_array($fk, array('schwelle_ein', 'schwelle_ct', 'schwelle_hyst', 'schwelle_sperre'), true)) {
+            if (!array_key_exists($fk, $daten)) { $oc_j = oc_config(); $neu[$fk] = $oc_j[$fk]; }
             continue;
         }
         if (!array_key_exists($fk, $daten) && $fk !== 'befehle_mqtt_ein') {
@@ -6385,6 +6740,9 @@ function oc_mqtt_namen($praefix = null)
     $aus = array();
     $themen = oc_themen();
     $themen['status/befehle'] = array('BEFEHL.TH_STATUS', '');
+    /* 1.1.37: die Themen des Schwellen-Pushs gehoeren nur eingeschaltet in die Hakenliste (Gateway V2) - sonst
+     * verlangte sie nach dem Update auf jeder bestehenden Anlage drei Haken, und V2_HAKEN wuerde rot. */
+    $oc_sw_e = oc_schwelle_einstellung();
     foreach ($themen as $k => $info) {
         $einheit = isset($info[1]) ? (string) $info[1] : '';
         $g = ($k === 'status/befehle') ? array(-1, 1) : oc_thema_grenzen($einheit, $k);
@@ -6392,7 +6750,8 @@ function oc_mqtt_namen($praefix = null)
                        'bedeutung' => ($k === 'status/befehle') ? oc_t('BEFEHL.TH_STATUS') : oc_thema_text($info),
                        'einheit' => $einheit,
                        'bereich' => (0 + $g[0]) . ' … ' . (0 + $g[1]) . ($einheit !== '' ? ' ' . $einheit : ''),
-                       'im_muster' => isset($muster[$k]), 'haken' => isset($muster[$k]) || $k === 'status/befehle',
+                       'im_muster' => isset($muster[$k]), 'haken' => isset($muster[$k]) || $k === 'status/befehle'
+                           || ($oc_sw_e['ein'] && strpos($k, 'schwelle/') === 0),
                        'noncached' => isset($nc[$k]), 'retained' => $k !== 'status/befehle' && oc_retain_fuer($k) === 1);
     }
     return $aus;

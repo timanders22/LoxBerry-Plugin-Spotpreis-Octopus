@@ -7,6 +7,13 @@ HTTP-Endpunkt als Rückfallebene.
 
 ---
 
+## Neu in 1.1.37
+
+- **Schwellen-Push** (ab Werk aus), im Reiter *Einstellungen* unter „Schwellen-Push (unabhängig von den Stunden)“: eine Meldung, wenn der Endpreis unter eine eigene Schwelle fällt, und eine, wenn er wieder über Schwelle + Hysterese steigt – unabhängig von der Stundenliste und vom Haken „nur unter der Schwelle günstig“, die beide bleiben, wie sie sind. Je Richtung kommt in der Sperrzeit (Vorgabe 60 Minuten) höchstens eine Meldung. Nach dem Einschalten und nach jeder Änderung von Schwelle oder Hysterese wird der Ausgangszustand ohne Meldung übernommen; gemeldet wird ein Wechsel. Gerechnet wird mit dem Endpreis der laufenden Viertelstunde (`cur`); ein Ersatzwert (`cur_fehlt` = 1) zählt nicht.
+- Neue MQTT-Themen, dieselben wie in Spotpreis aWATTar: `schwelle/unter` (zurückbehalten, 1 = Preis unter der Schwelle), `schwelle/meldung_unter` und `schwelle/meldung_ueber` (je fünf Minuten 1 nach einer Meldung). In der HTTP-Zeile heißen sie `SCHWELLE_UNTER`, `SCHWELLE_MELDUNG_UNTER`, `SCHWELLE_MELDUNG_UEBER`. Den Push verschickt der Miniserver: einen Benachrichtigungsbaustein an `schwelle/meldung_unter` hängen. Unter Gateway V2 stehen die drei Themen nur bei eingeschaltetem Schwellen-Push in der Hakenliste.
+- Jede Auslösung steht als Zeile im Protokoll, auch eine gesperrte. Der Reiter *Test* rechnet die Zustandsfolge an einer Preisreihe nach und prüft, ob der Minutenlauf die Schwelle rechnet und der abgelegte Zustand zum Preis passt.
+- Eine Sicherung aus 1.1.36 oder früher wird weiter angenommen; die vier neuen Einstellungen behalten dann ihren geltenden Wert.
+
 ## Neu in 1.1.36
 
 - **Konfiguration wird vervollständigt:** Fehlen in `octopus.json` Einstellungen, die eine neuere Fassung mitbringt, trägt der Minutentakt sie jetzt einmal mit ihrer Vorgabe in die Datei ein, bevor er die Konfiguration liest. Das Protokoll nennt die ergänzten Namen, nie die Werte. Bisher ergänzte das Plugin fehlende Einstellungen nur beim Lesen; in die Datei kamen sie erst beim nächsten Speichern im Formular. Am Verhalten ändert sich nichts, denn die eingetragenen Werte sind dieselben Vorgaben, mit denen das Plugin bisher schon rechnete.
