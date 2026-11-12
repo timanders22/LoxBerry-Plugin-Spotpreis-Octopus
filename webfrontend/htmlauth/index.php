@@ -873,88 +873,84 @@ if ($oc_ist_post && isset($_POST['oc_zurueck'])) {
          * alles darueber wird gar nicht erst gelesen. */
         $oc_fehler[] = oc_t('EINST.SICH_ZU_GROSS');
     } else {
-        list($oc_neu, $oc_mangel, $oc_n, $oc_neu_zugang) = oc_sicherung_lesen(
-            (string) @file_get_contents($_FILES['oc_sicherung']['tmp_name']));
-        if ($oc_neu === null) {
-            /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
-             * nichts. */
-            $oc_fehler[] = oc_t('EINST.SICH_ABGELEHNT') . ' '
-                            . implode(' ', $oc_mangel);
-        } else {
+        $oc_roh = (string) @file_get_contents($_FILES['oc_sicherung']['tmp_name']);
+        /* 1.1.38: das gemeinsame Sicherungsmodul (sicherung_zurueckspielen()) liest, prueft, verwirft
+         * Unbekanntes mit Namen, laesst leere Werte den bisherigen stehen und aendert bei einer
+         * Beanstandung GAR NICHTS (alle Beanstandungen, nicht nur die erste). Die Schritte dieser Linie
+         * davor und danach stehen in den Rueckrufen - dieselben wie bis 1.1.37. */
+        $oc_b = oc_sicherung_beschreibung(false);
+        $oc_tok_alt = (string) $oc_cfg['aktionstoken'];
+        $oc_tok_lage = 'datei';
+        $oc_alt_praefix = (string) $oc_cfg['mqtt_topic'];
+        $oc_spaet = array();
+        $oc_b['jetzt'] = function () { return oc_config(); };
+        $oc_b['vorbereiten'] = function ($neu, $jetzt, $r) use (&$oc_tok_lage, &$oc_spaet) {
             /* ---- Das Aktionstoken (C5, O8; seit 1.1.16) ----
-             *
-             * Eine Sicherung mit LEEREM Token behaelt das laufende. Bis 1.1.15
-             * wurde dann still ein neues gewuerfelt, und darunter standen zwei
-             * Saetze, die sich widersprachen: "es wurde ein neues erzeugt" und
-             * "mit der Sicherung kam auch das Aktionstoken" (Pruefbericht
-             * oberflaeche, Befund 8). Jetzt eine Meldung, die stimmt: das
-             * laufende bleibt; ein neues nur, wenn es noch keines gab; der
-             * Hinweis "die Adressen muessen umgestellt werden" nur, wenn die
-             * Datei wirklich ein ANDERES Token brachte. */
-            $oc_tok_alt = (string) $oc_cfg['aktionstoken'];
-            $oc_tok_lage = 'datei';
-            if ((string) $oc_neu['aktionstoken'] === '') {
-                if ($oc_tok_alt !== '') {
-                    $oc_neu['aktionstoken'] = $oc_tok_alt;
-                    $oc_tok_lage = 'behalten';
+             * Eine Sicherung mit LEEREM Token behaelt das laufende (Regel 3 des Moduls, genannt).
+             * Ein neues nur, wenn es auch vorher keines gab. */
+            if ((string) $neu['aktionstoken'] === '') {
+                $neu['aktionstoken'] = oc_token_erzeugen();
+                $oc_tok_lage = 'neu';
+            } elseif (in_array('aktionstoken', $r['leer_behalten'], true)) {
+                $oc_tok_lage = 'behalten';
+            }
+            /* Alexa-NG (Ansage-2/3): das Sprechtoken steht nie in einer Sicherung (eine Datei, die
+             * eines traegt, weist die Pruefung ab) - das laufende bleibt. Ebenso der Vermerk. */
+            if (is_array($neu['tts'])) {
+                $neu['tts']['alexa_token'] = isset($jetzt['tts']['alexa_token']) ? (string) $jetzt['tts']['alexa_token'] : '';
+                $neu['tts']['google_token'] = isset($jetzt['tts']['google_token']) ? (string) $jetzt['tts']['google_token'] : '';
+            }
+            $neu['ansage_token_herkunft'] = isset($jetzt['ansage_token_herkunft']) ? $jetzt['ansage_token_herkunft'] : array();
+            /* Welle Mehrfach-Ziele (1.1.27): fehlt die Liste der weiteren Ziele in der Sicherung (aeltere
+             * Fassung), gelten die jetzigen weiteren Ziele (oc_sicherung_spaet(), genannt in der Meldung). */
+            list($neu, $oc_spaet) = oc_sicherung_spaet($neu, $jetzt);
+            return $neu;
+        };
+        $oc_b['speichern'] = function ($neu) { return oc_config_write($neu); };
+        $oc_b['zweitschrift'] = function () { $p = oc_paths(); return array($p['config'], $p['backup']); };
+        $oc_b['nachziehen'] = function ($neu, $jetzt, $r)
+                use (&$oc_fehler, &$oc_cfg, &$oc_zug, &$oc_fmt, &$oc_tok_lage, &$oc_spaet, $oc_tok_alt, $oc_alt_praefix, $oc_p) {
+            $h = array();
+            if ($oc_spaet) {
+                $h[] = sprintf(oc_t('EINST.SICH_SPAET'), oc_e(implode(', ', $oc_spaet)));
+            }
+            if ($oc_tok_lage === 'neu') {
+                $h[] = oc_t('EINST.SICH_TOKEN_LEER');
+            } elseif ($oc_tok_lage === 'datei' && (string) $neu['aktionstoken'] !== $oc_tok_alt) {
+                $h[] = oc_t('EINST.SICH_TOKEN_NEU');
+            }
+            /* Die Zugangsdaten kommen aus derselben Datei, gehen aber in ihre eigene mit Rechten 0600 -
+             * nicht in die Konfiguration, die die Oberflaeche anzeigt. */
+            $zg = isset($r['teile']['zugang']) && is_array($r['teile']['zugang']) ? $r['teile']['zugang'] : null;
+            if ($zg !== null) {
+                if (oc_zugang_write($zg['email'], $zg['passwort'], $zg['konto'])) {
+                    $h[] = oc_t('EINST.SICH_ZUGANG_DA');
                 } else {
-                    $oc_neu['aktionstoken'] = oc_token_erzeugen();
-                    $oc_tok_lage = 'neu';
+                    $oc_fehler[] = str_replace('%F%', oc_e($oc_p['zugang']), oc_t('MELDUNG.ZUGANG_FEHLER'));
                 }
             }
-            $oc_alt_praefix = (string) $oc_cfg['mqtt_topic'];
-            /* Alexa-NG (Ansage-2): das Sprechtoken steht nie in einer
-             * Sicherung (eine Datei, die eines traegt, weist die Pruefung ab) -
-             * das laufende bleibt. */
-            if (is_array($oc_neu['tts'])) {
-                $oc_neu['tts']['alexa_token'] = (string) $oc_cfg['tts']['alexa_token'];
-                $oc_neu['tts']['google_token'] = (string) $oc_cfg['tts']['google_token'];   // Ansage-3
-            }
-            /* Welle Mehrfach-Ziele (1.1.27): fehlt die Liste der weiteren Ziele in der Sicherung (aeltere Fassung),
-             * gelten die jetzigen weiteren Ziele (oc_sicherung_spaet(), genannt in der Meldung). */
-            list($oc_neu, $oc_spaet) = oc_sicherung_spaet($oc_neu, $oc_cfg);
-            if (!oc_config_write($oc_neu)) {
-                $oc_fehler[] = oc_t('EINST.SICH_SCHREIBFEHLER');
-            } else {
-                $oc_meldungen[] = sprintf(oc_t('EINST.SICH_UEBERNOMMEN'), $oc_n);
-                if ($oc_spaet) {
-                    $oc_meldungen[] = sprintf(oc_t('EINST.SICH_SPAET'), oc_e(implode(', ', $oc_spaet)));
-                }
-                if ($oc_tok_lage === 'behalten') {
-                    $oc_meldungen[] = oc_t('EINST.SICH_TOKEN_BEHALTEN');
-                } elseif ($oc_tok_lage === 'neu') {
-                    $oc_meldungen[] = oc_t('EINST.SICH_TOKEN_LEER');
-                } elseif ((string) $oc_neu['aktionstoken'] !== $oc_tok_alt) {
-                    $oc_meldungen[] = oc_t('EINST.SICH_TOKEN_NEU');
-                }
-
-                /* Die Zugangsdaten kommen aus derselben Datei, gehen aber
-                 * in ihre eigene mit Rechten 0600 - nicht in die
-                 * Konfiguration, die die Oberflaeche anzeigt. */
-                if (is_array($oc_neu_zugang)) {
-                    if (oc_zugang_write($oc_neu_zugang['email'], $oc_neu_zugang['passwort'],
-                                        $oc_neu_zugang['konto'])) {
-                        $oc_meldungen[] = oc_t('EINST.SICH_ZUGANG_DA');
-                    } else {
-                        $oc_fehler[] = str_replace('%F%', oc_e($oc_p['zugang']),
-                            oc_t('MELDUNG.ZUGANG_FEHLER'));
-                    }
-                }
-
-                $oc_cfg = oc_config();
-                $oc_zug = oc_zugang();
-                $oc_fmt = oc_formtoken($oc_cfg);
-                oc_weg(oc_tmpdir() . '/state.json');
-                oc_weg(oc_tmpdir() . '/laufend.json');
-                // Eine Sicherung kann das Praefix aendern - dann dasselbe Abraeumen (M2).
-                list($oc_pm, $oc_pf) = oc_ui_praefix_wechsel($oc_alt_praefix, (string) $oc_cfg['mqtt_topic']);
-                $oc_meldungen = array_merge($oc_meldungen, $oc_pm);
-                $oc_fehler = array_merge($oc_fehler, $oc_pf);
-                oc_log('Einstellungen zurueckgespielt: ' . $oc_n . ' Werte'
-                    . (is_array($oc_neu_zugang) ? ' samt Zugangsdaten' : '')
-                    . ', Aktionstoken: ' . $oc_tok_lage . '. Der Zustand wird neu gerechnet.');
-            }
-        }
+            $oc_cfg = oc_config();
+            $oc_zug = oc_zugang();
+            $oc_fmt = oc_formtoken($oc_cfg);
+            /* Den Dienst nachziehen und sagen, was mit ihm geschah (Regeln/05): Preis- und Regelzustand
+             * verwerfen, der naechste Lauf rechnet mit den zurueckgespielten Einstellungen. */
+            oc_weg(oc_tmpdir() . '/state.json');
+            oc_weg(oc_tmpdir() . '/laufend.json');
+            $h[] = oc_t('EINST.SICH_NEU_GERECHNET');
+            // Eine Sicherung kann das Praefix aendern - dann dasselbe Abraeumen (M2).
+            list($pm, $pf) = oc_ui_praefix_wechsel($oc_alt_praefix, (string) $oc_cfg['mqtt_topic']);
+            $h = array_merge($h, $pm);
+            $oc_fehler = array_merge($oc_fehler, $pf);
+            oc_log('Einstellungen zurueckgespielt: ' . (int) $r['anzahl'] . ' Werte'
+                . ($zg !== null ? ' samt Zugangsdaten' : '')
+                . ', Aktionstoken: ' . $oc_tok_lage . '. Der Zustand wird neu gerechnet.');
+            return $h;
+        };
+        $oc_b['log'] = 'oc_log';
+        $oc_r = sicherung_zurueckspielen($oc_b, $oc_roh);
+        $oc_m = sicherung_meldungen($oc_b, $oc_r);
+        foreach ($oc_m['fehler'] as $oc_x) { $oc_fehler[] = $oc_x; }
+        foreach ($oc_m['hinweise'] as $oc_x) { $oc_meldungen[] = $oc_x; }
     }
     $oc_tab = 'tab-settings';
 }

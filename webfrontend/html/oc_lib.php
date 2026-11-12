@@ -49,6 +49,10 @@ require_once __DIR__ . '/planer.php';
  * Kopf von sprachausgabe.php. Sie tut beim Laden nichts ausser Funktionen
  * anzulegen und antwortet bei direktem Aufruf mit 403. */
 require_once __DIR__ . '/sprachausgabe.php';
+/* 1.1.38: Das gemeinsame Sicherungsmodul (Abschrift von Werkzeuge/gemeinsam/sicherung.php, Auftrag des
+ * Hausherrn 12.11.2026): Einstellungen sichern und zurueckspielen nach denselben Regeln wie in den
+ * anderen Linien. Die Beschreibung dieser Linie steht in oc_sicherung_beschreibung(). */
+require_once __DIR__ . '/sicherung.php';
 
 
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
@@ -5782,197 +5786,170 @@ function oc_abo_text()
  * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene Werte,
  * Zugangsdaten|null) - VIER Felder, an jeder Rueckgabestelle.
  */
-function oc_sicherung_lesen($roh)
+function oc_sicherung_lesen($roh, &$r = null, $jetzt = null)
 {
+    /* 1.1.38: Lesen und Pruefen macht das gemeinsame Sicherungsmodul (sicherung_lesen(),
+     * Beschreibung oc_sicherung_beschreibung(); Auftrag des Hausherrn 12.11.2026). Bis 1.1.37
+     * stand hier eine eigene Schleife: ein unbekannter Schluessel OBEN wies die ganze Datei ab,
+     * einer IN EINEM BLOCK (regeln, notify, tts) ging still mit in octopus.json und die
+     * Zweitschrift (oc_lib.php:5903 "$neu[$k] = $w", gemessen 12.11.2026 mit
+     * Werkzeuge/sicherung_pruefstand.py, Klasse Z), und weitere Felder im Teil "zugang" fielen
+     * still weg. Seither: verworfen und mit Namen gemeldet, oben, im Block und im Teil zugang;
+     * eine Datei mit fremdem Kennzeichen _plugin oder ohne eines wird abgewiesen (seit 1.1.2
+     * schreibt der Sichern-Knopf _plugin = 'octopus'); ein leerer Wert ueberschreibt keinen
+     * bestehenden (auch das Kennwort im Teil zugang nicht). Wie bisher: jeder Wert geht durch
+     * oc_wert_pruefen() und oc_sicherung_feld_mangel(), die Schwellen werden zusammen geprueft,
+     * eine halb gueltige Datei aendert nichts, alle Beanstandungen werden gesammelt.
+     * Rueckgabe wie bisher - VIER Felder: array(Konfiguration|null, Beanstandungen[], Anzahl,
+     * Zugangsdaten|null); das volle Ergebnis des Moduls steht in $r. */
+    $b = oc_sicherung_beschreibung(false);
+    $r = sicherung_lesen($b, (string) $roh, is_array($jetzt) ? $jetzt : oc_config());
     $mangel = array();
-    $daten = json_decode((string) $roh, true);
-    if (!is_array($daten)) {
-        /* VIER Felder, wie an der anderen Rueckgabestelle. Bis 1.1.3
-         * standen hier drei, und die Aufrufstelle zerlegt in vier
-         * (webfrontend/htmlauth/index.php). Unter PHP 7.4 blieb das
-         * still, unter PHP 8.4 steht dann
-         * 'Warning: Undefined array key 3' ueber der Oberflaeche -
-         * gemessen an beiden Fassungen. E_WARNING ist von
-         * error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE) NICHT
-         * gedeckt, und display_errors steht in der Oberflaeche auf 1. */
-        return array(null, array(oc_t('EINST.SICH_KEIN_JSON')), 0, null);
+    foreach ($r['beanstandet'] as $x) {
+        $mangel[] = $x['text'] !== '' ? $x['text'] : sprintf(oc_t('EINST.SICH_WERT'), oc_e($x['name']));
     }
-    $neu = oc_vorgaben();
-    $bekannt = array_keys($neu);
+    $zugang = ($r['ok'] && isset($r['teile']['zugang']) && is_array($r['teile']['zugang'])) ? $r['teile']['zugang'] : null;
+    return array($r['ok'] ? $r['neu'] : null, $mangel, (int) $r['anzahl'], $zugang);
+}
+
+/**
+ * 1.1.38: Die Beschreibung dieser Linie fuer das gemeinsame Sicherungsmodul.
+ *
+ * Die Unterschluessel der Bloecke sind die, die diese Fassung liest und schreibt
+ * (gemessen 12.11.2026): je Regel die Schluessel von oc_regel_vorgabe() (mit
+ * plan_regel_vorgabe() aus planer.php), notify audio/push/hours/only_cheap/
+ * negative/tomorrow/lb/lb_stunden (oc_config()), tts oc_ansage_schluessel() und die
+ * Sprechtoken (ein gesichertes Sprechtoken weist oc_sicherung_feld_mangel() ab), je
+ * weiterem Ziel art/wo/laut/sprache/ein, ansage_regeln die Schluessel von
+ * ansage_regeln_vorgaben(), zugang email/passwort/konto. months ist eine Zahlenliste
+ * ohne Unterschluessel.
+ *
+ * Was fehlen darf (wie bis 1.1.37): ansage_regeln und die vier Schwellen-Schluessel
+ * (seit 1.1.28 bzw. 1.1.37) behalten den geltenden Wert, befehle_mqtt_ein (seit 1.1.26)
+ * geht auf die Vorgabe 0; ansage_token_herkunft kommt nie aus einer Datei.
+ * $mit_zugang: nur fuer den Kopf _zugang beim Sichern.
+ */
+function oc_sicherung_beschreibung($mit_zugang = false)
+{
+    $tts = array_merge(oc_ansage_schluessel(), ansage_geheim());
+    $tts_knoten = in_array('ziele', $tts, true)
+        ? array('ziele' => sicherung_liste(array('art', 'wo', 'laut', 'sprache', 'ein'))) : array();
     $schranken = oc_schranken();
-    $anzahl = 0;
-    $zugang = null;
-
-    foreach ($daten as $k => $w) {
-        /* ---- 1. Der eigene Kopf ----
-         * Schluessel mit fuehrendem Unterstrich sind Beschriftung, keine
-         * Einstellung: _hinweis, _plugin, _fassung, _stand. Sie werden
-         * uebersprungen und NICHT als fremd beanstandet - sonst wiese das
-         * Plugin seine eigene Datei ab. Genau dieser Fall ist anderswo im
-         * Haus schon einmal aufgetreten. */
-        if ((string) $k !== '' && $k[0] === '_') { continue; }
-
-        /* ---- 2. Die Zugangsdaten ----
-         * Sie stehen nur in der Datei, wenn beim Sichern der Haken gesetzt
-         * war. Sie gehoeren NICHT in die Konfiguration, sondern in ihre
-         * eigene Datei mit Rechten 0600 - deshalb hier herausgenommen und
-         * dem Aufrufer gesondert zurueckgegeben. */
-        if ((string) $k === 'zugang' && is_array($w)) {
-            /* O5 (seit 1.1.16): ein Feld statt einer Zeichenkette wird
-             * beanstandet, nicht zu '' gemacht. Bis 1.1.15 loeschte eine
-             * Sicherung mit zugang.email als Liste die gueltige Adresse, und
-             * die Meldung sagte "uebernommen" (Pruefbericht oberflaeche,
-             * Befund 5). */
-            $oc_zk_falsch = false;
-            foreach (array('email', 'passwort', 'konto') as $oc_zk) {
-                if (isset($w[$oc_zk]) && !is_string($w[$oc_zk])) {
-                    $mangel[] = sprintf(oc_t('EINST.SICH_WERT'), 'zugang.' . $oc_zk);
-                    $oc_zk_falsch = true;
-                }
-            }
-            if ($oc_zk_falsch) { continue; }
-            $zugang = array(
-                'email'    => oc_text(isset($w['email']) ? $w['email'] : '', 200),
-                'passwort' => (isset($w['passwort']) && !is_array($w['passwort']))
-                              ? (string) $w['passwort'] : '',
-                'konto'    => oc_text(isset($w['konto']) ? $w['konto'] : '', 40),
-            );
-            /* Nr. 19 (B-Nachzug 01.10.2026): was oc_text() veraendert hat
-             * (gekuerzt, Leerzeichen zusammengefasst, Steuerzeichen), ist nicht
-             * mehr der Wert aus der Datei - beanstandet statt still uebernommen. */
-            if (($zugang['email'] !== '' && !oc_email_gueltig($zugang['email']))
-                || (isset($w['email']) && $zugang['email'] !== trim($w['email']))) {
-                $mangel[] = sprintf(oc_t('EINST.SICH_WERT'), 'zugang.email');
-            }
-            if (($zugang['konto'] !== '' && !oc_konto_gueltig($zugang['konto']))
-                || (isset($w['konto']) && $zugang['konto'] !== trim($w['konto']))) {
-                $mangel[] = sprintf(oc_t('EINST.SICH_WERT'), 'zugang.konto');
-            }
-            $anzahl++;
-            continue;
-        }
-
-        /* ---- 3. Unbekannte Schluessel ----
-         * Eine Beanstandung, kein stiller Verlust: sie stammen aus einer
-         * anderen Fassung oder aus einem anderen Plugin. */
-        if ($k === 'ansage_token_herkunft') { continue; }     // S2: nie aus einer Datei
-        if ($k === 'ansage_regeln') {     // S2: ungueltig = abgewiesen, gueltig = uebernommen
-            $s2_g = '';
-            $s2_r = ansage_regeln_wert($w, $s2_g);
-            if ($s2_r === null) { $mangel[] = sprintf(oc_t('EINST.SICH_WERT'), 'ansage_regeln'); continue; }
-            $neu['ansage_regeln'] = $s2_r;
-            $anzahl++;
-            continue;
-        }
-        if (!in_array($k, $bekannt, true)) {
-            $mangel[] = sprintf(oc_t('EINST.SICH_FREMD'),
-                                 htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
-            continue;
-        }
-
-        /* ---- 4. Und jetzt der WERT ----
-         *
-         * DAS IST DIE HAELFTE, DIE GEFEHLT HAT. Bis 1.0.9 wurde nur der
-         * Schluessel geprueft. Gemessen mit zehn von Hand gebauten Dateien:
-         * NEUN wurden angenommen - ein MQTT-Praefix mit Zeilenumbruch, ein
-         * leeres Aktionstoken, "cheap" als Feld und als Text, eine
-         * PV-Adresse auf 127.0.0.1, eine Ansage-Vorlage auf einen fremden
-         * Rechner, ein negativer Jahresverbrauch, eine Fensterlaenge 999.
-         * Das Formular weist jeden dieser Werte ab; der Rueckspielweg tat
-         * es nicht.
-         *
-         * ABGEWIESEN, NICHT GEKAPPT: beim Speichern ueber das Formular ist
-         * Kappen richtig, denn der Bediener sieht das Ergebnis sofort. Bei
-         * einer Datei saehe niemand, dass aus 99999 kW eine 200 wurde. */
-        if (oc_wert_pruefen($k, $w, $schranken) !== '') {
-            $mangel[] = sprintf(oc_t('EINST.SICH_WERT'),
-                                 htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
-            continue;
-        }
-        /* Nr. 19 (B-Nachzug 01.10.2026): auch die Innereien der vier Felder.
-         * Bis 1.1.18 zaehlte nur, DASS es ein Feld ist; oc_config() klemmte
-         * danach still (regeln.0.n = 99 wurde 12, tts.volume = 500 wurde 100). */
-        $oc_innen = oc_sicherung_feld_mangel($k, $w);
-        if ($oc_innen) {
-            foreach ($oc_innen as $oc_in) {
-                $mangel[] = sprintf(oc_t('EINST.SICH_WERT'),
-                                     htmlspecialchars($oc_in, ENT_QUOTES, 'UTF-8'));
-            }
-            continue;
-        }
-        $neu[$k] = $w;
-        $anzahl++;
+    $schluessel = array(
+        'regeln' => sicherung_liste(array_keys(oc_regel_vorgabe())),
+        'notify' => sicherung_block(array('audio', 'push', 'hours', 'only_cheap', 'negative', 'tomorrow', 'lb', 'lb_stunden')),
+        'tts'    => sicherung_block($tts, $tts_knoten) + array('sichern' => 'ansage_sicherung_bereinigen'),
+        /* S2 (1.1.28): ungueltig = abgewiesen, gueltig = in der Form von ansage_regeln_wert() uebernommen. */
+        'ansage_regeln' => sicherung_block(array_keys(ansage_regeln_vorgaben())) + array(
+            'fehlt' => 'behalten',
+            'pruefen' => function ($w) {
+                $g = '';
+                return ansage_regeln_wert($w, $g) === null ? sprintf(oc_t('EINST.SICH_WERT'), 'ansage_regeln') : '';
+            },
+            'wandeln' => function ($w) { $g = ''; return ansage_regeln_wert($w, $g); }),
+        'zugang' => sicherung_block(array('email', 'passwort', 'konto')),
+        'befehle_mqtt_ein' => array('fehlt' => 'vorgabe'),
+    );
+    foreach (array('schwelle_ein', 'schwelle_ct', 'schwelle_hyst', 'schwelle_sperre') as $s) {
+        $schluessel[$s] = array('fehlt' => 'behalten');
     }
-    if ($anzahl === 0) {
-        $mangel[] = oc_t('EINST.SICH_LEER');
-    }
+    $p = oc_paths();
+    return array(
+        'kennzeichen' => 'octopus',
+        'hinweis' => 'Sicherung der Einstellungen des LoxBerry-Plugins Octopus Dynamic.'
+                   . ' Im Reiter Einstellungen unter "Einstellungen zurueckspielen"'
+                   . ' wieder einlesen. Die Sprechtoken fuer Alexa-NG und'
+                   . ' Chromecast 4 Lox NG stehen nie darin; beim Zurueckspielen'
+                   . ' bleiben die hinterlegten.',
+        'fassung' => 'oc_version',
+        'kopf' => array('_zugang' => $mit_zugang ? 'enthalten' : 'nicht enthalten'),
+        'vorgaben' => oc_vorgaben(),
+        'schluessel' => $schluessel,
+        'nie_aus_datei' => array('ansage_token_herkunft'),
+        'teile' => array('zugang' => 'oc_sicherung_zugang_lesen'),
+        'teile_jetzt' => array('zugang' => 'oc_zugang'),
+        'pruefen' => function ($k, $w) use ($schranken) {
+            if (oc_wert_pruefen($k, $w, $schranken) !== '') {
+                return sprintf(oc_t('EINST.SICH_WERT'), htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
+            }
+            /* Nr. 19 (B-Nachzug 01.10.2026): auch die Innereien der vier Felder. */
+            $t = array();
+            foreach (oc_sicherung_feld_mangel($k, $w) as $x) {
+                $t[] = sprintf(oc_t('EINST.SICH_WERT'), htmlspecialchars($x, ENT_QUOTES, 'UTF-8'));
+            }
+            return $t;
+        },
+        'quer' => 'oc_sicherung_quer',
+        't' => 'oc_t',
+        'e' => 'oc_e',
+        'home' => isset($p['home']) ? (string) $p['home'] : '',
+        'ordner' => isset($p['plugin']) ? (string) $p['plugin'] : '',
+    );
+}
 
-    /* ---- 5. Was nur im ZUSAMMENSPIEL falsch sein kann ----
-     *
-     * Einzeln sind 99 und 1 beide gueltige Schwellen. Zusammen ergeben sie
-     * ein Preisniveau, das nie "normal" wird. Das Formular weist die
-     * Kombination ab und meldet sie; oc_config() setzt sie stillschweigend
-     * auf die Vorgaben zurueck. Beim Zurueckspielen ist beides falsch: der
-     * Bediener saehe nicht, dass seine Schwellen verworfen wurden. */
+/**
+ * Der Teil "zugang" einer Sicherung (nur mit dem Haken beim Sichern). Er gehoert
+ * NICHT in die Konfiguration, sondern in zugang.json (0600). Rueckgabe fuer das
+ * Sicherungsmodul: array(Zugangsdaten|null, Beanstandungen[]). Unbekannte Felder
+ * hat das Modul schon verworfen und genannt, ein leeres Feld traegt den geltenden
+ * Wert (Regel 3).
+ */
+function oc_sicherung_zugang_lesen($w)
+{
+    if (!is_array($w)) {
+        return array(null, array(sprintf(oc_t('EINST.SICH_WERT'), 'zugang')));
+    }
+    /* O5 (seit 1.1.16): ein Feld statt einer Zeichenkette wird beanstandet, nicht zu ''
+     * gemacht. Bis 1.1.15 loeschte eine Sicherung mit zugang.email als Liste die
+     * gueltige Adresse, und die Meldung sagte "uebernommen". */
+    $mangel = array();
+    foreach (array('email', 'passwort', 'konto') as $oc_zk) {
+        if (isset($w[$oc_zk]) && !is_string($w[$oc_zk])) {
+            $mangel[] = sprintf(oc_t('EINST.SICH_WERT'), 'zugang.' . $oc_zk);
+        }
+    }
+    if ($mangel) { return array(null, $mangel); }
+    $zugang = array(
+        'email'    => oc_text(isset($w['email']) ? $w['email'] : '', 200),
+        'passwort' => isset($w['passwort']) ? (string) $w['passwort'] : '',
+        'konto'    => oc_text(isset($w['konto']) ? $w['konto'] : '', 40),
+    );
+    /* Nr. 19 (B-Nachzug 01.10.2026): was oc_text() veraendert hat, ist nicht mehr der
+     * Wert aus der Datei - beanstandet statt still uebernommen. */
+    if (($zugang['email'] !== '' && !oc_email_gueltig($zugang['email']))
+        || (isset($w['email']) && $zugang['email'] !== trim($w['email']))) {
+        $mangel[] = sprintf(oc_t('EINST.SICH_WERT'), 'zugang.email');
+    }
+    if (($zugang['konto'] !== '' && !oc_konto_gueltig($zugang['konto']))
+        || (isset($w['konto']) && $zugang['konto'] !== trim($w['konto']))) {
+        $mangel[] = sprintf(oc_t('EINST.SICH_WERT'), 'zugang.konto');
+    }
+    return $mangel ? array(null, $mangel) : array($zugang, array());
+}
+
+/**
+ * Was nur im ZUSAMMENSPIEL falsch sein kann (wie bis 1.1.37): einzeln sind 99 und 1
+ * beide gueltige Schwellen, zusammen ergeben sie ein Preisniveau, das nie "normal"
+ * wird; und die Regelliste ist eine LISTE von Regeln - ein Text darin kaeme durch die
+ * Typpruefung, und oc_config() machte daraus eine Regel aus lauter Vorgabewerten.
+ * Rueckgabe fuer das Sicherungsmodul: Liste von array(Name, Text).
+ */
+function oc_sicherung_quer($neu)
+{
+    $aus = array();
     if (oc_zahl($neu['cheap'], 20.0, -1000, 1000) >= oc_zahl($neu['expensive'], 35.0, -1000, 1000)) {
-        $mangel[] = oc_t('EINST.SICH_SCHWELLEN');
+        $aus[] = array('cheap', oc_t('EINST.SICH_SCHWELLEN'));
     }
-
-    /* Die Regelliste ist eine LISTE von Regeln. Ein Feld mit Text darin
-     * kaeme durch die Typpruefung, und oc_config() machte daraus eine
-     * Regel aus lauter Vorgabewerten - ohne ein Wort. */
     if (is_array($neu['regeln'])) {
         foreach ($neu['regeln'] as $rk => $rv) {
             if (!is_array($rv)) {
-                $mangel[] = sprintf(oc_t('EINST.SICH_WERT'),
-                    'regeln.' . htmlspecialchars((string) $rk, ENT_QUOTES, 'UTF-8'));
+                $aus[] = array('regeln', sprintf(oc_t('EINST.SICH_WERT'),
+                    'regeln.' . htmlspecialchars((string) $rk, ENT_QUOTES, 'UTF-8')));
                 break;
             }
         }
     }
-
-    /* Alles oder nichts: eine halb gueltige Datei ueberschreibt GAR NICHTS. */
-    /* FEHLENDE Schluessel sind eine Beanstandung, kein stiller Rueckfall.
-     *
-     * Bis hierher war die Vorgabenliste der Ausgangspunkt, und nur was in
-     * der Datei stand wurde darueber geschrieben. Eine Datei mit einem
-     * einzigen Schluessel lief damit ohne Beanstandung durch, wurde
-     * gespeichert, und alle uebrigen Einstellungen fielen auf Werk
-     * zurueck - quittiert mit "1 Wert uebernommen".
-     *
-     * Gemessen an VolkswagenID 0.9.11 am 03.09.2026 unter PHP 7.4 und 8.4:
-     * dort fiel dabei auch das Aktionstoken auf '', und jede im Miniserver
-     * eingetragene Adresse war stumm ungueltig. Am 07.09.2026 ueber den
-     * Bestand ausgerollt (30 Linien).
-     *
-     * Der Hausstandard sagt: eine halb gueltige Datei aendert gar nichts.
-     * Verglichen wird gegen die VORGABEN, nicht gegen $bekannt: was
-     * ausserhalb der Konfigurationsdatei liegt - Zugangsdaten in einer
-     * eigenen Datei - faellt nicht auf Werk zurueck und darf hier fehlen. */
-    $fehlend = array();
-    foreach (array_keys(oc_vorgaben()) as $fk) {
-        /* Gruppe 5 / MQTT (1.1.26, Entwurf oc 3.3): eine Sicherung bis 1.1.25 kennt den Haken der
-         * Befehlsbruecke nicht - damals gab es keine Bruecke. Sie ergibt "aus" (Vorgabe 0) ohne Beanstandung. */
-        /* 1.1.28: eine aeltere Sicherung kennt die Regeln nicht: Es gilt der geltende Stand. Der Vermerk reist nie mit. */
-        if ($fk === 'ansage_regeln' || $fk === 'ansage_token_herkunft') {
-            if (!array_key_exists($fk, $daten) || $fk === 'ansage_token_herkunft') { $oc_j = oc_config(); $neu[$fk] = $oc_j[$fk]; }
-            continue;
-        }
-        /* 1.1.37: eine Sicherung bis 1.1.36 kennt den Schwellen-Push nicht - es gilt der geltende Stand (ein
-         * eingeschalteter Schwellen-Push wird durch das Zurueckspielen nicht still abgeschaltet). */
-        if (in_array($fk, array('schwelle_ein', 'schwelle_ct', 'schwelle_hyst', 'schwelle_sperre'), true)) {
-            if (!array_key_exists($fk, $daten)) { $oc_j = oc_config(); $neu[$fk] = $oc_j[$fk]; }
-            continue;
-        }
-        if (!array_key_exists($fk, $daten) && $fk !== 'befehle_mqtt_ein') {
-            $fehlend[] = $fk;
-        }
-    }
-    if ($fehlend) {
-        $mangel[] = sprintf(oc_t('EINST.SICH_FEHLEND'), count($fehlend),
-            htmlspecialchars(implode(', ', $fehlend), ENT_QUOTES, 'UTF-8'));
-    }
-    return array($mangel ? null : $neu, $mangel, $anzahl, $mangel ? null : $zugang);
+    return $aus;
 }
 
 /**
@@ -6090,25 +6067,24 @@ function oc_wert_pruefen($k, $w, $schranken = null)
  */
 function oc_sicherung_bauen($mit_zugang = false)
 {
-    /* Kopf und volle Konfiguration (mit dem Haken samt Zugangsdaten) kommen
-     * aus oc_sicherung_teile() - derselben Stelle, die X-3 prueft. */
-    list($kopf, $cfg) = oc_sicherung_teile($mit_zugang);
-    /* X-3 (Verbesserungsbau 30.09.2026): Wuerde das Zurueckspielen genau
-     * dieser Datei abgewiesen, sagt es auch die Datei selbst - als
-     * Kopfschluessel, den das Einlesen uebergeht, und nur mit den Namen der
-     * Schluessel, nie mit Werten. Geliefert wird sie trotzdem. */
-    $mangel = oc_sicherung_altwerte($mit_zugang);
-    if ($mangel) {
-        $kopf['_warnung'] = 'Diese Sicherung wuerde beim Zurueckspielen abgewiesen: '
-            . implode(' ', $mangel) . ' - in der Oberflaeche berichtigen und neu sichern.';
+    /* 1.1.38: Kopf und volle Konfiguration (mit dem Haken samt Zugangsdaten) baut das
+     * gemeinsame Sicherungsmodul (oc_sicherung_daten() -> sicherung_bauen()). X-3 wie
+     * bisher: wuerde das Zurueckspielen genau dieser Datei abgewiesen, sagt es die Datei
+     * selbst im Kopf _warnung, nur mit den Namen der Schluessel, nie mit Werten; geliefert
+     * wird sie trotzdem. json_encode kann scheitern - dann '' und der Aufrufer meldet einen
+     * Fehler, statt eine 0-Byte-Datei zu liefern, die wie eine Sicherung aussieht. */
+    return sicherung_json(oc_sicherung_daten($mit_zugang));
+}
+
+/** 1.1.38: Die Sicherung als Feld (Kopf mit _plugin, _fassung, _stand, _zugang und Inhalt). */
+function oc_sicherung_daten($mit_zugang = false)
+{
+    $teile = array();
+    if ($mit_zugang) {
+        $z = oc_zugang();
+        $teile['zugang'] = array('email' => $z['email'], 'passwort' => $z['passwort'], 'konto' => $z['konto']);
     }
-    $daten = $kopf + $cfg;
-    $js = json_encode($daten,
-        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    /* json_encode kann false liefern. Ein blankes "echo json_encode(...);
-     * exit;" haette dann eine 0-Byte-Datei geliefert, die wie eine
-     * Sicherung aussieht. Der Aufrufer meldet stattdessen einen Fehler. */
-    return $js === false ? '' : $js;
+    return sicherung_bauen(oc_sicherung_beschreibung($mit_zugang), oc_config(), $teile);
 }
 
 /**
@@ -6126,30 +6102,15 @@ function oc_sicherung_bauen($mit_zugang = false)
  */
 function oc_sicherung_teile($mit_zugang = false)
 {
-    $cfg = array_intersect_key(oc_config(), oc_vorgaben());
-    /* Das Sprechtoken fuer Alexa-NG geht nie mit (Ansage-2, wie in der
-     * Sprachsteuerung): es ist ein Kennwort des anderen Plugins, und das
-     * Zurueckspielen behaelt das laufende. */
-    // ebenso das Google-Sprechtoken (Ansage-3); seit 1.1.21 aus der gemeinsamen Sprachausgabe
-    $cfg['tts'] = ansage_sicherung_bereinigen($cfg['tts']);
-    unset($cfg['ansage_token_herkunft']);     // 1.1.28
-    $kopf = array(
-        '_hinweis' => 'Sicherung der Einstellungen des LoxBerry-Plugins Octopus Dynamic.'
-                    . ' Im Reiter Einstellungen unter "Einstellungen zurueckspielen"'
-                    . ' wieder einlesen. Die Sprechtoken fuer Alexa-NG und'
-                    . ' Chromecast 4 Lox NG stehen nie darin; beim Zurueckspielen'
-                    . ' bleiben die hinterlegten.',
-        '_plugin'  => 'octopus',
-        '_fassung' => oc_version(),
-        '_stand'   => date('Y-m-d H:i:s'),
-        '_zugang'  => $mit_zugang ? 'enthalten' : 'nicht enthalten',
-    );
-    if ($mit_zugang) {
-        $z = oc_zugang();
-        $cfg['zugang'] = array(
-            'email' => $z['email'], 'passwort' => $z['passwort'], 'konto' => $z['konto'],
-        );
+    /* 1.1.38: aus oc_sicherung_daten() (gemeinsames Sicherungsmodul) - der Kopf (Schluessel mit
+     * Unterstrich) und der Inhalt getrennt, wie bis 1.1.37. Sprechtoken und der Vermerk
+     * ansage_token_herkunft gehen nie mit (Beschreibung: 'sichern', 'nie_aus_datei'). */
+    $kopf = array();
+    $cfg = array();
+    foreach (oc_sicherung_daten($mit_zugang) as $k => $v) {
+        if ((string) $k !== '' && ((string) $k)[0] === '_') { $kopf[$k] = $v; } else { $cfg[$k] = $v; }
     }
+    unset($kopf['_warnung']);
     return array($kopf, $cfg);
 }
 

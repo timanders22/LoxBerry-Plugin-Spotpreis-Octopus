@@ -7,6 +7,16 @@ HTTP-Endpunkt als Rückfallebene.
 
 ---
 
+## Neu in 1.1.38
+
+- **Verhalten geändert – Einstellungen sichern und zurückspielen nach der gemeinsamen Vorlage:** Die Knöpfe im Reiter *Einstellungen* arbeiten jetzt mit demselben Sicherungsmodul wie die übrigen Plugins dieser Reihe. Für den Anwender ändert sich:
+  - Eine Einstellung, die diese Fassung nicht kennt, wird nicht übernommen und mit ihrem Namen gemeldet, nie mit ihrem Wert – oben in der Datei, in den Blöcken (Regeln, Benachrichtigung, Sprachausgabe) und im Teil mit den Zugangsdaten. Die übrigen Einstellungen werden zurückgespielt. Bis 1.1.37 wies ein unbekannter Name oben die ganze Datei ab, einer in einem Block ging still in die Konfiguration und die Zweitschrift, und ein unbekanntes Feld bei den Zugangsdaten fiel still weg.
+  - Ein leerer Wert in der Sicherung überschreibt keinen bestehenden, auch nicht das Kennwort bei den Zugangsdaten; der bisherige Wert bleibt, und die Meldung nennt den Namen.
+  - Eine Datei ohne das Kennzeichen `_plugin` wird als Ganzes abgewiesen; jede Sicherung dieses Plugins seit 1.1.2 trägt es. Der Kopf nennt wie bisher die Fassung.
+  - Nach dem Zurückspielen sagt die Meldung, dass der gespeicherte Preis- und Regelzustand verworfen wurde und der nächste Lauf ihn neu rechnet.
+- Unverändert: Eine Datei mit einem unzulässigen Wert ändert gar nichts, und alle Beanstandungen werden genannt. Aktionstoken und – mit dem Haken – die Zugangsdaten gehören in die Datei, die Sprechtoken nicht. Die Zweitschrift zieht mit.
+- Gemessen mit einem Prüfstand auf dem Arbeitsrechner unter PHP 7.4 und 8.4, der über einen Webserver die echten Knöpfe drückt, mit den Sicherungen aller 36 Vorfassungen von 1.1.2 bis 1.1.37 (alle angenommen); am Gerät nicht gemessen.
+
 ## Neu in 1.1.37
 
 - **Schwellen-Push** (ab Werk aus), im Reiter *Einstellungen* unter „Schwellen-Push (unabhängig von den Stunden)“: eine Meldung, wenn der Endpreis unter eine eigene Schwelle fällt, und eine, wenn er wieder über Schwelle + Hysterese steigt – unabhängig von der Stundenliste und vom Haken „nur unter der Schwelle günstig“, die beide bleiben, wie sie sind. Je Richtung kommt in der Sperrzeit (Vorgabe 60 Minuten) höchstens eine Meldung. Nach dem Einschalten und nach jeder Änderung von Schwelle oder Hysterese wird der Ausgangszustand ohne Meldung übernommen; gemeldet wird ein Wechsel. Gerechnet wird mit dem Endpreis der laufenden Viertelstunde (`cur`); ein Ersatzwert (`cur_fehlt` = 1) zählt nicht.
