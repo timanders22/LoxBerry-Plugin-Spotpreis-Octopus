@@ -44,6 +44,42 @@
  *   7. Alles uebrige verhaelt sich wie bisher in der Linie: welche Schluessel
  *      fehlen duerfen ('fehlt'), welche Werte gelten ('pruefen', 'quer'),
  *      was vor dem Speichern noch geschieht ('vorbereiten').
+ *   8. Seit 1.1.0 (Entscheidung des Hausherrn 12.11.2026, Welle 1): der Knopf
+ *      "Einstellungen zurueckspielen" wirkt nur mit gesetztem Haken
+ *      (Feld SICHERUNG_HAKEN = zurueck_ok, Wert 1). Ohne Haken wird nichts
+ *      gelesen und nichts geaendert, und die Meldung sagt es. Zeile, Feldname,
+ *      Text und Pruefung kommen aus diesem Modul (sicherung_haken_zeile(),
+ *      sicherung_eingang()); keine Linie baut den Haken selbst. Ebenso prueft
+ *      sicherung_eingang() die hochgeladene Datei (is_uploaded_file(), Groesse
+ *      'max_byte') fuer alle Linien gleich, bevor sie gelesen wird.
+ *   9. Seit 1.2.0 (Entscheidung des Hausherrn 12.11.2026: "Ja, alle acht ins
+ *      Modul"): was die Linien in Welle 1 um das Modul herum bauten, kann das
+ *      Modul selbst - Rohwert an 'pruefen' und 'quer', flache Teile
+ *      ('teile_flach'), eigene Warnsaetze ('warnung'), ein Muster fuer fruehere
+ *      Kennzeichen ('kennzeichen_frueher_muster'), 'umbenennen', 'fehlt' fuer
+ *      Unterschluessel in Bloecken, Hinweise aus Teilen und fehlt_vorgabe in der
+ *      Meldung, und 'vorbedingung'. Alles wahlfrei; ohne die Schluessel bleibt
+ *      alles wie in 1.1.0.
+ *  10. Seit 1.2.1 (Entscheidung des Hausherrn 12.11.2026: "Ja, 1.2.1 bauen"):
+ *      ein Schluessel aus 'nie_aus_datei' (ein Vermerk) behaelt beim
+ *      Zurueckspielen seinen geltenden Wert, wenn er in der geltenden
+ *      Konfiguration steht; sonst bleibt alles wie bisher (Vorgabe, wenn er in
+ *      'vorgaben' steht, sonst fehlt er). Er kommt nie aus der Datei und wird
+ *      nie gesichert. Bis 1.2.0 begann die neue Konfiguration bei den Vorgaben,
+ *      und der Vermerk ging verloren (gemessen am Geraet 12.11.2026, AWM-Abfuhr:
+ *      ansage_token_herkunft fehlte danach, uebernommene Sprechtoken galten als
+ *      von Hand eingetragen). Setzt 'vorbehandeln' ihn, gilt dieser Wert.
+ *  11. Seit 1.2.2 (Entscheidung des Hausherrn 13.11.2026: "Weg (b), Modul
+ *      1.2.2"): fehlt ein Schluessel mit 'fehlt' => 'behalten' in der Datei
+ *      und hat der Rueckruf 'vorbehandeln' der Linie fuer ihn einen Wert
+ *      gesetzt (eine Uebergangsregel der Linie, etwa aus einem anderen
+ *      Schluessel derselben Datei), bleibt dieser Wert; er ging wie jeder Wert
+ *      durch Regel 4. Die Meldung nennt ihn mit K_FEHLT_UEBERGANG, nicht als
+ *      Werkseinstellung und nicht als behalten ($r['fehlt_uebergang']). Bis
+ *      1.2.1 setzte 'behalten' auch dann den geltenden Wert und ueberschrieb
+ *      die Regel (Alexa-NG Gruppe 6a, Chromecast4lox Gruppe 6b fuehrten deshalb
+ *      'vorgabe', und die Meldung sagte faelschlich "Werkseinstellung").
+ *      Setzt 'vorbehandeln' nichts, bleibt alles wie bisher.
  *
  * Die Funktionen tragen das neutrale Kuerzel 'sicherung_' (wie 'ansage_' in
  * sprachausgabe.php). Laufen zwei Abschriften in einem PHP-Prozess, laedt sich
@@ -62,6 +98,19 @@
  *   'kennzeichen'  Pflicht. Wert von _plugin, /^[A-Za-z0-9_.\-]{1,80}\z/.
  *                  Ein bestehendes Kennzeichen einer Linie bleibt, wie es ist.
  *   'kennzeichen_frueher'  Liste frueherer Kennzeichen derselben Linie.
+ *   'kennzeichen_frueher_muster'  (1.2.0) regulaerer Ausdruck fuer fruehere
+ *                  Kennzeichen, die einen Teil der Anlage trugen (Ordner).
+ *   'umbenennen'   (1.2.0) Name in der Datei => heutiger Name, vor allen Regeln;
+ *                  nur wenn der heutige Name in der Datei fehlt (z. B. _amazon).
+ *   'teile_flach'  (1.2.0) Teil => Praefix: der Teil steht in der Datei als
+ *                  flache Schluessel <praefix><feld> (BYD zugang_benutzer ...);
+ *                  Regel 2, 3 und 'fehlt' gelten je Feld wie in einem Block,
+ *                  Namen in den Meldungen wie in der Datei.
+ *   'warnung'      (1.2.0) function ($cfg) -> Liste von Saetzen (ohne Werte),
+ *                  die sicherung_bauen() an _warnung anhaengt.
+ *   'vorbedingung' (1.2.0) function ($neu, $jetzt, $r) -> Liste von Saetzen:
+ *                  nicht leer heisst, es wird nicht gespeichert; die Meldung
+ *                  nennt diese Saetze statt K_SCHREIBFEHLER.
  *   'hinweis'      Text fuer _hinweis (sagt, von welchem Plugin die Datei ist
  *                  und dass sie Geheimnisse traegt). Ohne Angabe K_HINWEIS.
  *   'fassung'      Fassung fuer _fassung: Text oder function () -> Text.
@@ -79,10 +128,17 @@
  *                    'zuordnung' (liste) Feld, ueber das ein Eintrag der
  *                              Datei seinem Gegenstueck am Ziel zugeordnet
  *                              wird (fuer Regel 3); '' = keine Zuordnung
- *                    'fehlt'   nur oben: 'pflicht' (ab Werk) | 'vorgabe' |
- *                              'behalten' (geltender Wert, wird genannt)
- *                    'pruefen' function ($wert, $name, $neu) -> '' | Text |
- *                              Liste von Texten; ersetzt $b['pruefen']
+ *                    'fehlt'   oben: 'pflicht' (ab Werk) | 'vorgabe' |
+ *                              'behalten' (geltender Wert, wird genannt);
+ *                              seit 1.2.0 auch an Unterschluesseln eines
+ *                              Blocks: 'behalten' (Name block.feld genannt);
+ *                              seit 1.2.2 oben: setzt 'vorbehandeln' den
+ *                              fehlenden Schluessel, bleibt dessen Wert
+ *                              (Name in 'fehlt_uebergang')
+ *                    'pruefen' function ($wert, $name, $neu, $roh) -> '' | Text |
+ *                              Liste von Texten; ersetzt $b['pruefen']. $roh
+ *                              (seit 1.2.0): der Wert, wie er in der Datei
+ *                              steht, vor Regel 2 und 3 (null = fehlt)
  *                    'wandeln' function ($wert) -> Wert, nach bestandener
  *                              Pruefung (Normalform der Linie)
  *                    'sichern' function ($wert) -> Wert beim Sichern
@@ -94,20 +150,26 @@
  *   'alt'          Schluessel frueherer Fassungen, die still uebergangen
  *                  werden (wie bisher in der Linie).
  *   'nie_aus_datei' Schluessel, die nie aus einer Datei kommen (Vermerke);
- *                  still uebergangen, nie gesichert.
+ *                  still uebergangen, nie gesichert. Seit 1.2.1 behaelt ein
+ *                  solcher Schluessel beim Zurueckspielen seinen geltenden
+ *                  Wert ($jetzt), wenn er dort steht.
  *   'teile'        Name => function ($wert, $jetzt) -> array(Wert|null,
- *                  Beanstandungen[]); Teile der Datei, die nicht in die
+ *                  Beanstandungen[] [, Hinweise[] seit 1.2.0]); Teile der Datei, die nicht in die
  *                  Konfiguration gehen (eigene Geheimnisdatei). Ergebnis in
  *                  $r['teile'][Name]. Steht der Name auch in 'schluessel'
  *                  (als block), gelten Regel 2 und 3 auch dort; der geltende
  *                  Stand kommt aus 'teile_jetzt'[Name] (Wert oder Funktion).
- *   'pruefen'      function ($schluessel, $wert, $neu) -> '' | Text | Liste.
- *   'quer'         function ($neu, $r) -> Liste von array(Name, Text).
+ *   'pruefen'      function ($schluessel, $wert, $neu, $roh) -> '' | Text | Liste.
+ *   'quer'         function ($neu, $r, $daten) -> Liste von array(Name, Text);
+ *                  $daten (seit 1.2.0) die Datei vor Regel 2 und 3.
  *   'uebersetzer'  function ($daten) -> array|null: nur fuer eine Datei OHNE
  *                  Kennzeichen. Eine alte eigene Sicherung kommt (gegebenenfalls
  *                  umgeschrieben) zurueck, alles andere null.
  *   'vorbehandeln' function ($daten, $jetzt, $roh) -> $daten: nach Regel 2
  *                  und 3, vor der Pruefung (Bloecke vervollstaendigen ...).
+ *                  Seit 1.2.2: ein Wert, den sie fuer einen in der Datei
+ *                  fehlenden Schluessel mit 'fehlt' => 'behalten' setzt
+ *                  (Uebergangsregel), bleibt und wird so genannt.
  *   'jetzt'        function () -> die geltende Konfiguration.
  *   't'            function ($schluessel) -> Text (wie xx_t()); Abschnitt
  *                  'abschnitt', ab Werk SICHERUNG.
@@ -137,7 +199,15 @@
  *   'leer_behalten' Namen leerer Werte, deren bisheriger Wert bleibt (Regel 3)
  *   'fehlt_behalten' Namen, die fehlen und den geltenden Wert behalten
  *   'fehlt_vorgabe' Namen, die fehlen und auf die Vorgabe gehen
+ *   'fehlt_uebergang' (1.2.2) Namen, die fehlen und deren Wert 'vorbehandeln'
+ *                   gesetzt hat ('fehlt' => 'behalten'; Uebergangsregel der Linie)
  *   'teile'         Ergebnisse der Teile
+ *   'teile_hinweise' (1.2.0) Hinweise der Teile (fertige Saetze)
+ * Ein Ergebnis von sicherung_zurueckspielen() traegt seit 1.2.0 dazu
+ *   'vorbedingung'  Saetze der Vorbedingung (leer = erfuellt oder nicht gefragt)
+ * Ein Ergebnis von sicherung_eingang(), das vor dem Lesen endete, traegt dazu
+ *   'abbruch'       'haken' | 'datei' | 'gross' (sonst fehlt der Schluessel)
+ * und die Felder von sicherung_zurueckspielen() ('gespeichert' false).
  * Alle Namen stammen aus der Datei und gehen durch sicherung_name(): kein
  * Zeilenumbruch, kein Semikolon, hoechstens 64 Zeichen. Werte stehen in
  * keinem Feld ausser 'neu' und 'teile'.
@@ -159,9 +229,11 @@ if (PHP_SAPI !== 'cli') {
 
 if (!defined('SICHERUNG_FASSUNG')) {
 
-define('SICHERUNG_FASSUNG', '1.0.0');
+define('SICHERUNG_FASSUNG', '1.2.2');
 /** Groesste Sicherungsdatei, die gelesen wird (Byte). */
 define('SICHERUNG_MAX_BYTE', 262144);
+/** Feldname des Hakens "Zurueckspielen bestaetigen" (seit 1.1.0; Wert 1). */
+define('SICHERUNG_HAKEN', 'zurueck_ok');
 
 /* ==================================================================
  * Bausteine der Beschreibung
@@ -294,8 +366,17 @@ function sicherung_beschreibung_mangel(array $b)
     if (!isset($b['kennzeichen']) || !sicherung_namensform($b['kennzeichen'])) { $m[] = 'kennzeichen'; }
     if (!isset($b['vorgaben']) || !is_array($b['vorgaben']) || !$b['vorgaben']) { $m[] = 'vorgaben'; }
     foreach (array('pruefen', 'quer', 'uebersetzer', 'vorbehandeln', 'jetzt', 't', 'e', 'sperre', 'freigeben',
-                   'vorbereiten', 'speichern', 'zweitschrift', 'nachziehen', 'log', 'fassung') as $f) {
+                   'vorbereiten', 'speichern', 'zweitschrift', 'nachziehen', 'log', 'fassung', 'warnung',
+                   'vorbedingung') as $f) {
         if (isset($b[$f]) && $f !== 'fassung' && !is_callable($b[$f])) { $m[] = $f; }
+    }
+    // 1.2.0: die wahlfreien Angaben muessen die beschriebene Form haben (sonst fiele ein Tippfehler still durch)
+    if (isset($b['umbenennen']) && !is_array($b['umbenennen'])) { $m[] = 'umbenennen'; }
+    if (isset($b['teile_flach']) && (!is_array($b['teile_flach']) || !isset($b['teile']) || !is_array($b['teile'])
+        || array_diff_key($b['teile_flach'], $b['teile']))) { $m[] = 'teile_flach'; }
+    if (isset($b['kennzeichen_frueher_muster'])
+        && (!is_string($b['kennzeichen_frueher_muster']) || @preg_match($b['kennzeichen_frueher_muster'], '') === false)) {
+        $m[] = 'kennzeichen_frueher_muster';
     }
     return $m;
 }
@@ -339,13 +420,28 @@ function sicherung_bauen(array $b, array $cfg, array $teile = array())
         if (in_array($k, $nie, true) || !array_key_exists($k, $cfg)) { continue; }
         $inhalt[$k] = sicherung_knoten_sichern(sicherung_knoten($b, $k), $cfg[$k]);
     }
+    $flach = isset($b['teile_flach']) && is_array($b['teile_flach']) ? $b['teile_flach'] : array();
     foreach ($teile as $k => $v) {
-        if (is_string($k) && isset($b['teile'][$k])) { $inhalt[$k] = $v; }
+        if (!is_string($k) || !isset($b['teile'][$k])) { continue; }
+        if (isset($flach[$k]) && is_array($v)) {
+            // 1.2.0: ein flacher Teil steht als <praefix><feld> in der Datei
+            foreach ($v as $f => $fw) { $inhalt[(string) $flach[$k] . (string) $f] = $fw; }
+            continue;
+        }
+        $inhalt[$k] = $v;
     }
     $daten = $kopf + $inhalt;
     $namen = sicherung_selbstpruefung($b, $daten, $cfg);
-    if ($namen) {
-        $daten = $kopf + array('_warnung' => sprintf(sicherung_t('K_WARNUNG', $b), implode(', ', $namen))) + $inhalt;
+    $saetze = array();
+    if ($namen) { $saetze[] = sprintf(sicherung_t('K_WARNUNG', $b), implode(', ', $namen)); }
+    if (isset($b['warnung']) && is_callable($b['warnung'])) {
+        // 1.2.0: eigene Warnsaetze der Linie (nur Namen und Gruende, nie Werte) haengen an _warnung
+        foreach ((array) call_user_func($b['warnung'], $cfg) as $s) {
+            if (is_string($s) && $s !== '') { $saetze[] = $s; }
+        }
+    }
+    if ($saetze) {
+        $daten = $kopf + array('_warnung' => implode(' ', $saetze)) + $inhalt;
     }
     return $daten;
 }
@@ -383,7 +479,8 @@ function sicherung_ergebnis()
     return array('ok' => false, 'neu' => null, 'anzahl' => 0, 'eigen' => '', 'fremd' => '',
                  'kennzeichen_datei' => '', 'fassung_datei' => '', 'beanstandet' => array(),
                  'verworfen' => array(), 'leer_behalten' => array(), 'fehlt_behalten' => array(),
-                 'fehlt_vorgabe' => array(), 'teile' => array());
+                 'fehlt_vorgabe' => array(), 'teile' => array(), 'teile_hinweise' => array(),
+                 'fehlt_uebergang' => array());
 }
 
 /** Eine Beanstandung aufnehmen ($text: '' | Text | Liste). */
@@ -402,13 +499,22 @@ function sicherung_beanstanden(array &$r, $name, $text)
  * $r['leer_behalten']). Rueckgabe: der bereinigte Wert. Was keine Form eines
  * Blocks oder einer Liste hat, bleibt unveraendert - das entscheidet die Pruefung.
  */
-function sicherung_knoten_reinigen(array $knoten, $w, $j, $pfad, array &$r)
+function sicherung_knoten_reinigen(array $knoten, $w, $j, $pfad, array &$r, $trenner = '.')
 {
     $art = isset($knoten['art']) ? $knoten['art'] : 'wert';
     if ($art === 'block' && is_array($w)) {
         $schl = isset($knoten['schluessel']) && is_array($knoten['schluessel']) ? $knoten['schluessel'] : array();
+        /* 1.2.0: ein Unterschluessel mit 'fehlt' => 'behalten', den die Datei nicht traegt, bekommt den geltenden
+         * Wert und wird genannt (wie oben; ein Feld, das eine fruehere Fassung noch nicht kannte). */
+        foreach ($schl as $sk => $sknoten) {
+            if (is_array($sknoten) && isset($sknoten['fehlt']) && $sknoten['fehlt'] === 'behalten'
+                && !array_key_exists($sk, $w) && is_array($j) && array_key_exists($sk, $j)) {
+                $w[$sk] = $j[$sk];
+                $r['fehlt_behalten'][] = $pfad . $trenner . sicherung_name($sk);
+            }
+        }
         foreach (array_keys($w) as $sk) {
-            $name = $pfad . '.' . sicherung_name($sk);
+            $name = $pfad . $trenner . sicherung_name($sk);
             if (!array_key_exists((string) $sk, $schl)) {
                 $r['verworfen'][] = $name;
                 unset($w[$sk]);
@@ -478,10 +584,14 @@ function sicherung_lesen(array $b, $roh, $jetzt = null)
     if (array_key_exists('_plugin', $daten)) {
         $kz = $daten['_plugin'];
         $r['kennzeichen_datei'] = sicherung_namensform($kz) ? $kz : '?';
+        $muster = isset($b['kennzeichen_frueher_muster']) && is_string($b['kennzeichen_frueher_muster'])
+            ? $b['kennzeichen_frueher_muster'] : '';
         if ($kz === $b['kennzeichen']) {
             $r['eigen'] = 'kennzeichen';
         } elseif (is_string($kz) && in_array($kz, $frueher, true)) {
             $r['eigen'] = 'frueher';
+        } elseif (is_string($kz) && $muster !== '' && strlen($kz) <= 200 && preg_match($muster, $kz) === 1) {
+            $r['eigen'] = 'frueher';     // 1.2.0: ein frueheres Kennzeichen nach Muster (Teil der Anlage darin)
         } else {
             $r['fremd'] = 'kennzeichen';
             sicherung_beanstanden($r, '_plugin', $r['kennzeichen_datei'] !== '?'
@@ -506,6 +616,30 @@ function sicherung_lesen(array $b, $roh, $jetzt = null)
     $nie = isset($b['nie_aus_datei']) && is_array($b['nie_aus_datei']) ? $b['nie_aus_datei'] : array();
     $teile = isset($b['teile']) && is_array($b['teile']) ? $b['teile'] : array();
 
+    /* 1.2.0: Namen frueherer Fassungen umbenennen (vor allen Regeln, nur wenn der heutige fehlt) und flache Teile
+     * (<praefix><feld>) zu ihrem Teil sammeln. */
+    if (isset($b['umbenennen']) && is_array($b['umbenennen'])) {
+        $um = array();
+        foreach ($daten as $k => $w) {
+            $k = (string) $k;
+            $n = isset($b['umbenennen'][$k]) && is_string($b['umbenennen'][$k]) ? $b['umbenennen'][$k] : $k;
+            if ($n !== $k && array_key_exists($n, $daten)) { $n = $k; }
+            $um[$n] = $w;
+        }
+        $daten = $um;
+    }
+    $flach = isset($b['teile_flach']) && is_array($b['teile_flach']) ? $b['teile_flach'] : array();
+    foreach ($flach as $tn => $px) {
+        $px = (string) $px;
+        if ($px === '' || array_key_exists($tn, $daten)) { continue; }
+        $sammel = array();
+        foreach ($daten as $k => $w) {
+            $k = (string) $k;
+            if (strpos($k, $px) === 0 && strlen($k) > strlen($px)) { $sammel[substr($k, strlen($px))] = $w; unset($daten[$k]); }
+        }
+        if ($sammel) { $daten[$tn] = $sammel; }
+    }
+
     /* ---- Regel 2 und 3: Unbekanntes verwerfen, Leeres stehen lassen ---- */
     $bereit = array();
     foreach ($daten as $k => $w) {
@@ -519,11 +653,19 @@ function sicherung_lesen(array $b, $roh, $jetzt = null)
             if (isset($b['schluessel'][$k]) && is_array($b['schluessel'][$k])) {
                 $tj = isset($b['teile_jetzt'][$k]) ? $b['teile_jetzt'][$k] : null;
                 if (is_callable($tj)) { $tj = call_user_func($tj); }
-                $w = sicherung_knoten_reinigen($b['schluessel'][$k], $w, $tj, $k, $r);
+                $w = isset($flach[$k])      // 1.2.0: Namen eines flachen Teils wie in der Datei (zugang_benutzer)
+                    ? sicherung_knoten_reinigen($b['schluessel'][$k], $w, $tj, '', $r, (string) $flach[$k])
+                    : sicherung_knoten_reinigen($b['schluessel'][$k], $w, $tj, $k, $r);
             }
             $tw = call_user_func($teile[$k], $w, $jetzt);
-            $tw = is_array($tw) ? array_pad($tw, 2, array()) : array(null, array());
-            if ($tw[1]) { sicherung_beanstanden($r, $k, $tw[1]); } else { $r['teile'][$k] = $tw[0]; $r['anzahl']++; }
+            $tw = is_array($tw) ? array_pad($tw, 3, array()) : array(null, array(), array());
+            if ($tw[1]) {
+                sicherung_beanstanden($r, $k, $tw[1]);
+            } else {
+                $r['teile'][$k] = $tw[0];
+                $r['anzahl']++;
+                foreach ((array) $tw[2] as $th) { if (is_string($th) && $th !== '') { $r['teile_hinweise'][] = $th; } }
+            }
             continue;
         }
         if (!array_key_exists($k, $vorgaben)) {
@@ -545,15 +687,21 @@ function sicherung_lesen(array $b, $roh, $jetzt = null)
 
     /* ---- Regel 4: jeden Wert pruefen, alles sammeln ---- */
     $neu = $vorgaben;
+    /* 1.2.1: ein Vermerk ('nie_aus_datei') behaelt seinen geltenden Wert; aus der Datei kommt er nie (Regel 2 oben
+     * uebergeht ihn). Steht er nicht in $jetzt, bleibt es wie bis 1.2.0. Was 'vorbehandeln' setzt, gilt danach. */
+    foreach ($nie as $k) {
+        if (is_string($k) && array_key_exists($k, $jetzt)) { $neu[$k] = $jetzt[$k]; }
+    }
     foreach ($bereit as $k => $w) {
         if (!array_key_exists($k, $vorgaben)) { continue; }
         if (in_array($k, $r['leer_behalten'], true)) { $neu[$k] = $w; $r['anzahl']++; continue; }
         $knoten = sicherung_knoten($b, $k);
         $grund = '';
+        $roh = array_key_exists($k, $daten) ? $daten[$k] : null;     // 1.2.0: wie in der Datei, vor Regel 2 und 3
         if (isset($knoten['pruefen']) && is_callable($knoten['pruefen'])) {
-            $grund = call_user_func($knoten['pruefen'], $w, $k, $neu);
+            $grund = call_user_func($knoten['pruefen'], $w, $k, $neu, $roh);
         } elseif (isset($b['pruefen']) && is_callable($b['pruefen'])) {
-            $grund = call_user_func($b['pruefen'], $k, $w, $neu);
+            $grund = call_user_func($b['pruefen'], $k, $w, $neu, $roh);
         }
         if ($grund !== '' && $grund !== array() && $grund !== null) {
             sicherung_beanstanden($r, $k, $grund);
@@ -573,6 +721,13 @@ function sicherung_lesen(array $b, $roh, $jetzt = null)
         if ($f === 'vorgabe') {
             $r['fehlt_vorgabe'][] = $k;
         } elseif ($f === 'behalten') {
+            /* 1.2.2: der Schluessel fehlt in der Datei; steht er trotzdem in $bereit, hat ihn 'vorbehandeln'
+             * gesetzt (vor 'vorbehandeln' traegt $bereit nur Schluessel aus der Datei). Dieser Wert ging oben
+             * durch Regel 4 und bleibt; genannt wird er als solcher, nicht als behalten. */
+            if (array_key_exists($k, $bereit)) {
+                $r['fehlt_uebergang'][] = $k;
+                continue;
+            }
             if (array_key_exists($k, $jetzt)) { $neu[$k] = $jetzt[$k]; }
             $r['fehlt_behalten'][] = $k;
         } else {
@@ -583,8 +738,19 @@ function sicherung_lesen(array $b, $roh, $jetzt = null)
         sicherung_beanstanden($r, implode(',', $fehlend),
             sprintf(sicherung_t('K_FEHLEND', $b), count($fehlend), sicherung_e(implode(', ', $fehlend), $b)));
     }
+    // 1.2.0: ein flacher Teil, von dem die Datei kein Feld traegt - seine Felder mit 'fehlt' => 'behalten' werden
+    // genannt wie in einer Fassung, die den Teil noch nicht kannte (der Teil selbst bleibt dann unberuehrt).
+    foreach ($flach as $tn => $px) {
+        if (array_key_exists($tn, $daten) || !isset($b['schluessel'][$tn]['schluessel'])
+            || !is_array($b['schluessel'][$tn]['schluessel'])) { continue; }
+        foreach ($b['schluessel'][$tn]['schluessel'] as $sk => $sknoten) {
+            if (is_array($sknoten) && isset($sknoten['fehlt']) && $sknoten['fehlt'] === 'behalten') {
+                $r['fehlt_behalten'][] = (string) $px . sicherung_name($sk);
+            }
+        }
+    }
     if (isset($b['quer']) && is_callable($b['quer'])) {
-        foreach ((array) call_user_func($b['quer'], $neu, $r) as $q) {
+        foreach ((array) call_user_func($b['quer'], $neu, $r, $daten) as $q) {
             if (is_array($q) && count($q) >= 2) { sicherung_beanstanden($r, (string) $q[0], (string) $q[1]); }
         }
     }
@@ -595,7 +761,7 @@ function sicherung_lesen(array $b, $roh, $jetzt = null)
     $r['leer_behalten'] = sicherung_einmal($r['leer_behalten']);
     $r['ok'] = !$r['beanstandet'];
     $r['neu'] = $r['ok'] ? $neu : null;
-    if (!$r['ok']) { $r['teile'] = array(); }
+    if (!$r['ok']) { $r['teile'] = array(); $r['teile_hinweise'] = array(); }
     return $r;
 }
 
@@ -619,6 +785,7 @@ function sicherung_zurueckspielen(array $b, $roh)
     $r['gespeichert'] = false;
     $r['zweitschrift'] = '';
     $r['dienst'] = array();
+    $r['vorbedingung'] = array();
     if ($r['ok']) {
         $neu = $r['neu'];
         if (isset($b['vorbereiten']) && is_callable($b['vorbereiten'])) {
@@ -626,7 +793,13 @@ function sicherung_zurueckspielen(array $b, $roh)
             if (is_array($vb)) { $neu = $vb; }
         }
         $r['neu'] = $neu;
-        $r['gespeichert'] = (isset($b['speichern']) && is_callable($b['speichern']))
+        if (isset($b['vorbedingung']) && is_callable($b['vorbedingung'])) {
+            // 1.2.0: was vor dem Speichern erfuellt sein muss; nicht erfuellt heisst nicht gespeichert, mit diesen Saetzen
+            foreach ((array) call_user_func($b['vorbedingung'], $neu, $jetzt, $r) as $s) {
+                if (is_string($s) && $s !== '') { $r['vorbedingung'][] = $s; }
+            }
+        }
+        $r['gespeichert'] = (!$r['vorbedingung'] && isset($b['speichern']) && is_callable($b['speichern']))
             ? (bool) call_user_func($b['speichern'], $neu, $jetzt, $r) : false;
         if ($r['gespeichert'] && isset($b['zweitschrift']) && is_callable($b['zweitschrift'])) {
             $r['zweitschrift'] = sicherung_zweitschrift_lage(call_user_func($b['zweitschrift']));
@@ -667,10 +840,13 @@ function sicherung_protokollzeile(array $r)
        . ($r['eigen'] === 'uebersetzt' ? ', aeltere Sicherung ohne Kennzeichen' : '')
        . ($r['fassung_datei'] !== '' ? ', aus Fassung ' . $r['fassung_datei'] : '');
     foreach (array('verworfen' => 'verworfen', 'leer_behalten' => 'leer, bisheriger Wert bleibt',
-                   'fehlt_behalten' => 'fehlt, bisheriger Wert bleibt') as $f => $t) {
+                   'fehlt_behalten' => 'fehlt, bisheriger Wert bleibt',
+                   'fehlt_uebergang' => 'fehlt, Wert aus einer Uebergangsregel der Linie') as $f => $t) {
         if (!empty($r[$f])) { $z .= '; ' . $t . ': ' . implode(', ', array_slice($r[$f], 0, 20)); }
     }
-    if (isset($r['gespeichert']) && !$r['gespeichert']) { $z .= '; NICHT gespeichert'; }
+    if (isset($r['gespeichert']) && !$r['gespeichert']) {
+        $z .= '; NICHT gespeichert' . (!empty($r['vorbedingung']) ? ' (Vorbedingung nicht erfuellt)' : '');
+    }
     if (isset($r['zweitschrift']) && $r['zweitschrift'] !== '' && $r['zweitschrift'] !== 'mit') {
         $z .= '; Zweitschrift ' . $r['zweitschrift'];
     }
@@ -695,12 +871,21 @@ function sicherung_meldungen(array $b, array $r)
         return array('fehler' => $f, 'hinweise' => $h);
     }
     if (isset($r['gespeichert']) && !$r['gespeichert']) {
-        $f[] = sicherung_t('K_SCHREIBFEHLER', $b);
+        if (!empty($r['vorbedingung']) && is_array($r['vorbedingung'])) {
+            // 1.2.0: die Saetze der Vorbedingung sagen, warum nicht gespeichert wurde - kein zweiter Satz dazu
+            foreach ($r['vorbedingung'] as $s) { $f[] = (string) $s; }
+        } else {
+            $f[] = sicherung_t('K_SCHREIBFEHLER', $b);
+        }
         return array('fehler' => $f, 'hinweise' => $h);
     }
     $h[] = sprintf(sicherung_t('K_UEBERNOMMEN', $b), (int) $r['anzahl']);
     if ($r['eigen'] === 'uebersetzt') { $h[] = sicherung_t('K_ALT_ERKANNT', $b); }
-    $listen = array('verworfen' => 'K_VERWORFEN', 'leer_behalten' => 'K_LEER_BEHALTEN', 'fehlt_behalten' => 'K_FEHLT_BEHALTEN');
+    if (!empty($r['teile_hinweise']) && is_array($r['teile_hinweise'])) {
+        foreach ($r['teile_hinweise'] as $s) { $h[] = (string) $s; }     // 1.2.0: Hinweise der Teile, fertige Saetze
+    }
+    $listen = array('verworfen' => 'K_VERWORFEN', 'leer_behalten' => 'K_LEER_BEHALTEN', 'fehlt_behalten' => 'K_FEHLT_BEHALTEN',
+                    'fehlt_uebergang' => 'K_FEHLT_UEBERGANG', 'fehlt_vorgabe' => 'K_FEHLT_VORGABE');
     foreach ($listen as $feld => $id) {
         if (!empty($r[$feld])) { $h[] = sprintf(sicherung_t($id, $b), sicherung_e(implode(', ', $r[$feld]), $b)); }
     }
@@ -711,6 +896,79 @@ function sicherung_meldungen(array $b, array $r)
         foreach ($r['dienst'] as $d) { $h[] = $d; }
     }
     return array('fehler' => $f, 'hinweise' => $h);
+}
+
+/* ==================================================================
+ * Der Knopf "Einstellungen zurueckspielen": Haken und Datei (seit 1.1.0)
+ * ================================================================== */
+
+/**
+ * Die Formularzeile mit dem Haken, fertig maskiert. Sie steht in jeder Linie im
+ * Formular des Knopfes "Einstellungen zurueckspielen", unmittelbar vor dem Knopf.
+ * Ab Werk ist der Haken aus.
+ */
+function sicherung_haken_zeile(array $b)
+{
+    return '<div class="sm-feld"><label><input data-role="none" type="checkbox" name="' . SICHERUNG_HAKEN
+         . '" value="1"> ' . sicherung_e(sicherung_t('K_HAKEN', $b), $b) . '</label></div>';
+}
+
+/**
+ * Der Eingang des Knopfes: ist der Haken gesetzt, kam eine Datei ueber das Formular
+ * (is_uploaded_file()) und ist sie nicht groesser als 'max_byte'? Erst dann wird
+ * sie gelesen. $post = $_POST, $files = $_FILES, $feld = Name des Dateifelds.
+ * Rueckgabe array(Text der Datei, null) - dann ruft die Linie
+ * sicherung_zurueckspielen() mit dem Text - oder array(null, Ergebnis) mit
+ * 'abbruch' (siehe Kopf); die Meldung dazu gibt sicherung_meldungen(). Ohne
+ * Haken wird die Datei nicht angesehen. Schreibt nichts.
+ */
+function sicherung_eingang(array $b, array $post, array $files, $feld)
+{
+    $datei = (is_string($feld) && isset($files[$feld]) && is_array($files[$feld])) ? $files[$feld] : null;
+    return sicherung_eingang_lage($b, $post, $datei, 'is_uploaded_file');
+}
+
+/**
+ * Wie sicherung_eingang() fuer eine Datei-Angabe $datei (ein Eintrag von $_FILES
+ * oder null); $hochgeladen ist die Pruefung "kam ueber das Formular", in der
+ * Linie immer is_uploaded_file (der Selbsttest gibt eine eigene).
+ */
+function sicherung_eingang_lage(array $b, array $post, $datei, $hochgeladen)
+{
+    $max = isset($b['max_byte']) && is_int($b['max_byte']) && $b['max_byte'] > 0 ? $b['max_byte'] : SICHERUNG_MAX_BYTE;
+    $abbruch = function ($art, $text) {
+        $r = sicherung_ergebnis();
+        $r['abbruch'] = $art;
+        $r['fremd'] = $art === 'gross' ? 'gross' : '';
+        $r['gespeichert'] = false;
+        $r['zweitschrift'] = '';
+        $r['dienst'] = array();
+        sicherung_beanstanden($r, '-', $text);
+        return array(null, $r);
+    };
+    if (!isset($post[SICHERUNG_HAKEN]) || $post[SICHERUNG_HAKEN] !== '1') {
+        return $abbruch('haken', sicherung_t('K_HAKEN_FEHLT', $b));
+    }
+    $gross = sprintf(sicherung_t('K_ZU_GROSS', $b), (int) ($max / 1024));
+    if (is_array($datei) && isset($datei['error'])
+        && in_array((int) $datei['error'], array(UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE), true)) {
+        return $abbruch('gross', $gross);
+    }
+    if (!is_array($datei) || !isset($datei['tmp_name']) || !is_string($datei['tmp_name']) || $datei['tmp_name'] === ''
+        || !is_callable($hochgeladen) || !call_user_func($hochgeladen, $datei['tmp_name'])) {
+        return $abbruch('datei', sicherung_t('K_KEINE_DATEI', $b));
+    }
+    if (!isset($datei['size']) || (int) $datei['size'] > $max) {
+        return $abbruch('gross', $gross);
+    }
+    $roh = @file_get_contents($datei['tmp_name'], false, null, 0, $max + 1);
+    if (!is_string($roh)) {
+        return $abbruch('datei', sicherung_t('K_KEINE_DATEI', $b));
+    }
+    if (strlen($roh) > $max) {
+        return $abbruch('gross', $gross);
+    }
+    return array($roh, null);
 }
 
 /* ==================================================================
@@ -728,7 +986,8 @@ function sicherung_sprachschluessel()
     return array('K_HINWEIS', 'K_WARNUNG', 'K_BESCHREIBUNG', 'K_ZU_GROSS', 'K_KEIN_JSON', 'K_FREMD',
                  'K_FREMD_OHNE_NAME', 'K_OHNE_KENNZEICHEN', 'K_FEHLEND', 'K_LEER', 'K_WERT', 'K_ABGELEHNT',
                  'K_SCHREIBFEHLER', 'K_UEBERNOMMEN', 'K_ALT_ERKANNT', 'K_VERWORFEN', 'K_LEER_BEHALTEN',
-                 'K_FEHLT_BEHALTEN', 'K_ZWEITSCHRIFT');
+                 'K_FEHLT_BEHALTEN', 'K_ZWEITSCHRIFT', 'K_HAKEN', 'K_HAKEN_FEHLT', 'K_KEINE_DATEI', 'K_FEHLT_VORGABE',
+                 'K_FEHLT_UEBERGANG');
 }
 
 /* ==================================================================
@@ -821,7 +1080,8 @@ function sicherung_selbsttest()
     $pruef('eigen thema', $r['neu']['thema'], 'alt');
     $pruef('eigen zugang', $r['teile']['zugang']['kennwort'], $GEHEIM);
     $pruef('eigen fassung datei', $r['fassung_datei'], '9.8.7');
-    $pruef('eigen vermerk kommt nicht aus der datei', $r['neu']['vermerk'] ?? 'fehlt', 'fehlt');
+    // 1.2.1: der Vermerk steht nicht in der Datei und behaelt den geltenden Wert (bis 1.2.0 fehlte er danach)
+    $pruef('eigen vermerk behaelt den geltenden wert', $r['neu']['vermerk'] ?? 'fehlt', 'v');
 
     // --- Regel 2: Unbekanntes oben, im Block, in der Liste ---
     $d2 = $daten;
@@ -966,8 +1226,270 @@ function sicherung_selbsttest()
     $pruef('beschreibung ohne kennzeichen', sicherung_beschreibung_mangel(array('vorgaben' => array('a' => 1))), array('kennzeichen'));
     $pruef('fassung ohne quelle', sicherung_fassung_lesen(array()), '');
     $pruef('namensform', array(sicherung_namensform('a.b-c_1'), sicherung_namensform("a\n"), sicherung_namensform('')), array(true, false, false));
-    $pruef('schluessel zahl', count(sicherung_sprachschluessel()), 19);
-    $pruef('schluessel eindeutig', count(array_unique(sicherung_sprachschluessel())), 19);
+    $pruef('schluessel zahl', count(sicherung_sprachschluessel()), 24);
+    $pruef('schluessel eindeutig', count(array_unique(sicherung_sprachschluessel())), 24);
+
+    // --- 1.2.0 (a) Rohwert an 'pruefen' und 'quer' ---
+    $gesehen = array();
+    $ba = $b;
+    $ba['schluessel']['tts']['pruefen'] = function ($w, $k, $neu, $roh = 'fehlt') use (&$gesehen) {
+        $gesehen['tts'] = array(is_array($w) ? $w['ip'] : '?', is_array($roh) ? $roh['ip'] : $roh);
+        return '';
+    };
+    $ba['quer'] = function ($neu, $r, $daten = 'fehlt') use (&$gesehen) {
+        $gesehen['quer'] = is_array($daten) && isset($daten['tts']['ip']) ? $daten['tts']['ip'] : $daten;
+        return array();
+    };
+    $r = sicherung_lesen($ba, json_encode($d3), $jetzt);
+    $pruef('roh: pruefen sieht Wert nach Regel 3 und Rohwert', isset($gesehen['tts']) ? $gesehen['tts'] : null,
+           array('192.168.1.5', ''));
+    $pruef('roh: quer sieht die Datei vor Regel 3', isset($gesehen['quer']) ? $gesehen['quer'] : null, '');
+    $gesehen = array();
+    $bo = $b;
+    $bo['pruefen'] = function ($k, $w, $neu, $roh = 'fehlt') use (&$gesehen) {
+        if ($k === 'tts') { $gesehen['oben'] = array(isset($w['zz_tief']), is_array($roh) && isset($roh['zz_tief'])); }
+        return '';
+    };
+    sicherung_lesen($bo, json_encode($d2), $jetzt);
+    $pruef('roh: oberes pruefen sieht den Rohwert (vor Regel 2)', isset($gesehen['oben']) ? $gesehen['oben'] : null,
+           array(false, true));
+
+    // --- 1.2.0 (b) flache Teile, (f) 'fehlt' im Block, (g) Hinweise aus Teilen ---
+    $ZJ = array('a' => 'Alt-A', 'b' => 'Alt-B');
+    $bf = array('kennzeichen' => 'flach', 'vorgaben' => array('x' => 1),
+                'schluessel' => array('z' => sicherung_block(array('a', 'b'), array('b' => array('fehlt' => 'behalten')))),
+                'teile' => array('z' => function ($w) {
+                    if (!is_array($w) || !isset($w['a']) || !isset($w['b'])) { return array(null, array('z unvollstaendig')); }
+                    return array($w, array(), array('Hinweis aus Teil z.'));
+                }),
+                'teile_flach' => array('z' => 'z_'), 'teile_jetzt' => array('z' => $ZJ),
+                't' => function ($s) { return $s . ' [%s]'; });
+    $df = sicherung_bauen($bf, array('x' => 2), array('z' => array('a' => 'A1', 'b' => 'B1')));
+    $pruef('flach: bauen schreibt z_a und z_b', array(isset($df['z_a']) ? $df['z_a'] : null, isset($df['z_b']) ? $df['z_b'] : null,
+           isset($df['z'])), array('A1', 'B1', false));
+    $r = sicherung_lesen($bf, json_encode($df), array('x' => 1));
+    $pruef('flach: zurueck als Teil', array($r['ok'], $r['teile']['z']), array(true, array('a' => 'A1', 'b' => 'B1')));
+    $pruef('flach: Hinweis des Teils im Ergebnis', $r['teile_hinweise'], array('Hinweis aus Teil z.'));
+    $m = sicherung_meldungen($bf, $r);
+    $pruef('flach: Hinweis des Teils in der Meldung', in_array('Hinweis aus Teil z.', $m['hinweise'], true), true);
+    $df2 = $df;
+    $df2['z_a'] = '';
+    $df2['z_q'] = 'boese';
+    unset($df2['z_b']);
+    $r = sicherung_lesen($bf, json_encode($df2), array('x' => 1));
+    $pruef('flach: Regel 3, Regel 2 und fehlt je Feld, Namen wie in der Datei',
+           array($r['ok'], $r['teile']['z'], $r['leer_behalten'], $r['verworfen'], $r['fehlt_behalten']),
+           array(true, array('a' => 'Alt-A', 'b' => 'Alt-B'), array('z_a'), array('z_q'), array('z_b')));
+    $df3 = $df;
+    unset($df3['z_a'], $df3['z_b']);
+    $r = sicherung_lesen($bf, json_encode($df3), array('x' => 1));
+    $pruef('flach: Teil fehlt ganz - Teil unberuehrt, Felder mit behalten genannt',
+           array($r['ok'], isset($r['teile']['z']), $r['fehlt_behalten']), array(true, false, array('z_b')));
+    $bf2 = $bf;
+    $bf2['teile_flach'] = array('fremd' => 'q_');
+    $pruef('flach: Teil ohne Eintrag in teile ist ein Mangel', sicherung_beschreibung_mangel($bf2), array('teile_flach'));
+    $d6 = $daten;
+    unset($d6['tts']['mode']);
+    $bb = $b;
+    $bb['schluessel']['tts']['schluessel']['mode'] = array('fehlt' => 'behalten');
+    $r = sicherung_lesen($bb, json_encode($d6), $jetzt);
+    $pruef('fehlt im Block: geltender Wert und Name', array($r['ok'], $r['neu']['tts']['mode'], in_array('tts.mode', $r['fehlt_behalten'], true)),
+           array(true, 'musicserver', true));
+    $r = sicherung_lesen($b, json_encode($d6), $jetzt);
+    $pruef('fehlt im Block: ohne Angabe wie bisher (kein Name)', in_array('tts.mode', $r['fehlt_behalten'], true), false);
+
+    // --- 1.2.0 (g) fehlt_vorgabe in der Meldung ---
+    $r = sicherung_lesen($b, json_encode($d5), $jetzt);
+    $m = sicherung_meldungen($b, $r);
+    $pruef('fehlt_vorgabe in der Meldung', strpos(implode("\n", $m['hinweise']), 'K_FEHLT_VORGABE') !== false
+           && strpos(implode("\n", $m['hinweise']), 'werk') !== false, true);
+
+    // --- 1.2.0 (c) eigene Warnsaetze an _warnung ---
+    $bw = $b;
+    $bw['warnung'] = function () { return array('Eigener Satz der Linie.'); };
+    $dw = sicherung_bauen($bw, $jetzt);
+    $pruef('warnung: eigener Satz allein', isset($dw['_warnung']) ? $dw['_warnung'] : null, 'Eigener Satz der Linie.');
+    $dw = sicherung_bauen($bw, $kaputt);
+    $pruef('warnung: nach dem Satz des Moduls', isset($dw['_warnung']) && strpos($dw['_warnung'], 'K_WARNUNG') !== false
+           && substr($dw['_warnung'], -23) === 'Eigener Satz der Linie.', true);
+    $pruef('warnung: ohne Angabe kein Kopf', isset($daten['_warnung']), false);
+
+    // --- 1.2.0 (d) Muster fuer fruehere Kennzeichen ---
+    $bk = $b;
+    $bk['kennzeichen_frueher_muster'] = '/^Selbsttest \([a-z0-9_-]{1,40}\)\z/';
+    $d1 = $daten;
+    $d1['_plugin'] = 'Selbsttest (meinordner)';
+    $r = sicherung_lesen($bk, json_encode($d1), $jetzt);
+    $pruef('muster: frueheres Kennzeichen erkannt', array($r['ok'], $r['eigen']), array(true, 'frueher'));
+    $d1['_plugin'] = 'Selbsttest (mein ordner)';
+    $r = sicherung_lesen($bk, json_encode($d1), $jetzt);
+    $pruef('muster: anderes bleibt fremd', array($r['ok'], $r['fremd']), array(false, 'kennzeichen'));
+    $r = sicherung_lesen($b, json_encode(array('_plugin' => 'Selbsttest (meinordner)') + $daten), $jetzt);
+    $pruef('muster: ohne Angabe fremd', $r['fremd'], 'kennzeichen');
+    $bk['kennzeichen_frueher_muster'] = '/[/';
+    $pruef('muster: unbrauchbares Muster ist ein Mangel', sicherung_beschreibung_mangel($bk), array('kennzeichen_frueher_muster'));
+
+    // --- 1.2.0 (e) umbenennen ---
+    $bu = $b;
+    $bu['umbenennen'] = array('_zugang' => 'zugang', '_thema' => 'thema');
+    $du = $daten;
+    $du['_zugang'] = $du['zugang'];
+    unset($du['zugang']);
+    $du['_thema'] = 'neu';
+    $r = sicherung_lesen($bu, json_encode($du), $jetzt);
+    $pruef('umbenennen: alter Name gilt als neuer', array($r['ok'], $r['teile']['zugang']['kennwort']), array(true, $GEHEIM));
+    $pruef('umbenennen: heutiger Name schon da - der alte bleibt Kopf', $r['neu']['thema'], 'alt');
+    $r = sicherung_lesen($b, json_encode($du), $jetzt);
+    $pruef('umbenennen: ohne Angabe bleibt _zugang Kopf', isset($r['teile']['zugang']), false);
+
+    // --- 1.2.0 (h) vorbedingung ---
+    $bv = $b;
+    $gesp = 0;
+    $bv['speichern'] = function () use (&$gesp) { $gesp++; return true; };
+    $bv['vorbedingung'] = function () { return array('Vorher geht etwas nicht.'); };
+    $bv['log'] = function () {};
+    $r = sicherung_zurueckspielen($bv, json_encode($daten));
+    $m = sicherung_meldungen($bv, $r);
+    $pruef('vorbedingung: nicht gespeichert', array($gesp, $r['gespeichert'], $r['vorbedingung']), array(0, false, array('Vorher geht etwas nicht.')));
+    $pruef('vorbedingung: Meldung ohne Schreibfehler', $m['fehler'], array('Vorher geht etwas nicht.'));
+    $bv['vorbedingung'] = function () { return array(); };
+    $r = sicherung_zurueckspielen($bv, json_encode($daten));
+    $pruef('vorbedingung erfuellt: gespeichert', array($gesp, $r['gespeichert']), array(1, true));
+    $bv['speichern'] = function () { return false; };
+    $r = sicherung_zurueckspielen($bv, json_encode($daten));
+    $m = sicherung_meldungen($bv, $r);
+    $pruef('ohne vorbedingung-Satz: Schreibfehler wie bisher', strpos(implode(' ', $m['fehler']), 'K_SCHREIBFEHLER') !== false, true);
+
+    // --- 1.2.1: ein Vermerk ('nie_aus_datei') behaelt beim Zurueckspielen seinen geltenden Wert ---
+    $dn = $daten;
+    $dn['vermerk'] = 'aus-der-datei';
+    $r = sicherung_lesen($b, json_encode($dn), $jetzt);
+    $pruef('nie_aus_datei: Datei traegt ihn - der geltende gilt, nicht genannt',
+           array($r['ok'], isset($r['neu']['vermerk']) ? $r['neu']['vermerk'] : 'fehlt', $r['verworfen'], $r['fehlt_behalten'],
+                 $r['fehlt_vorgabe']),
+           array(true, 'v', array(), array(), array()));
+    $jn = $jetzt;
+    unset($jn['vermerk']);
+    $r = sicherung_lesen($b, json_encode($dn), $jn);
+    $pruef('nie_aus_datei: nicht in der geltenden Konfiguration - fehlt wie bisher', array($r['ok'], isset($r['neu']['vermerk'])),
+           array(true, false));
+    $bn = $b;
+    $bn['vorgaben']['vermerk'] = 'werk';
+    $r = sicherung_lesen($bn, json_encode($dn), $jn);
+    $pruef('nie_aus_datei: in den Vorgaben, nicht geltend - Vorgabe wie bisher', $r['neu']['vermerk'], 'werk');
+    $r = sicherung_lesen($bn, json_encode($dn), $jetzt);
+    $pruef('nie_aus_datei: in den Vorgaben und geltend - der geltende', $r['neu']['vermerk'], 'v');
+    $bn = $b;
+    $bn['vorgaben']['vermerk'] = 'werk';
+    $bn['vorbehandeln'] = function ($bereit) { $bereit['vermerk'] = 'linie'; return $bereit; };
+    $r = sicherung_lesen($bn, json_encode($dn), $jetzt);
+    $pruef('nie_aus_datei: vorbehandeln setzt ihn - der Wert der Linie', $r['neu']['vermerk'], 'linie');
+    $n = count($gespeichert);
+    $r = sicherung_zurueckspielen($b + array('log' => function () {}), json_encode($dn));
+    $pruef('nie_aus_datei: gespeichert mit dem geltenden Vermerk',
+           array($r['gespeichert'], count($gespeichert) - $n, isset($gespeichert[$n]['vermerk']) ? $gespeichert[$n]['vermerk'] : 'fehlt'),
+           array(true, 1, 'v'));
+    $pruef('nie_aus_datei: nie gesichert, auch wenn er in den Vorgaben steht', array_key_exists('vermerk', sicherung_bauen($bn, $jetzt)), false);
+
+    // --- 1.2.2: ein Wert, den 'vorbehandeln' fuer einen fehlenden Schluessel setzt, bleibt ('behalten') ---
+    $du = $daten;
+    unset($du['spaet'], $du['werk']);
+    $bu2 = $b;
+    $bu2['vorbehandeln'] = function ($bereit, $jetzt, $daten) {
+        if (!array_key_exists('spaet', $daten)) { $bereit['spaet'] = 9; }
+        if (!array_key_exists('werk', $daten)) { $bereit['werk'] = 8; }
+        return $bereit;
+    };
+    $r = sicherung_lesen($bu2, json_encode($du), $jetzt);
+    $pruef('uebergang: behalten - der Wert der Linie bleibt, eigens genannt',
+           array($r['ok'], $r['neu']['spaet'], $r['fehlt_uebergang'], $r['fehlt_behalten']), array(true, 9, array('spaet'), array()));
+    $pruef('uebergang: vorgabe wie bisher - Wert der Linie, als vorgabe genannt',
+           array($r['neu']['werk'], $r['fehlt_vorgabe'], in_array('werk', $r['fehlt_uebergang'], true)), array(8, array('werk'), false));
+    $m = sicherung_meldungen($bu2, $r);
+    $h = implode("\n", $m['hinweise']);
+    $pruef('uebergang: Meldung mit K_FEHLT_UEBERGANG, nicht als behalten',
+           array(strpos($h, 'K_FEHLT_UEBERGANG [spaet]') !== false, strpos($h, 'K_FEHLT_BEHALTEN') === false), array(true, true));
+    $z = sicherung_protokollzeile($r);
+    $pruef('uebergang: Protokoll nennt die Uebergangsregel, nicht den bisherigen Wert',
+           array(strpos($z, 'Uebergangsregel der Linie: spaet') !== false, strpos($z, 'bisheriger Wert bleibt') === false), array(true, true));
+    $bu3 = $b;
+    $bu3['vorbehandeln'] = function ($bereit) { return $bereit; };
+    $r = sicherung_lesen($bu3, json_encode($du), $jetzt);
+    $pruef('uebergang: setzt vorbehandeln nichts - geltender Wert wie bisher',
+           array($r['ok'], $r['neu']['spaet'], $r['fehlt_behalten'], $r['fehlt_uebergang']), array(true, 0, array('spaet'), array()));
+    $dp = $daten;
+    unset($dp['ein']);
+    $bu4 = $b;
+    $bu4['vorbehandeln'] = function ($bereit) { $bereit['ein'] = 1; return $bereit; };
+    $r = sicherung_lesen($bu4, json_encode($dp), $jetzt);
+    $pruef('uebergang: pflicht bleibt pflicht, auch wenn vorbehandeln ihn setzt',
+           array($r['ok'], isset($r['beanstandet'][0]['name']) ? $r['beanstandet'][0]['name'] : ''), array(false, 'ein'));
+    $bu5 = $bu2;
+    $bu5['schluessel']['spaet']['pruefen'] = function ($w) { return $w === 9 ? 'spaet unzulaessig' : ''; };
+    $r = sicherung_lesen($bu5, json_encode($du), $jetzt);
+    $pruef('uebergang: der Wert der Linie geht durch die Pruefung wie bisher',
+           array($r['ok'], isset($r['beanstandet'][0]['name']) ? $r['beanstandet'][0]['name'] : ''), array(false, 'spaet'));
+    $n = count($gespeichert);
+    $r = sicherung_zurueckspielen($bu2 + array('log' => function () {}), json_encode($du));
+    $pruef('uebergang: gespeichert mit dem Wert der Linie',
+           array($r['gespeichert'], count($gespeichert) - $n, isset($gespeichert[$n]['spaet']) ? $gespeichert[$n]['spaet'] : 'fehlt'),
+           array(true, 1, 9));
+
+    // --- 1.1.0: der Haken und der Eingang des Knopfes (ohne hochgeladene Datei: __FILE__ steht fuer eine Datei) ---
+    // Die Texte kommen ueber $b['t'] (hier: Kennung mit Anhang); keine Kennung steht woertlich im Code, damit die
+    // Schluesselpruefungen der Linien sie nicht fuer einen benutzten Sprachschluessel halten.
+    $zeile = sicherung_haken_zeile($b);
+    $pruef('haken zeile', $zeile, '<div class="sm-feld"><label><input data-role="none" type="checkbox" name="zurueck_ok"'
+           . ' value="1"> ' . htmlspecialchars(sicherung_t('K_HAKEN', $b), ENT_QUOTES, 'UTF-8') . '</label></div>');
+    $pruef('haken zeile traegt den text', strpos($zeile, 'K_HAKEN [') !== false, true);
+    $pruef('haken feldname', SICHERUNG_HAKEN, 'zurueck_ok');
+    $ja = function () { return true; };
+    $nein = function () { return false; };
+    $gelesen = 0;
+    $zaehlt = function ($p) use (&$gelesen) { $gelesen++; return true; };
+    $art = function ($ab) { return (is_array($ab) && isset($ab['abbruch'])) ? $ab['abbruch'] : '(kein Abbruch)'; };
+    $ich = array('tmp_name' => __FILE__, 'size' => (int) filesize(__FILE__), 'error' => 0);
+    list($roh, $ab) = sicherung_eingang_lage($b, array(), $ich, $zaehlt);
+    $pruef('ohne haken: abbruch', array($roh, $art($ab), is_array($ab) && $ab['ok'] === false && $ab['gespeichert'] === false),
+           array(null, 'haken', true));
+    $pruef('ohne haken: datei nicht angesehen', $gelesen, 0);
+    $m = is_array($ab) ? sicherung_meldungen($b, $ab) : array('fehler' => array(''), 'hinweise' => array('-'));
+    $pruef('ohne haken: eine meldung mit dem modultext', array(count($m['fehler']),
+           strpos($m['fehler'][0], sicherung_t('K_HAKEN_FEHLT', $b)) !== false,
+           strpos($m['fehler'][0], sicherung_t('K_ABGELEHNT', $b)) === 0, $m['hinweise']), array(1, true, true, array()));
+    foreach (array('0', 'ja', '', array('1')) as $w) {
+        list($roh, $ab) = sicherung_eingang_lage($b, array('zurueck_ok' => $w), $ich, $ja);
+        $pruef('haken mit wert ' . var_export($w, true) . ' zaehlt nicht', $art($ab), 'haken');
+    }
+    list($roh, $ab) = sicherung_eingang_lage($b, array('anderes' => '1'), $ich, $ja);
+    $pruef('anderes feld ist kein haken', $art($ab), 'haken');
+    $mit = array('zurueck_ok' => '1');
+    list($roh, $ab) = sicherung_eingang_lage($b, $mit, null, $ja);
+    $pruef('haken, keine datei', array($roh, $art($ab)), array(null, 'datei'));
+    list($roh, $ab) = sicherung_eingang_lage($b, $mit, $ich, $nein);
+    $pruef('haken, datei nicht hochgeladen', array($roh, $art($ab)), array(null, 'datei'));
+    list($roh, $ab) = sicherung_eingang($b, $mit, array('f' => $ich), 'f');
+    $pruef('oeffentlich: is_uploaded_file weist eine Serverdatei ab', array($roh, $art($ab)), array(null, 'datei'));
+    list($roh, $ab) = sicherung_eingang($b, $mit, array(), 'f');
+    $pruef('oeffentlich: feld fehlt', $art($ab), 'datei');
+    list($roh, $ab) = sicherung_eingang_lage($b, $mit, array('tmp_name' => '', 'size' => 0, 'error' => 4), $ja);
+    $pruef('haken, leeres feld', $art($ab), 'datei');
+    list($roh, $ab) = sicherung_eingang_lage($b, $mit, array('tmp_name' => '', 'size' => 0, 'error' => 1), $ja);
+    $pruef('haken, ueber upload_max_filesize', array($art($ab), is_array($ab) ? $ab['fremd'] : ''), array('gross', 'gross'));
+    list($roh, $ab) = sicherung_eingang_lage($b + array('max_byte' => 1024), $mit, $ich, $ja);
+    $pruef('haken, groesser als max_byte', array($roh, $art($ab)), array(null, 'gross'));
+    list($roh, $ab) = sicherung_eingang_lage($b, $mit, array('tmp_name' => __FILE__ . '.fehlt', 'size' => SICHERUNG_MAX_BYTE + 1,
+                                                             'error' => 0), $ja);
+    $pruef('haken, angegebene groesse zu gross: nicht erst gelesen', $art($ab), 'gross');
+    $klein = $ich;
+    $klein['size'] = 10;
+    list($roh, $ab) = sicherung_eingang_lage($b + array('max_byte' => 1024), $mit, $klein, $ja);
+    $pruef('haken, groesse falsch angegeben: gelesen wird hoechstens max_byte + 1', array($roh, $art($ab)), array(null, 'gross'));
+    list($roh, $ab) = sicherung_eingang_lage($b, $mit, $ich, $ja);
+    $pruef('haken und datei: text zurueck', array($roh === file_get_contents(__FILE__), $ab), array(true, null));
+    $n = count($gespeichert);
+    foreach (array(array(), array('zurueck_ok' => '0')) as $p) { sicherung_eingang_lage($b, $p, $ich, $ja); }
+    $pruef('eingang speichert nie', count($gespeichert), $n);
     return array($faelle, $fehl, $zeilen);
 }
 

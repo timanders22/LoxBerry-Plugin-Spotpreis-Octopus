@@ -7,6 +7,15 @@ HTTP-Endpunkt als Rückfallebene.
 
 ---
 
+## Neu in 1.1.39
+
+- **Verhalten geändert – Zurückspielen nur mit Haken:** Zwischen dem Feld für die Sicherungsdatei und dem Knopf „Einstellungen zurückspielen“ steht ein Haken „Ja, die geltenden Einstellungen durch die Sicherung ersetzen“, ab Werk aus. Ohne ihn wird die Datei nicht gelesen und nichts geändert, und die Meldung sagt es. Haken, Text und die Prüfung der hochgeladenen Datei (über das Formular gekommen, höchstens 256 KB) kommen aus dem gemeinsamen Sicherungsmodul 1.1.0 und sind in allen Plugins dieser Reihe gleich. Die Grenze für die Datei lag bis 1.1.38 bei 64 KB.
+- **Gemeinsames Sicherungsmodul 1.2.0:** Das Modul kann jetzt, was einzelne Plugins dieser Reihe bisher selbst darum herum gebaut haben (Entscheidung „Einheitlichkeit“). Bekommt eine Einstellung beim Zurückspielen die Werkseinstellung, weil die Sicherung aus einer Fassung stammt, die sie noch nicht kannte, nennt die Meldung jetzt ihren Namen.
+- **Gemeinsames Sicherungsmodul 1.2.1:** Ein Vermerk, der nie aus einer Sicherungsdatei kommt (etwa, dass ein Sprechtoken aus einem Nachbar-Plugin übernommen wurde), behält beim Zurückspielen seinen geltenden Wert. An diesem Plugin ändert sich dadurch nichts; es setzte den Vermerk schon bisher selbst wieder ein.
+- **Gemeinsames Sicherungsmodul 1.2.2:** Fehlt eine Einstellung in der Sicherung und setzt das Plugin ihren Wert nach einer eigenen Übergangsregel (etwa aus einer verwandten Einstellung derselben Sicherung), bleibt dieser Wert beim Zurückspielen, und die Meldung nennt ihn als nach einer Übergangsregel abgeleitet – nicht als Werkseinstellung und nicht als bisherigen Wert. An diesem Plugin ändert sich dadurch nichts.
+- **Verhalten geändert – fehlende Einstellung behält ihren Wert:** Fehlt in einer Sicherung einer älteren Fassung die Einstellung `befehle_mqtt_ein`, behält sie beim Zurückspielen den geltenden Wert statt der Werkseinstellung und wird in der Meldung genannt – wie die übrigen später hinzugekommenen Einstellungen und wie in den anderen Plugins dieser Reihe (Entscheidung „Ja, behalten“).
+- Gemessen mit dem Prüfstand auf dem Arbeitsrechner unter PHP 7.4 und 8.4, der über einen Webserver die echten Knöpfe drückt; am Gerät nicht gemessen.
+
 ## Neu in 1.1.38
 
 - **Verhalten geändert – Einstellungen sichern und zurückspielen nach der gemeinsamen Vorlage:** Die Knöpfe im Reiter *Einstellungen* arbeiten jetzt mit demselben Sicherungsmodul wie die übrigen Plugins dieser Reihe. Für den Anwender ändert sich:

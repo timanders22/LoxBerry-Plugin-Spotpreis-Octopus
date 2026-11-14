@@ -5824,9 +5824,11 @@ function oc_sicherung_lesen($roh, &$r = null, $jetzt = null)
  * ansage_regeln_vorgaben(), zugang email/passwort/konto. months ist eine Zahlenliste
  * ohne Unterschluessel.
  *
- * Was fehlen darf (wie bis 1.1.37): ansage_regeln und die vier Schwellen-Schluessel
- * (seit 1.1.28 bzw. 1.1.37) behalten den geltenden Wert, befehle_mqtt_ein (seit 1.1.26)
- * geht auf die Vorgabe 0; ansage_token_herkunft kommt nie aus einer Datei.
+ * Was fehlen darf: ansage_regeln, die vier Schwellen-Schluessel (seit 1.1.28 bzw. 1.1.37)
+ * und befehle_mqtt_ein (seit 1.1.26) behalten den geltenden Wert und werden genannt - bis
+ * Modul 1.2.0 ging befehle_mqtt_ein auf die Vorgabe 0 (Entscheidung des Hausherrn 12.11.2026
+ * "Ja, behalten", einheitlich mit den uebrigen Linien); ansage_token_herkunft kommt nie aus
+ * einer Datei und behaelt seit Modul 1.2.1 seinen geltenden Wert.
  * $mit_zugang: nur fuer den Kopf _zugang beim Sichern.
  */
 function oc_sicherung_beschreibung($mit_zugang = false)
@@ -5848,7 +5850,7 @@ function oc_sicherung_beschreibung($mit_zugang = false)
             },
             'wandeln' => function ($w) { $g = ''; return ansage_regeln_wert($w, $g); }),
         'zugang' => sicherung_block(array('email', 'passwort', 'konto')),
-        'befehle_mqtt_ein' => array('fehlt' => 'vorgabe'),
+        'befehle_mqtt_ein' => array('fehlt' => 'behalten'),     // Hausherr 12.11.2026: "Ja, behalten"
     );
     foreach (array('schwelle_ein', 'schwelle_ct', 'schwelle_hyst', 'schwelle_sperre') as $s) {
         $schluessel[$s] = array('fehlt' => 'behalten');

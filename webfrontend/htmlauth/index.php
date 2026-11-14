@@ -860,20 +860,17 @@ if ($oc_ist_post && isset($_POST['oc_csv'])) {
 
 /* ---------------- Einstellungen zurueckspielen ----------------
  *
- * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei des
- * Servers unterschieben. Dann die Groessengrenze - eine Sicherung dieses
- * Plugins ist wenige Kilobyte gross; alles darueber wird gar nicht gelesen. */
+ * 1.1.39: den Eingang prueft das gemeinsame Sicherungsmodul (sicherung_eingang(), Modul 1.1.0, Entscheidung des
+ * Hausherrn 12.11.2026) - in jeder Linie gleich: zuerst der Haken zurueck_ok (ohne ihn wird nichts gelesen und
+ * nichts geaendert), dann is_uploaded_file() (sonst liesse sich jede Datei des Servers unterschieben) und die
+ * Groessengrenze des Moduls; erst danach wird die Datei gelesen. Die Grenze ist seither die des Moduls
+ * (256 kB); bis 1.1.38 waren es hier 64 kB. */
 if ($oc_ist_post && isset($_POST['oc_zurueck'])) {
-    if (!isset($_FILES['oc_sicherung']) || !is_array($_FILES['oc_sicherung'])
-        || !isset($_FILES['oc_sicherung']['tmp_name'])
-        || !@is_uploaded_file($_FILES['oc_sicherung']['tmp_name'])) {
-        $oc_fehler[] = oc_t('EINST.SICH_KEINE_DATEI');
-    } elseif ((int) $_FILES['oc_sicherung']['size'] > 65536) {
-        /* 64 kB. Eine Sicherung dieses Plugins ist wenige Kilobyte gross;
-         * alles darueber wird gar nicht erst gelesen. */
-        $oc_fehler[] = oc_t('EINST.SICH_ZU_GROSS');
+    list($oc_roh, $oc_ab) = sicherung_eingang(oc_sicherung_beschreibung(false), $_POST, $_FILES, 'oc_sicherung');
+    if ($oc_ab !== null) {
+        $oc_m = sicherung_meldungen(oc_sicherung_beschreibung(false), $oc_ab);
+        foreach ($oc_m['fehler'] as $oc_x) { $oc_fehler[] = $oc_x; }
     } else {
-        $oc_roh = (string) @file_get_contents($_FILES['oc_sicherung']['tmp_name']);
         /* 1.1.38: das gemeinsame Sicherungsmodul (sicherung_zurueckspielen()) liest, prueft, verwirft
          * Unbekanntes mit Namen, laesst leere Werte den bisherigen stehen und aendert bei einer
          * Beanstandung GAR NICHTS (alle Beanstandungen, nicht nur die erste). Die Schritte dieser Linie
@@ -1921,6 +1918,7 @@ if ($oc_x3_ohne || $oc_x3_mit) { ?>
 <input data-role="none" type="hidden" name="fmt" value="<?php echo oc_e($oc_fmt); ?>">
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <input data-role="none" type="file" name="oc_sicherung" accept=".json">
+    <?= sicherung_haken_zeile(oc_sicherung_beschreibung(false)) ?>
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="oc_zurueck" value="1"><?= oc_t('EINST.K_ZURUECK') ?></button>
   </form>
 </div>
