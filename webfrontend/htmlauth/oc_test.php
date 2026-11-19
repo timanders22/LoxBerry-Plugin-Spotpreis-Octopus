@@ -237,6 +237,11 @@ function oc_test_selbst()
     $h .= $oc_sw === 2 ? $oc_strich(oc_t('TEST.SCHWELLE'), oc_e($oc_swt))
                        : oc_zeile($oc_sw === 1, oc_t('TEST.SCHWELLE'), oc_e($oc_swt));
 
+    /* Gemeinsames Uhrmodul (Frage 95): Systemuhr gegen die Kopfzeile Date der Cloud - nur melden. */
+    list($uhr_s, $uhr_t) = uhr_pruefzeile(array('ordner' => $p['datadir'], 'dienst' => 'Octopus', 't' => 'oc_t'));
+    $h .= '<div>' . uhr_zeichen($uhr_s) . ' ' . htmlspecialchars(uhr_frage(array('t' => 'oc_t')), ENT_QUOTES, 'UTF-8')
+        . ' &mdash; ' . htmlspecialchars($uhr_t, ENT_QUOTES, 'UTF-8') . '</div>';
+
     return array(oc_t('TEST.T_SELBST'), $h);
 }
 

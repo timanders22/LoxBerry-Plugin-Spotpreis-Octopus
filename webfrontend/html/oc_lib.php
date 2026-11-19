@@ -53,6 +53,7 @@ require_once __DIR__ . '/sprachausgabe.php';
  * Hausherrn 12.11.2026): Einstellungen sichern und zurueckspielen nach denselben Regeln wie in den
  * anderen Linien. Die Beschreibung dieser Linie steht in oc_sicherung_beschreibung(). */
 require_once __DIR__ . '/sicherung.php';
+require_once __DIR__ . '/uhrabgleich.php';   // gemeinsames Uhrmodul (Frage 95), Abschrift von Werkzeuge/gemeinsam/uhrabgleich.php
 
 
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
@@ -1608,7 +1609,10 @@ function oc_http($url, $post = null, $extra = array(), $timeout = 20, $lokal = f
             curl_setopt($ch, CURLOPT_POST, true);
             curl_setopt($ch, CURLOPT_POSTFIELDS, $post);
         }
+        $uhr_datum = 0;   // Uhrmodul (Frage 95)
+        curl_setopt($ch, CURLOPT_HEADERFUNCTION, uhr_kopf_rueckruf($uhr_datum));
         $body = curl_exec($ch);
+        uhr_merken(oc_paths()['datadir'], $uhr_datum, (int) round(1000 * (float) curl_getinfo($ch, CURLINFO_TOTAL_TIME)), (string) parse_url($url, PHP_URL_HOST));
         $nr = curl_errno($ch);
         $erg['code'] = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
         /* C6 (seit 1.1.16): das ausdrueckliche Schliessen des cURL-Griffs ist
