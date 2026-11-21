@@ -5599,51 +5599,13 @@ function oc_eigene_ip()
  */
 function oc_version()
 {
-    /* Ohne Wurzel gibt es keine Plugin-Datenbank. Bis 1.1.11 stand hier dann
-     * '/data/system/plugindatabase.json' ab der Laufwerkswurzel, und die
-     * Fassung, die dort stand, galt (in WSL gemessen,
-     * Pruefung-Spotpreis-Octopus-1.1.12, Fall C6). */
-    $home = oc_paths()['home'];
-    if ($home === '') { return oc_version_aus_cfg(); }
-    $f = $home . '/data/system/plugindatabase.json';
-    if (!is_file($f)) { return oc_version_aus_cfg(); }
-    $d = json_decode((string) @file_get_contents($f), true);
-    if (!isset($d['plugins']) || !is_array($d['plugins'])) { return oc_version_aus_cfg(); }
-    foreach ($d['plugins'] as $e) {
-        if (isset($e['folder']) && $e['folder'] === oc_paths()['plugin']) {
-            $v = isset($e['version']) ? (string) $e['version'] : '';
-            if ($v !== '') { return $v; }
-        }
-    }
-    return oc_version_aus_cfg();
+    /* 21.11.2026 (Fassung im Titel, Entscheidung des Hausherrn): aus dem gemeinsamen Stueck fassung.php,
+     * fuer alle Linien gleich - LBSystem::pluginversion(<ordner>), Plugin-Datenbank ueber den Ordnernamen,
+     * plugin.cfg des entpackten Archivs; nichts gefunden: ''. */
+    require_once __DIR__ . '/fassung.php';
+    return plugin_fassung(__DIR__);
 }
 
-/**
- * Die Fassung aus der plugin.cfg - der Rueckfall fuer den Fall, dass es
- * keine Plugin-Datenbank gibt.
- *
- * WOZU. data/system/plugindatabase.json ist die Auskunft des LoxBerry
- * selbst und die einzige, die im INSTALLIERTEN Zustand vorliegt - die
- * plugin.cfg wandert bei der Installation nicht mit. Im entpackten
- * Archiv ist es genau umgekehrt, und das ist der Prueffall: der
- * Endpunkt beantwortete ?selftest=1 dort mit FASSUNG=-, waehrend die
- * Schwesterlinie Tibber ihre Nummer nennt. Gemessen am Hauspruefstand.
- *
- * parse_ini_file() taugt fuer die plugin.cfg NICHT: sie kommentiert mit
- * '#', PHPs INI-Zerleger kennt nur ';' und bricht an der ersten
- * Kommentarzeile ab. Deshalb wird die eine Zeile selbst gesucht.
- */
-function oc_version_aus_cfg()
-{
-    $cfg = dirname(dirname(dirname(__FILE__))) . '/plugin.cfg';
-    if (!is_file($cfg)) { return ''; }
-    foreach (file($cfg, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: array() as $z) {
-        if (preg_match('/^\s*VERSION\s*=\s*(\S+)\s*$/', (string) $z, $m)) {
-            return (string) $m[1];
-        }
-    }
-    return '';
-}
 
 /* ==================================================================
  * Sprache (Pflicht: Deutsch und Englisch)

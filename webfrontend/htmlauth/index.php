@@ -1015,7 +1015,6 @@ $oc_gw  = oc_gateway();
 $oc_mon = oc_months();
 $oc_kos = oc_cost_compare();
 $oc_hist = oc_history_read(60);
-$oc_ver = oc_version();
 $oc_hoursel = array_map('intval', (array) $oc_cfg['notify']['hours']);
 $oc_tts = $oc_cfg['tts'];
 $oc_ip  = oc_eigene_ip();
@@ -1029,7 +1028,8 @@ if (is_file($oc_p['log'])) {
 }
 
 if ($oc_rahmen) {
-    LBWeb::lbheader('Octopus Dynamic' . ($oc_ver !== '' ? ' ' . $oc_ver : ''),
+    require_once __DIR__ . '/fassung.php';   // Fassung im Titel: gemeinsames Stueck fassung.php (21.11.2026)
+    LBWeb::lbheader(plugin_kopftitel('Octopus Dynamic', __DIR__),
         'https://wiki.loxberry.de/', 'help.html');
 }
 
