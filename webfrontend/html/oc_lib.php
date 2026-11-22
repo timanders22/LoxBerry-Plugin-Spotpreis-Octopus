@@ -1579,6 +1579,17 @@ function oc_email_gueltig($m)
  * Accept-Encoding an JEDER Anfrage.
  * ================================================================== */
 
+/**
+ * Kennung bei jedem Abruf (User-Agent) mit der installierten Fassung aus oc_version() - dem gemeinsamen Stueck
+ * fassung.php. 1.1.45 (Entscheidung des Hausherrn 22.11.2026, keine fest eingetragene Zahl): bis 1.1.44 stand hinter dem
+ * Namen eine feste Nummer, die nie die Fassung des Plugins war. Ohne Fassung nur der Name.
+ */
+function oc_user_agent()
+{
+    $f = oc_version();
+    return 'User-Agent: LoxBerry-Plugin-Octopus' . ($f !== '' ? '/' . $f : '') . ' (+https://wiki.loxberry.de)';
+}
+
 function oc_http($url, $post = null, $extra = array(), $timeout = 20, $lokal = false)
 {
     /* $lokal (Ansage-3, 01.10.2026): ein Endpunkt auf DIESEM LoxBerry
@@ -1586,7 +1597,7 @@ function oc_http($url, $post = null, $extra = array(), $timeout = 20, $lokal = f
      * der Umgebung, keiner Umleitung folgen, 3 s Verbindungsfrist. Ohne den
      * Parameter bleibt alles wie bisher. */
     $kopf = array(
-        'User-Agent: LoxBerry-Plugin-Octopus/1.0 (+https://wiki.loxberry.de)',
+        oc_user_agent(),
         'Accept: application/json, text/plain;q=0.8, */*;q=0.5',
         'Accept-Language: de-DE,de;q=0.9,en;q=0.6',
     );
@@ -4858,7 +4869,7 @@ function oc_ansage_k()
 {
     $d = oc_paths()['datadir'];
     return array('port' => oc_webport(),
-                 'kopf' => array('User-Agent: LoxBerry-Plugin-Octopus/1.0 (+https://wiki.loxberry.de)'),
+                 'kopf' => array(oc_user_agent()),
                  'ordner' => @is_dir($d) ? $d : '',
                  't' => function ($s) { return oc_t($s); },
                  /* Ab Werk ist der Music Server gewaehlt (Entwurf F7, oc_tts()). Die passenden Saetze

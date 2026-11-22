@@ -7,6 +7,10 @@ HTTP-Endpunkt als Rückfallebene.
 
 ---
 
+## Neu in 1.1.45
+
+- **Geändert – keine fest eingetragene Fassungsnummer mehr (Entscheidung des Hausherrn 22.11.2026):** Die Kennung beim Abruf (`User-Agent`) nennt jetzt die installierte Fassung aus demselben gemeinsamen Stück wie die Kopfzeile (`fassung.php`); ist keine Fassung feststellbar, steht dort nur der Name. Bis 1.1.44 stand dort fest `LoxBerry-Plugin-Octopus/1.0` – bei den Abrufen bei Octopus Energy und bei den Ansagen. Gemessen auf dem Arbeitsrechner (PHP 7.4 und 8.4, nachgebildete Installation, Gegenstelle auf 127.0.0.1); am Gerät nicht gemessen.
+
 ## Neu in 1.1.44
 
 - Die Kopfzeile zeigt jetzt die installierte Fassung in derselben Form wie alle Plugins (bisher über eine eigene Fassungsfunktion).
