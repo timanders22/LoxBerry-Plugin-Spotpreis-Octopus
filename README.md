@@ -7,6 +7,11 @@ HTTP-Endpunkt als Rückfallebene.
 
 ---
 
+## Neu in 1.1.46
+
+- Gemeinsames Sprachmodul 1.5.0 (Entscheidung des Hausherrn 22.11.2026): Die Nachtruhe der Ansagen kann an Nicht-Schultagen (Samstag, Sonntag, Feiertage, Ferien) später enden. Neues Feld „Nachtruhe an Nicht-Schultagen bis“ bei „Wann gesprochen wird“, ab Werk leer: Dann gilt die Zeit, die im Plugin Ferien und Feiertage eingestellt ist (MQTT-Thema `haus/ansage/nachtruhe_frei_bis`); ohne sie endet die Nachtruhe wie an Schultagen. Ob heute ein Schultag ist, sagt `haus/kalender/heute/frei` (nur bei `haus/kalender/datum` = heute); ohne diese Aussage zählen nur Samstag und Sonntag. Dringende Ansagen übergehen die Nachtruhe wie bisher. Ohne Vorgabe und ohne eigene Zeit ändert sich nichts.
+- Reiter Test: neue Zeile zum Ende der Nachtruhe an Nicht-Schultagen (Quelle der Zeit, Art des heutigen Tages).
+
 ## Neu in 1.1.45
 
 - **Geändert – keine fest eingetragene Fassungsnummer mehr (Entscheidung des Hausherrn 22.11.2026):** Die Kennung beim Abruf (`User-Agent`) nennt jetzt die installierte Fassung aus demselben gemeinsamen Stück wie die Kopfzeile (`fassung.php`); ist keine Fassung feststellbar, steht dort nur der Name. Bis 1.1.44 stand dort fest `LoxBerry-Plugin-Octopus/1.0` – bei den Abrufen bei Octopus Energy und bei den Ansagen. Gemessen auf dem Arbeitsrechner (PHP 7.4 und 8.4, nachgebildete Installation, Gegenstelle auf 127.0.0.1); am Gerät nicht gemessen.
