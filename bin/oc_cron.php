@@ -88,7 +88,7 @@ if ($oc_marke_upgrade !== null && $oc_marke_upgrade['gilt']) {
  * geschrieben nur, wenn etwas fehlt; eine kaputte Datei heilt danach oc_config(). try/catch: ein Fehler hier
  * aendert den Minutenlauf nicht. */
 try {
-    oc_config_vervollstaendigen();
+    oc_dienst_pflege();     // 1.1.47: vervollstaendigen und Lade-Beanstandungen einmal melden (Regeln/05)
 } catch (Throwable $oc_vv) {
     oc_log('Konfiguration vervollstaendigen abgebrochen (' . get_class($oc_vv) . ') - der Minutenlauf ist davon nicht betroffen.');
 }
@@ -264,7 +264,7 @@ if ((int) date('j') === 1 && (int) date('G') >= 8 && !is_file($oc_marke)) {
             . ' ct, fest ' . $vm['fix'] . ' ct -> '
             . ($vm['diff'] >= 0 ? 'dynamisch waere guenstiger gewesen um ' : 'fester Tarif war guenstiger um ')
             . abs($vm['diff']) . ' ct/kWh (' . abs($vm['euro']) . ' EUR)');
-        if (!empty($oc_lauf_cfg['notify']['audio'])) {
+        if (oc_meld_will('monat', $oc_lauf_cfg)) {     // 1.1.47: Ansage oder Meldung an SignalBot
             $t = str_replace(array('%DYN%', '%FIX%'),
                 array(oc_num($vm['dynp'], 1), oc_num($vm['fix'], 1)),
                 oc_t('OC_ANSAGE.MONATSBERICHT'));

@@ -49,10 +49,12 @@ require_once __DIR__ . '/planer.php';
  * Kopf von sprachausgabe.php. Sie tut beim Laden nichts ausser Funktionen
  * anzulegen und antwortet bei direktem Aufruf mit 403. */
 require_once __DIR__ . '/sprachausgabe.php';
+require_once __DIR__ . '/meldung.php';     // Statusmeldungen an SignalBot (seit 1.1.47)
 /* 1.1.38: Das gemeinsame Sicherungsmodul (Abschrift von Werkzeuge/gemeinsam/sicherung.php, Auftrag des
  * Hausherrn 12.11.2026): Einstellungen sichern und zurueckspielen nach denselben Regeln wie in den
  * anderen Linien. Die Beschreibung dieser Linie steht in oc_sicherung_beschreibung(). */
 require_once __DIR__ . '/sicherung.php';
+require_once __DIR__ . '/haus_bereiche.php';     // gemeinsame Bereiche unter haus/ (seit 1.1.47, Regeln/07)
 require_once __DIR__ . '/uhrabgleich.php';   // gemeinsames Uhrmodul (Frage 95), Abschrift von Werkzeuge/gemeinsam/uhrabgleich.php
 
 
@@ -796,6 +798,7 @@ function oc_vorgaben()
         // Meldungen
         'notify'        => array(),
         'tts'           => array(),
+        'meldung'       => meld_vorgaben(oc_meld_anlaesse(), oc_meld_haken_vorgabe()),     // 1.1.47: Meldungen an SignalBot, ab Werk aus
         'ansage_regeln' => array(),     // 1.1.28: Wann gesprochen wird (leer: die Vorgaben des Stamms)
         'ansage_token_herkunft' => array(),     // nie in einer Sicherung
         // Fahrplaner (ab 1.0.0): Leistungsbudget und PV-Gutschrift.
@@ -949,8 +952,7 @@ function oc_konfig_lage_jetzt()
     if (!is_array($d)) { return 'kaputt'; }
     /* C5 (seit 1.1.16): gueltiges JSON OHNE Aktionstoken, waehrend die
      * Zweitschrift eines traegt - oc_config() heilt dann nach Inhalt. */
-    if (!(isset($d['aktionstoken']) && oc_token_form($d['aktionstoken']))
-        && oc_datei_hat_token($p['backup'])) {
+    if (!oc_lade_merkwort($d) && oc_datei_hat_token($p['backup'])) {
         return 'ohne_token';
     }
     return 'ok';
@@ -1039,8 +1041,10 @@ function oc_config($heilen = null)
     $oc_ohne_token = false;
     if ($roh !== '' && $roh !== '{}' && !$oc_kaputt) {
         $oc_d = json_decode($roh, true);
-        $oc_ohne_token = !(isset($oc_d['aktionstoken']) && oc_token_form($oc_d['aktionstoken']))
-                         && oc_datei_hat_token($p['backup']);
+        /* 1.1.47 (Lade-Beanstandungen, Regeln/05): "ohne Token" heisst ohne nicht leeren Text. Ein formwidriges
+         * Token bleibt stehen und wird gemeldet; bis 1.1.46 legte schon die falsche Form die ganze Datei beiseite und
+         * holte die Zweitschrift zurueck - ein vorhandenes Token und alle Einstellungen danach wurden ersetzt. */
+        $oc_ohne_token = !oc_lade_merkwort($oc_d) && oc_datei_hat_token($p['backup']);
     }
     if ($heilen && $oc_kaputt) {
         $oc_weg = $p['config'] . '.kaputt.' . date('YmdHis');
@@ -1238,8 +1242,10 @@ function oc_config($heilen = null)
     /* Das Aktionstoken steht in den Adressen im Miniserver. Was nicht seine
      * Form hat, ist keines - dann lieber leer, denn der Endpunkt weist ein
      * leeres Token ausdruecklich ab (fail closed) und sagt auch, warum. */
-    $tok = is_array($cfg['aktionstoken']) ? '' : trim((string) $cfg['aktionstoken']);
-    $cfg['aktionstoken'] = preg_match('/^[A-Za-z0-9]{8,64}$/', $tok) ? $tok : '';
+    /* 1.1.47 (Lade-Beanstandungen, Regeln/05): ein vorhandenes Token bleibt, wie es ist - auch ein formwidriges (der
+     * Endpunkt weist es ab, die Oberflaeche nennt es im gelben Kasten und im Reiter Test). Bis 1.1.46 wurde es hier
+     * geleert, und die Oberflaeche wuerfelte beim naechsten Oeffnen ein neues: jede Adresse im Miniserver bekam 403. */
+    $cfg['aktionstoken'] = is_scalar($cfg['aktionstoken']) ? (string) $cfg['aktionstoken'] : '';
 
     foreach (array('pv_url', 'soc_url', 'verbrauch_url') as $f) {
         $cfg[$f] = oc_text($cfg[$f], 500);
@@ -1344,15 +1350,20 @@ function oc_schranken()
         'regeln'         => array('f'),
         'months'         => array('f'),
         'notify'         => array('f'),
+        'meldung'        => array('f'),     // 1.1.47
         'tts'            => array('f'),
         'ansage_regeln'  => array('f'),
         'ansage_token_herkunft' => array('f'),
     );
 }
 
-function oc_config_write($cfg)
+function oc_config_write($cfg, $lade_behalten = true)
 {
     $p = oc_paths();
+    /* 1.1.47 (Lade-Beanstandungen, Regeln/05, Entscheidung des Hausherrn "Dateiwert behalten"): ein beim Laden
+     * beanstandetes Feld, das der neue Stand nicht geaendert hat, behaelt seinen gespeicherten Wert. Nicht beim
+     * Zurueckspielen und nicht beim Knopf "Angezeigte Werte uebernehmen" ($lade_behalten = false). */
+    if ($lade_behalten && is_array($cfg)) { $cfg = oc_lade_behalten($cfg); }
     if (!is_dir(dirname($p['config']))) {
         @mkdir(dirname($p['config']), 0775, true);
     }
@@ -1467,7 +1478,7 @@ function oc_config_vervollstaendigen()
     $roh = @file_get_contents($p['config']);
     if (!is_string($roh) || substr(ltrim($roh), 0, 1) !== '{') { return array(); }
     $datei = json_decode($roh, true);
-    if (!is_array($datei) || !isset($datei['aktionstoken']) || !oc_token_form($datei['aktionstoken'])) {
+    if (!is_array($datei) || !oc_lade_merkwort($datei)) {
         return array();
     }
     // Ein leeres Objekt der Datei ({}) bliebe nach json_decode(..., true) ein leeres Feld und kaeme beim Schreiben
@@ -1484,6 +1495,67 @@ function oc_config_vervollstaendigen()
     if (!oc_config_write($datei)) { return array(); }
     oc_log('Konfiguration vervollstaendigt, mit Vorgabe eingetragen: ' . implode(', ', $fehlend));
     return $fehlend;
+}
+
+/* ==================================================================
+ * Lade-Beanstandungen (1.1.47; Regeln/05, Sicherungsmodul 1.3.0)
+ *
+ * oc_config() bringt eine von Hand verbogene Datei fuer den Betrieb in ihre Schranken. Das bleibt - aber jede solche
+ * Ersetzung wird gemeldet (Reiter Test rot, Seite gelb, einmal ins Protokoll) und nie in die Datei zurueckgeschrieben.
+ * Gefunden wird sie vom Modul an den ROHEN Dateiwerten, mit denselben Regeln wie beim Zurueckspielen. Bis 1.1.46
+ * still: ein Aktionstoken mit _ oder - wurde geleert, die Sprechtoken ebenso, das Thema gekuerzt.
+ * ================================================================== */
+
+/** Traegt die Datei ein Aktionstoken (einen nicht leeren Text)? Das Merkwort fuer Heilung und Vervollstaendigen. */
+function oc_lade_merkwort($d)
+{
+    return is_array($d) && isset($d['aktionstoken']) && is_string($d['aktionstoken']) && trim($d['aktionstoken']) !== '';
+}
+
+/** Die rohen Werte der Konfigurationsdatei (ohne jede Normierung), null = keine lesbare Datei. Schreibt nichts. */
+function oc_lade_roh()
+{
+    $p = oc_paths();
+    clearstatcache(true, $p['config']);
+    $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
+    $d = ($roh !== '' && $roh[0] === '{') ? json_decode($roh, true) : null;
+    return is_array($d) ? $d : null;
+}
+
+/** Die Lade-Beanstandungen: rohe Dateiwerte gegen den verwendeten Stand ($cfg, sonst oc_config(false)). */
+function oc_lade_beanstandungen($cfg = null)
+{
+    $d = oc_lade_roh();
+    if ($d === null) { return array(); }
+    return sicherung_lade_beanstandungen(oc_sicherung_beschreibung(), $d, is_array($cfg) ? $cfg : oc_config(false));
+}
+
+/** Vor dem Schreiben: jedes beanstandete Feld, das $cfg nicht geaendert hat, bekommt seinen Dateiwert zurueck. */
+function oc_lade_behalten(array $cfg)
+{
+    $d = oc_lade_roh();
+    if ($d === null) { return $cfg; }
+    $v = oc_config(false);
+    list($cfg, ) = sicherung_lade_behalten($cfg, $d, $v, sicherung_lade_beanstandungen(oc_sicherung_beschreibung(), $d, $v));
+    return $cfg;
+}
+
+/** Minutentakt (bin/oc_cron.php): fehlende Einstellungen eintragen, dann die Lade-Beanstandungen einmal melden. */
+function oc_dienst_pflege()
+{
+    $r = oc_config_vervollstaendigen();
+    oc_lade_melden(oc_lade_beanstandungen());     // Kennung D
+    return $r;
+}
+
+/** Einmal je Aenderung ins Protokoll (nur Namen und Gruende, nie Werte). */
+function oc_lade_melden(array $beanst)
+{
+    $t = oc_tmpdir();
+    if ($t === '' || (!is_dir($t) && !@mkdir($t, 0775, true))) { return; }
+    if (sicherung_lade_melden_faellig($beanst, $t . '/lade_beanstandungen.merk')) {
+        oc_log(sicherung_lade_protokollzeile($beanst));
+    }
 }
 
 /** Zufallstoken fuer den Aktionsendpunkt. */
@@ -4633,6 +4705,7 @@ function oc_mqtt_publish($st = null, $nur_lebenszeichen = false, $erzwingen = fa
      * vor den Themen, die sich gerade geaendert haben, und ein Altwert mit
      * unveraendertem Wert bliebe bis zum halbstuendlichen Vollsatz stehen
      * (in WSL gemessen, Pruefung-Spotpreis-Octopus-1.1.12, Faelle R8, R12). */
+    oc_praefix_haus_melden($cfg);   // 1.1.47: Praefix im gemeinsamen Bereich? melden, nicht anhalten
     $alt = oc_mqtt_altlast($praefix);
     if ($alt['lage'] === 'belegt') { $erzwingen = true; }
     $raeumen = array_flip($alt['themen']);
@@ -5037,6 +5110,8 @@ function oc_ansage_senden($jetzt = null)
         $conf = oc_config();
         oc_ansage_token_pflegen($conf);
         $conf = oc_config();
+        oc_meld_senden($frisch, $conf);     // 1.1.47: dieselben Anlaesse an SignalBot (eigene Haken)
+        $frisch = oc_meld_nur_ansage($frisch, $conf);     // die Ansage nur mit ihrem eigenen Haken
         $a = ansage_regel_sprechen($frisch, oc_tts($conf), oc_ansage_regeln($conf), oc_ansage_k());
         $erg = $a['regel'] !== '' ? $a['regel'] : 'gesprochen';
         if ($a['r'] !== null) {
@@ -5196,7 +5271,7 @@ function oc_announce_check($st = null)
     $cfg = oc_config();
     if ($st === null) { $st = oc_state(); }
 
-    if (!empty($cfg['notify']['audio']) && $st['ok'] && (int) date('i') === 0) {
+    if (oc_meld_will('preis', $cfg) && $st['ok'] && (int) date('i') === 0) {     // 1.1.47: Ansage oder Meldung an SignalBot
         $flag = oc_tmpdir() . '/said_' . date('YmdH');
         if (!is_file($flag)) {
             $sel = oc_hour_selected();
@@ -5217,7 +5292,7 @@ function oc_announce_check($st = null)
         $flag = oc_tmpdir() . '/tomorrow_' . date('Ymd');
         if (!is_file($flag)) {
             @file_put_contents($flag, '1');
-            if (!empty($cfg['notify']['audio'])) {
+            if (oc_meld_will('morgen', $cfg)) {     // 1.1.47: Ansage oder Meldung an SignalBot
                 $txt = oc_tomorrow_text($st);
                 if ($txt !== '') { oc_ansage_legen(array(array('schluessel' => 'morgen', 'text' => $txt))); }     // 1.1.28
             }
@@ -5817,6 +5892,7 @@ function oc_sicherung_beschreibung($mit_zugang = false)
     $schluessel = array(
         'regeln' => sicherung_liste(array_keys(oc_regel_vorgabe())),
         'notify' => sicherung_block(array('audio', 'push', 'hours', 'only_cheap', 'negative', 'tomorrow', 'lb', 'lb_stunden')),
+        'meldung' => meld_sicherung_knoten(oc_meld_anlaesse(), oc_meld_k()),     // 1.1.47
         'tts'    => sicherung_block($tts, $tts_knoten) + array('sichern' => 'ansage_sicherung_bereinigen'),
         /* S2 (1.1.28): ungueltig = abgewiesen, gueltig = in der Form von ansage_regeln_wert() uebernommen. */
         'ansage_regeln' => sicherung_block(array_keys(ansage_regeln_vorgaben())) + array(
@@ -5845,9 +5921,17 @@ function oc_sicherung_beschreibung($mit_zugang = false)
         'vorgaben' => oc_vorgaben(),
         'schluessel' => $schluessel,
         'nie_aus_datei' => array('ansage_token_herkunft'),
+        /* 1.1.47: nie mit Wert in den Lade-Beanstandungen (Modul 1.3.0) - die Sprechtoken; aktionstoken und der Teil
+         * zugang sind es immer. */
+        'geheim' => array_map(function ($n) { return 'tts.' . $n; }, ansage_geheim()),
         'teile' => array('zugang' => 'oc_sicherung_zugang_lesen'),
         'teile_jetzt' => array('zugang' => 'oc_zugang'),
         'pruefen' => function ($k, $w) use ($schranken) {
+            /* 1.1.47: kein Praefix auf einem gemeinsamen Bereich unter haus/ (Regeln/07) - wie im Formular. */
+            if ($k === 'mqtt_topic' && is_string($w) && hb_bereich($w) !== '') {
+                return sprintf(oc_t('EINST.SICH_WERT'), htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8')) . ' '
+                    . htmlspecialchars(sprintf(oc_t('HAUSBEREICH.SICH_W'), hb_bereich($w)), ENT_QUOTES, 'UTF-8');
+            }
             if (oc_wert_pruefen($k, $w, $schranken) !== '') {
                 return sprintf(oc_t('EINST.SICH_WERT'), htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
             }
@@ -6137,6 +6221,11 @@ function oc_sicherung_altwerte($mit_zugang = false)
 function oc_sicherung_feld_mangel($k, $w)
 {
     if (!is_array($w)) { return array(); }
+    if ($k === 'meldung') {     // 1.1.47: Block der Meldungen an SignalBot (gemeinsames Modul meldung.php)
+        $aus = array();
+        foreach (meld_block_pruefen($w, oc_meld_anlaesse()) as $x) { $aus[] = 'meldung: ' . meld_beanstandung_text($x, oc_meld_k()); }
+        return $aus;
+    }
     $aus = array();
     $zahl = function ($v, $min, $max, $ganz) {
         if (is_bool($v) || $v === null || is_array($v)) { return false; }
@@ -7049,4 +7138,158 @@ function oc_pruef_bruecke_einrichtung()
     if (!$aus) { return array(2, '-'); }
     $fehl = preg_grep('/^\[FEHL\]/', $aus);
     return array($fehl ? 0 : 1, implode(' | ', $fehl ? $fehl : array($aus[0], end($aus))));
+}
+
+/**
+ * 1.1.47 (Entscheidung des Hausherrn 23.11.2026 "Nur gemeinsame Bereiche", Regeln/07): Zeile im Reiter Test -
+ * faellt das gespeicherte Themen-Praefix auf einen gemeinsamen Bereich unter haus/? Speichern und Zurueckspielen
+ * weisen ein solches Praefix ab; ein schon gespeichertes bleibt in Betrieb und ist hier rot, grau bei ausgeschaltetem MQTT.
+ * Liste und Pruefung aus dem gemeinsamen Modul haus_bereiche.php. Rueckgabe array(stand, html).
+ */
+function oc_pruef_praefix_haus($cfg)
+{
+    $p = oc_mqtt_thema_saeubern($cfg['mqtt_topic'], 'octopus');
+    $b = hb_bereich($p);
+    if ($b !== '') {
+        if (!(!empty($cfg['mqtt_enabled']))) {
+            return array(-1, sprintf(oc_t('HAUSBEREICH.A_AUS'), oc_e($p), oc_e($b)));
+        }
+        return array(0, sprintf(oc_t('HAUSBEREICH.A_NEIN'), oc_e($p), oc_e($b)));
+    }
+    return array(1, sprintf(oc_t('HAUSBEREICH.A_JA'), oc_e($p)));
+}
+
+/**
+ * 1.1.47: einmal je Aenderung eine Protokollzeile, solange das Praefix auf einen gemeinsamen Bereich faellt; der
+ * Versand bleibt, wie er ist. Gemerkt in praefix_haus_gemeldet.txt im Datenordner. Rueckgabe der Bereich oder ''.
+ */
+function oc_praefix_haus_melden($cfg, $merk = null)
+{
+    $p = oc_mqtt_thema_saeubern($cfg['mqtt_topic'], 'octopus');
+    if ($merk === null) {
+        $merk = oc_paths()['datadir'] . '/praefix_haus_gemeldet.txt';
+    }
+    $b = hb_melden_faellig($p, $merk);
+    if ($b !== '') {
+        oc_log(hb_logtext($p, $b));
+    }
+    return $b;
+}
+
+if (!function_exists('oc_meld_block')) {
+
+/* ---------------- Statusmeldungen an SignalBot (1.1.47, gemeinsames Modul meldung.php) ----------------
+ *
+ * Auftrag des Hausherrn 23.11.2026, Entscheidungen 23./24.11.2026: dieselben Anlaesse wie die Ansage, eigener Haken je
+ * Anlass, ab Werk aus; Sperre, Bremse und Versand im Modul. Die Erkennung laeuft auch ohne Ausgabeart, wenn eine Meldung
+ * eingeschaltet ist (oc_meld_aktiv()), und legt einen Anlass hin, wenn Ansage ODER Meldung ihn will
+ * (oc_meld_will()); der Sender trennt die Wege wieder (oc_meld_nur_ansage()).
+ */
+
+/** Die meldbaren Anlaesse: Name => Beschriftung (dieselben wie die Ansage). */
+function oc_meld_anlaesse()
+{
+    return array('preis' => oc_t('EINST.N_PREIS'), 'morgen' => oc_t('EINST.N_MORGEN'), 'monat' => oc_t('EINST.N_MONAT'));
+}
+
+/** Die ab-Werk-Haken der Ansage dieser Linie: so stehen auch die Haken der Meldung, solange der Block nie gespeichert ist. */
+function oc_meld_haken_vorgabe()
+{
+    return array('preis' => 1, 'morgen' => 1, 'monat' => 1);
+}
+
+/** Ist der Haken dieses Anlasses fuer die ANSAGE gesetzt? */
+function oc_ansage_anlass_sprache($a, $cfg = null)
+{
+    if ($cfg === null) { $cfg = oc_config(); }
+    return in_array((string) $a, array('preis', 'morgen', 'monat'), true) && is_array($cfg) && !empty($cfg['notify']['audio']);
+}
+
+/** Der wirksame Block 'meldung' fuer den Betrieb (ungueltig gespeichert gilt als aus und wird im Formular genannt). */
+function oc_meld_block($cfg = null)
+{
+    if ($cfg === null) { $cfg = oc_config(); }
+    list($b) = meld_block(is_array($cfg) && array_key_exists('meldung', $cfg) ? $cfg['meldung'] : null, oc_meld_anlaesse(), oc_meld_haken_vorgabe());
+    return $b;
+}
+
+/** Die Beanstandungen eines gespeicherten Blocks (leer = gueltig). */
+function oc_meld_bean($cfg = null)
+{
+    if ($cfg === null) { $cfg = oc_config(); }
+    list(, $f) = meld_block(is_array($cfg) && array_key_exists('meldung', $cfg) ? $cfg['meldung'] : null, oc_meld_anlaesse(), oc_meld_haken_vorgabe());
+    return $f;
+}
+
+/** Ist irgendein Anlass zur Meldung eingeschaltet? Dann laeuft die Erkennung auch ohne Ausgabeart. */
+function oc_meld_aktiv($cfg = null)
+{
+    return meld_irgendein_an(oc_meld_block($cfg));
+}
+
+/** Will die Ansage ODER die Meldung diesen Anlass? */
+function oc_meld_will($a, $cfg = null)
+{
+    if ($cfg === null) { $cfg = oc_config(); }
+    return oc_ansage_anlass_sprache($a, $cfg) || meld_anlass_an(oc_meld_block($cfg), (string) $a);
+}
+
+/** Der Kontext des Moduls: Datenordner (data/plugins/<ordner>, daraus der Absender) und Texte - wie bei der Ansage. */
+function oc_meld_k()
+{
+    return oc_ansage_k();
+}
+
+/** Fuer die Ansage nur Eintraege, deren Ansage-Haken gesetzt ist; ein Eintrag ohne bekannten Anlass bleibt wie bisher. */
+function oc_meld_nur_ansage(array $l, $cfg = null)
+{
+    if ($cfg === null) { $cfg = oc_config(); }
+    $anl = oc_meld_anlaesse();
+    $aus = array();
+    foreach ($l as $e) {
+        if (is_array($e) && array_key_exists(meld_anlass_von($e), $anl) && !oc_ansage_anlass_sprache(meld_anlass_von($e), $cfg)) { continue; }
+        $aus[] = $e;
+    }
+    return $aus;
+}
+
+/** Die Eintraege an SignalBot melden. Protokoll: eine Zeile, wenn gesendet oder gescheitert (nie der Text). */
+function oc_meld_senden(array $l, $cfg = null)
+{
+    if ($cfg === null) { $cfg = oc_config(); }
+    $b = oc_meld_block($cfg);
+    if (empty($b['ein']) || !$l) { return null; }
+    $a = meld_regel_senden($l, $b, oc_meld_k());
+    if ($a['regel'] === '' || in_array($a['regel'], array('BREMSE', 'STAND', 'ORDNER'), true)) {
+        oc_log(meld_regel_kurz($a));
+    }
+    return $a;
+}
+
+/** Der Knopf "Testmeldung senden": array(angenommen, Satz). Geht an Haken, Sperre und Bremse vorbei. */
+function oc_meld_test()
+{
+    $r = meld_testmeldung(oc_meld_k());
+    oc_log('Testmeldung an SignalBot: ' . ($r[0] ? 'angenommen' : 'nicht angenommen'));
+    return $r;
+}
+
+/** Der Block im Einstellungsformular (unter den Ansage-Regeln, im selben Formular), mit Lage und Knopf. */
+function oc_meld_form_html($cfg = null)
+{
+    if ($cfg === null) { $cfg = oc_config(); }
+    $e = function ($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); };
+    $k = oc_meld_k();
+    $o = array();
+    /* 1.1.47: unsichtbarer Doppel des Speicherknopfs VOR dem Knopf Testmeldung - die Eingabetaste in einem Textfeld
+     * loest den ersten Absendeknopf des Formulars aus; sie soll speichern wie bisher, nicht die Testmeldung senden. */
+    $o[] = '<button data-role="none" type="submit" tabindex="-1" aria-hidden="true" style="position:absolute;left:-10000px;top:auto;width:1px;height:1px;overflow:hidden"></button>';
+    $o[] = '<h3>' . $e(meld_t('TITEL', $k)) . '</h3>';
+    $o[] = meld_formular_html(oc_meld_block($cfg), oc_meld_anlaesse(), array(), $k);
+    list(, $lage) = meld_pruefzeile(oc_meld_block($cfg), oc_meld_bean($cfg), $k);
+    $o[] = '<div class="sm-hilfe">' . $e(meld_t('F_TEST', $k) . ' ' . $lage) . '</div>';
+    $o[] = '<div class="sm-knopfreihe"><button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="meld_test" value="1">'
+         . $e(meld_t('K_TEST', $k)) . '</button></div>';
+    return implode("\n", $o) . "\n";
+}
 }

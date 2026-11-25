@@ -136,6 +136,10 @@ $oc_zug = oc_zugang();
  * still nur, wenn es noch gar keine Konfiguration gab (Lage 'vorgabe':
  * keine Datei oder "{}" ohne Zweitschrift), sonst mit einer Protokollzeile
  * und einem Hinweis ueber den Reitern. */
+/* Begruendete Abweichung von Regeln/05 "neu nur, wenn der Schluessel fehlt" (Entscheidung des Hausherrn 24.11.2026,
+ * Lade-Beanstandungen Punkt 1): ein LEERES Token erzeugt hier ein neues, weil das Formularmerkmal (oc_formtoken())
+ * am Token haengt - ohne Token liesse sich kein Formular mehr absenden. Ein vorhandenes, auch formwidriges Token
+ * bleibt (oc_config()). */
 if ((string) $oc_cfg['aktionstoken'] === '') {
     $oc_cfg['aktionstoken'] = oc_token_erzeugen();
     $oc_tok_geschrieben = oc_config_write($oc_cfg);
@@ -256,6 +260,12 @@ if ($oc_ist_post && isset($_POST['test'])) {
 }
 /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): die Knoepfe "Testansage an Ziel n" schicken ansage_test_ziel=n - es spricht
  * nur dieses Ziel; der bisherige Knopf spricht an alle Ziele gleichzeitig. Eine unbrauchbare Nummer spricht nichts. */
+/* 1.1.47: Testmeldung an SignalBot (Knopf unter den Ansage-Regeln). */
+if ($oc_ist_post && isset($_POST['meld_test'])) {
+    list($meld_ok, $meld_satz) = oc_meld_test();
+    if ($meld_ok) { $oc_test_titel = meld_t('TITEL', oc_meld_k()); $oc_test_text = $meld_satz; } else { $oc_test_titel = meld_t('TITEL', oc_meld_k()); $oc_test_text = $meld_satz; }
+    $oc_tab = 'tab-test';
+}
 if ($oc_ist_post && (isset($_POST['ansage_test']) || isset($_POST['ansage_test_ziel']))) {
     require_once __DIR__ . '/oc_test.php';
     $oc_tk = oc_ansage_k();
@@ -359,7 +369,7 @@ if ($oc_ist_post && isset($_POST['save_zugang'])) {
 }
 
 /* ================= Einstellungen speichern ================= */
-if ($oc_ist_post && isset($_POST['save'])) {
+if ($oc_ist_post && isset($_POST['save']) && !isset($_POST['meld_test'])) {     // 1.1.47: der Knopf Testmeldung (im selben Formular) speichert nicht
     /* ABWEISEN STATT VERBIEGEN (O3, O6; seit 1.1.16).
      *
      * Bis 1.1.15 wurde jede unbrauchbare Eingabe still zurechtgebogen und
@@ -633,6 +643,8 @@ if ($oc_ist_post && isset($_POST['save'])) {
     $oc_neu['tts'] = ansage_formular_lesen($_POST, oc_tts($oc_cfg), $oc_tmangel, $oc_tbean,
         oc_ansage_opt() + array('ziele' => oc_mit_zielen(), 'token_vor_ort' => true, 'aus_gewinnt' => true), oc_ansage_k(), $oc_thinw);
     list($oc_neu['ansage_regeln']) = ansage_regeln_formular($_POST, oc_ansage_regeln($oc_cfg), array(), $oc_tmangel, $oc_tbean, oc_ansage_k());     // S2: Wann gesprochen wird (Stamm)
+    // 1.1.47: der Block 'Meldungen an SignalBot' (eine Beanstandung haelt das Speichern an, wie die Ansage)
+    $oc_neu['meldung'] = meld_formular_lesen($_POST, isset($oc_cfg['meldung']) ? $oc_cfg['meldung'] : null, oc_meld_anlaesse(), $oc_tmangel, $oc_tbean, oc_meld_k(), oc_meld_haken_vorgabe());
     // 1.1.32: ein eingetipptes oder geloeschtes Sprechtoken ist nicht mehr vom Nachbarn; bis 1.1.31 ueberschrieb es der naechste Abgleich.
     $oc_neu['ansage_token_herkunft'] = ansage_token_herkunft_formular($_POST, isset($oc_neu['ansage_token_herkunft']) ? $oc_neu['ansage_token_herkunft'] : array(), oc_ansage_opt());
     foreach ($oc_tmangel as $oc_tm) { $oc_abweis[] = oc_e($oc_tm['text']); }
@@ -686,7 +698,15 @@ if ($oc_ist_post && isset($_POST['save_mqtt'])) {
     if ($oc_mroh !== null && $oc_mroh !== $oc_alt_praefix) {
         if ($oc_mroh !== '' && strlen($oc_mroh) <= 64
             && preg_match('#^[A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*$#', $oc_mroh)) {
-            $oc_mcfg['mqtt_topic'] = $oc_mroh;
+            /* 1.1.47 (Entscheidung des Hausherrn 23.11.2026 "Nur gemeinsame Bereiche", Regeln/07): kein Praefix auf einem
+             * gemeinsamen Bereich unter haus/ - nur hier und beim Zurueckspielen, nicht in der Pruefung beim Lesen der
+             * Konfiguration: ein schon gespeichertes bleibt in Betrieb, der Reiter Test meldet es. */
+            if (hb_bereich($oc_mroh) !== '') {
+                $oc_fehler[] = sprintf(oc_t('HAUSBEREICH.FEHLER'), oc_e($oc_mroh), oc_e(hb_bereich($oc_mroh)));
+                $oc_praefix_abgewiesen = true;
+            } else {
+                $oc_mcfg['mqtt_topic'] = $oc_mroh;
+            }
         } else {
             $oc_fehler[] = sprintf(oc_t('MELDUNG.TOPIC_UNGUELTIG'), oc_e($oc_mroh), oc_e($oc_alt_praefix));
             $oc_praefix_abgewiesen = true;
@@ -903,7 +923,8 @@ if ($oc_ist_post && isset($_POST['oc_zurueck'])) {
             list($neu, $oc_spaet) = oc_sicherung_spaet($neu, $jetzt);
             return $neu;
         };
-        $oc_b['speichern'] = function ($neu) { return oc_config_write($neu); };
+        // 1.1.47: die Werte einer Sicherung sind ausdruecklich - kein "Dateiwert behalten" (Regeln/05)
+        $oc_b['speichern'] = function ($neu) { return oc_config_write($neu, false); };
         $oc_b['zweitschrift'] = function () { $p = oc_paths(); return array($p['config'], $p['backup']); };
         $oc_b['nachziehen'] = function ($neu, $jetzt, $r)
                 use (&$oc_fehler, &$oc_cfg, &$oc_zug, &$oc_fmt, &$oc_tok_lage, &$oc_spaet, $oc_tok_alt, $oc_alt_praefix, $oc_p) {
@@ -952,6 +973,31 @@ if ($oc_ist_post && isset($_POST['oc_zurueck'])) {
     $oc_tab = 'tab-settings';
 }
 
+/* ================= Lade-Beanstandungen: angezeigte Werte uebernehmen (1.1.47) =================
+ * Nur mit gesetztem Haken (Entscheidung des Hausherrn 24.11.2026, "Haken im gelben Kasten"); ohne ihn bleibt die Datei
+ * byte-gleich. Geschrieben ohne "Dateiwert behalten". */
+if ($oc_ist_post && sicherung_lade_eingang($_POST) !== '') {
+    $oc_lb = oc_sicherung_beschreibung();
+    if (sicherung_lade_eingang($_POST) !== 'ja') {
+        $oc_fehler[] = oc_e(sicherung_t('K_LADE_HAKEN_FEHLT', $oc_lb));
+    } else {
+        $oc_ld = oc_lade_roh();
+        $oc_lv = oc_config(false);
+        $oc_un = array();
+        if ($oc_ld !== null) {
+            list($oc_lneu, $oc_un) = sicherung_lade_uebernehmen_stand($oc_ld, $oc_lv, sicherung_lade_beanstandungen($oc_lb, $oc_ld, $oc_lv));
+            if ($oc_un && !oc_config_write($oc_lneu, false)) {
+                $oc_fehler[] = str_replace('%F%', oc_e(oc_paths()['config']), oc_t('MELDUNG.SPEICHERN_FEHLER'));
+                $oc_un = array();
+            }
+        }
+        if ($oc_un) {
+            oc_log('Lade-Beanstandungen: angezeigte Werte uebernommen: ' . implode(', ', array_map('sicherung_name', $oc_un)));
+            $oc_meldungen[] = sprintf(sicherung_t('K_LADE_UEBERNOMMEN', $oc_lb), oc_e(implode(', ', $oc_un)));
+        }
+    }
+}
+
 /* ================= JEDER POST ENDET MIT EINER UMLEITUNG (O1, seit 1.1.16) =================
  *
  * Regeln/04: header('Location: index.php?form=...', true, 303) und exit; das
@@ -975,6 +1021,9 @@ if ($oc_ist_post) {
     exit;
 }
 $oc_einmal = oc_meldung_abholen();
+/* 1.1.47: Lade-Beanstandungen (Regeln/05) - fuer den gelben Kasten; einmal je Aenderung ins Protokoll. */
+$oc_lade = oc_lade_beanstandungen();
+oc_lade_melden($oc_lade);
 if ($oc_einmal !== null) {
     $oc_liste = function ($k) use ($oc_einmal) {
         return (isset($oc_einmal[$k]) && is_array($oc_einmal[$k]))
@@ -1185,6 +1234,8 @@ details > summary { cursor: pointer; font-weight: 600; color: #4f7d17; margin: 8
  * nichts. */
 foreach ($oc_meldungen as $oc_m) { ?><div class="sm-hinweis"><?php echo $oc_m; ?></div><?php }
 foreach ($oc_fehler as $oc_f) { ?><div class="sm-warnung"><?php echo $oc_f; ?></div><?php }
+echo sicherung_lade_kasten(oc_sicherung_beschreibung(), $oc_lade, '<input data-role="none" type="hidden" name="fmt" value="'
+    . oc_e($oc_fmt) . '"><input data-role="none" type="hidden" name="activetab" value="' . oc_e($oc_tab) . '">');
 ?>
 
 <?php
@@ -1787,7 +1838,9 @@ echo ansage_formular_html(oc_tts($oc_cfg), $oc_th + array(
 /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Tabelle der weiteren Ausgabeziele; nach einer Beanstandung traegt sie das Eingetippte. */
 'ziele' => oc_mit_zielen(),
 'ziele_post' => (is_array($oc_eingaben) && isset($oc_eingaben['formular']) && $oc_eingaben['formular'] === 'save') ? oc_ziele_x2_post($oc_eingaben['werte']) : null), oc_ansage_k());
-echo ansage_regeln_html(oc_ansage_regeln($oc_cfg), array(), array(), $oc_th + array('token_vor_ort' => true), oc_ansage_k()); ?>
+echo ansage_regeln_html(oc_ansage_regeln($oc_cfg), array(), array(), $oc_th + array('token_vor_ort' => true), oc_ansage_k());
+echo oc_meld_form_html($oc_cfg);     // 1.1.47: Meldungen an SignalBot
+?>
 <div class="sm-hilfe"><?php echo sprintf(oc_t('EINST.TTS_TEST_HINWEIS'), '<b>' . oc_e(oc_t('REITER.TEST')) . '</b>'); ?></div>
 
 <?php /* MQTT stand hier bis zu dieser Fassung. Es wohnt jetzt

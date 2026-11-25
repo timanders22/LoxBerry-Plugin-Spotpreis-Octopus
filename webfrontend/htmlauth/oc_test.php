@@ -83,6 +83,9 @@ function oc_test_selbst()
      * herstellt, prueft nichts; das Anlegen ist Sache von
      * postinstall.sh und des Dienstes. */
     $h .= oc_zeile(is_dir($p['datadir']), oc_t('TEST.DATENORDNER'), oc_e($p['datadir']));
+    // 1.1.47: faellt das Themen-Praefix auf einen gemeinsamen Bereich unter haus/ (Regeln/07)?
+    $oc_hb = oc_pruef_praefix_haus($cfg);
+    $h .= oc_zeile($oc_hb[0] !== 0, oc_e(oc_t('HAUSBEREICH.F_TEST')), $oc_hb[1]);
 
     $demo = !empty($cfg['demo']);
     if ($demo) {
@@ -241,6 +244,13 @@ function oc_test_selbst()
     list($uhr_s, $uhr_t) = uhr_pruefzeile(array('ordner' => $p['datadir'], 'dienst' => 'Octopus', 't' => 'oc_t'));
     $h .= '<div>' . uhr_zeichen($uhr_s) . ' ' . htmlspecialchars(uhr_frage(array('t' => 'oc_t')), ENT_QUOTES, 'UTF-8')
         . ' &mdash; ' . htmlspecialchars($uhr_t, ENT_QUOTES, 'UTF-8') . '</div>';
+
+    /* 1.1.47: Lade-Beanstandungen (Regeln/05, Sicherungsmodul 1.3.0) - rot, solange ein gespeicherter Wert beim Laden
+     * nicht so gilt, wie er gespeichert ist. */
+    $oc_lb = oc_sicherung_beschreibung();
+    $oc_la = oc_lade_beanstandungen();
+    $h .= oc_zeile(!$oc_la, oc_e(sicherung_t('K_LADE_FRAGE', $oc_lb)),
+        $oc_la ? implode('<br>', sicherung_lade_saetze($oc_lb, $oc_la)) : oc_e(sicherung_t('K_LADE_KEINE', $oc_lb)));
 
     return array(oc_t('TEST.T_SELBST'), $h);
 }
